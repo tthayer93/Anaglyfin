@@ -70,12 +70,6 @@ namespace Anaglyfin.MediaSources;
 /// </remarks>
 public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
 {
-    /// <summary>
-    /// Prefix of every Anaglyfin media source id, so one string comparison tells a
-    /// plugin version apart from a library source.
-    /// </summary>
-    public const string MediaSourceIdPrefix = "anaglyfin:";
-
     private const string StrmExtension = ".strm";
 
     private static readonly IReadOnlyList<MediaStream> NoStreams = Array.Empty<MediaStream>();
@@ -154,16 +148,44 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
     /// <param name="sourcePath">The item's media path, the fallback identity.</param>
     /// <param name="profileId">The profile id of the version.</param>
     /// <returns>
-    /// <c>anaglyfin:&lt;item-id-or-path-hash&gt;:&lt;profile-id&gt;</c>, lower-cased.
+    /// A lower-case "N"-format GUID string - the MD5 digest of
+    /// <c>&lt;item-id-n-or-path-digest&gt;:&lt;profile-id&gt;</c> read as a GUID, which
+    /// is exactly what <c>"&lt;seed&gt;".GetMD5().ToString("N")</c> yields in Jellyfin.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// Clients pin resume position and version choice on this string and the server
-    /// re-resources the source by it at stream time, so it must be stable across
-    /// requests for the same item and profile, and distinct across profiles. A real
+    /// <b>Why a GUID.</b> The id is not an Anaglyfin-flavoured label, it is a GUID, and
+    /// that is a hard requirement of the playback path rather than a taste for
+    /// consistency. Jellyfin 12's DynamicHLS endpoints run the request's
+    /// <c>MediaSourceId</c> through <c>Guid.Parse</c> on paths a client cannot avoid:
+    /// the master playlist parses it whenever trickplay is on, which it is by default
+    /// because the web client never sends the flag, and the main playlist parses it
+    /// unconditionally. A non-GUID id therefore dies with a <see cref="FormatException"/>
+    /// before a single FFmpeg process starts - no version of any kind plays. Lower-case
+    /// "N" format is also the only shape that satisfies both string comparisons the
+    /// server performs on it: the ordinal (case sensitive) match that resolves a
+    /// streaming request and the case-insensitive match PlaybackInfo uses.
+    /// </para>
+    /// <para>
+    /// <b>Why derived.</b> Clients pin resume position and version choice on this string
+    /// and the server re-resolves the source by it at stream time, so it must be stable
+    /// across requests, restarts and re-scans: it is a pure function of the item
+    /// identity and the profile id - never random, never persisted, never cached. A real
     /// item id survives renames and library re-scans, so it is the identity of choice;
-    /// only items without one (none of the library ones the provider answers for)
-    /// fall back to a digest of the path.
+    /// only items without one (none of the library items this provider answers for) fall
+    /// back to a digest of the path. Deriving instead of returning <c>item.Id</c> is what
+    /// keeps the item's own version addressable: the server sorts the static source
+    /// keyed by the item id first, so an Anaglyfin source wearing that id would shadow
+    /// the original.
+    /// </para>
+    /// <para>
+    /// <b>Why this particular derivation.</b> Folding a key string into a GUID with MD5
+    /// is what the server does for its own generated source ids and library keys, so
+    /// Anaglyfin's ids are unremarkable to the endpoints that parse them. Two
+    /// consequences of an id that names no real item are benign and accepted: the
+    /// trickplay lookup finds no tiles for it (an Anaglyfin version simply has no
+    /// preview bar), and keyframe extraction ignores it because the extractors work from
+    /// the file path, which for these sources is the marker's.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentException">
@@ -183,15 +205,43 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
 
-            // Lower-cased like every other id part: the digest itself is case-insensitive
-            // hex, but the id is one string and gets exactly one textual form.
+            // Lower-cased like every other seed part: the digest itself is case-insensitive
+            // hex, but the seed is one string and gets exactly one textual form.
             itemKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sourcePath))).ToLowerInvariant();
         }
 
-        // One textual form for one source: ids are compared with case-insensitive
-        // equality by the server, so producing lowercase removes the ambiguity rather
-        // than relying on the comparison.
-        return string.Concat(MediaSourceIdPrefix, itemKey, ":", profileId.Trim().ToLowerInvariant());
+        // One textual form for one source. The seed is folded to lower case before it is
+        // hashed, so the id of a version is the same whether the caller spelled the
+        // profile id as "SBS_Full" or as "sbs_full" - the server compares the resulting
+        // ids byte for byte at stream time, and two spellings of one version must not
+        // resolve to two sources.
+        var seed = string.Concat(itemKey, ":", profileId.Trim().ToLowerInvariant());
+
+        // "N": digits only, lower case, no braces and no dashes - the shape Guid.Parse
+        // accepts and the shape both of the server's id comparisons expect.
+        return SourceIdGuid(seed).ToString("N", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Folds an id seed into a GUID the way the server's own <c>string.GetMD5()</c> does.
+    /// </summary>
+    /// <param name="seed">The already-normalised id seed.</param>
+    /// <returns>The GUID whose bytes are the MD5 digest of <paramref name="seed"/>.</returns>
+    /// <remarks>
+    /// MD5 is deliberate and is not a security decision: this digest names a playback
+    /// version, it authenticates nothing, and a collision - which nobody finds by
+    /// accident - would at worst make two version entries indistinguishable. It is the
+    /// same choice the server makes for its own synthetic source ids and for library
+    /// keys, and matching it is the entire point, because those ids are what the
+    /// DynamicHLS endpoints hand to <c>Guid.Parse</c>.
+    /// </remarks>
+    private static Guid SourceIdGuid(string seed)
+    {
+#pragma warning disable CA5351 // Broken algorithm: intentional, an identity hash is not an integrity digest.
+        // Encoding.Unicode (UTF-16 little endian) rather than UTF-8: the point is to land
+        // on the same GUID the server's own helper produces for the same seed.
+        return new Guid(MD5.HashData(Encoding.Unicode.GetBytes(seed)));
+#pragma warning restore CA5351
     }
 
     /// <summary>
@@ -353,6 +403,9 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
 
         var mediaSource = new MediaSourceInfo
         {
+            // Request plumbing and nothing else: the DynamicHLS routes parse this one as a
+            // GUID (see BuildMediaSourceId), while which conversion a version asks for
+            // travels in the marker below - the wrapper reads that, never this.
             Id = BuildMediaSourceId(item.Id, sourcePath, profile.Id),
 
             // The version label clients show verbatim in their version pickers.

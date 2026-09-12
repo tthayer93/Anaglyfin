@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Anaglyfin.Configuration;
@@ -62,12 +64,56 @@ public class AnaglyfinMediaSourceProviderTests
     }
 
     [Fact]
-    public void SourceIdIsPrefixItemAndProfileAndIsAllLowercase()
+    public void SourceIdIsAGuidDerivedFromTheItemAndTheProfile()
     {
         var id = AnaglyfinMediaSourceProvider.BuildMediaSourceId(ItemId, MvcMoviePath, ProfileIds.CustomGrayscale);
 
-        Assert.Equal($"anaglyfin:{ItemKey}:custom_grayscale", id);
+        // The documented derivation, restated here independently of the provider: the
+        // server's own key-to-guid fold over "<item id, N>:<profile id>", as a lower-case
+        // "N" GUID. The pin matters - clients store this string, so a provider that
+        // quietly changes it silently orphans every saved version choice.
+        Assert.Equal(DeriveGuid(ItemKey + ":" + ProfileIds.CustomGrayscale), id);
         Assert.Equal(id, id.ToLowerInvariant());
+    }
+
+    [Fact]
+    public void SourceIdIsAGuidBecauseDynamicHlsParsesItAsOne()
+    {
+        // The regression this exists for: Jellyfin 12 hands the request's MediaSourceId to
+        // Guid.Parse on the master playlist (trickplay, on by default) and on the main
+        // playlist (unconditionally). A descriptive id - "anaglyfin:<item>:<profile>" -
+        // survived PlaybackInfo and then threw a FormatException before FFmpeg started,
+        // which is a version list that plays nothing.
+        var id = AnaglyfinMediaSourceProvider.BuildMediaSourceId(ItemId, MvcMoviePath, ProfileIds.SideBySideFull);
+
+        AssertIsLowerCaseGuid(id);
+        Assert.DoesNotContain(":", id, StringComparison.Ordinal);
+        Assert.DoesNotContain("anaglyfin", id, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SourceIdsSeparateEveryProfileOfAnItemAndEveryItemOfAProfile()
+    {
+        var ids = ProfileIds.AllProfileIds
+            .Select(profileId => AnaglyfinMediaSourceProvider.BuildMediaSourceId(ItemId, MvcMoviePath, profileId))
+            .ToList();
+
+        // One item, every shipped profile: no two versions may share an id, or the second
+        // one is unreachable once the server resolves the source by id.
+        Assert.Equal(ProfileIds.AllProfileIds.Count, ids.Distinct(StringComparer.Ordinal).Count());
+        Assert.All(ids, id => AssertIsLowerCaseGuid(id));
+
+        // And never the item's own id: the item's static source is keyed by it and sorted
+        // first, so an Anaglyfin version wearing it would shadow the original source.
+        Assert.DoesNotContain(ItemKey, ids, StringComparer.Ordinal);
+        Assert.DoesNotContain(ItemId.ToString("D", CultureInfo.InvariantCulture), ids, StringComparer.Ordinal);
+
+        // The same profile on another item is another id, so a version choice saved on one
+        // title cannot be applied to a different one.
+        var otherItem = Guid.Parse("9f8e7d6c-5b4a-4938-a7b6-c5d4e3f2a1b0");
+        Assert.NotEqual(
+            AnaglyfinMediaSourceProvider.BuildMediaSourceId(ItemId, MvcMoviePath, ProfileIds.AnaglyphRedCyanDubois),
+            AnaglyfinMediaSourceProvider.BuildMediaSourceId(otherItem, MvcMoviePath, ProfileIds.AnaglyphRedCyanDubois));
     }
 
     [Fact]
@@ -76,9 +122,11 @@ public class AnaglyfinMediaSourceProviderTests
         var withPath = AnaglyfinMediaSourceProvider.BuildMediaSourceId(Guid.Empty, MvcMoviePath, ProfileIds.TwoDBase);
         var otherPath = AnaglyfinMediaSourceProvider.BuildMediaSourceId(Guid.Empty, "/movies/Other.3D.MVC.mkv", ProfileIds.TwoDBase);
 
-        Assert.StartsWith(AnaglyfinMediaSourceProvider.MediaSourceIdPrefix, withPath, StringComparison.Ordinal);
-        Assert.EndsWith(":two_d_base", withPath, StringComparison.Ordinal);
-        Assert.Equal(withPath, withPath.ToLowerInvariant());
+        // A different identity under the id, not a different shape of it: the fallback is
+        // still a GUID, because the routes that parse it do not know or care which
+        // identity the provider had to fall back to.
+        AssertIsLowerCaseGuid(withPath);
+        AssertIsLowerCaseGuid(otherPath);
         Assert.NotEqual(withPath, otherPath);
     }
 
@@ -190,13 +238,15 @@ public class AnaglyfinMediaSourceProviderTests
         var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
 
         // Shipped settings: red/cyan Dubois default, 2D base fallback, MVP profile set.
+        // The ids say nothing about which profile they are (they are GUIDs), so the order
+        // is asserted against the id each of those profiles is bound to.
         Assert.Equal(
             new[]
             {
-                $"{AnaglyfinMediaSourceProvider.MediaSourceIdPrefix}{ItemKey}:anaglyph_arcd",
-                $"{AnaglyfinMediaSourceProvider.MediaSourceIdPrefix}{ItemKey}:sbs_full",
-                $"{AnaglyfinMediaSourceProvider.MediaSourceIdPrefix}{ItemKey}:sbs_half",
-                $"{AnaglyfinMediaSourceProvider.MediaSourceIdPrefix}{ItemKey}:two_d_base"
+                IdOf(ProfileIds.AnaglyphRedCyanDubois),
+                IdOf(ProfileIds.SideBySideFull),
+                IdOf(ProfileIds.SideBySideHalf),
+                IdOf(ProfileIds.TwoDBase)
             },
             sources.Select(source => source.Id));
         Assert.Equal(
@@ -204,7 +254,7 @@ public class AnaglyfinMediaSourceProviderTests
             sources.Select(source => source.Name));
 
         // The fallback profile is the safe last resort, so it sorts last.
-        Assert.EndsWith(":two_d_base", sources[^1].Id, StringComparison.Ordinal);
+        Assert.Equal(IdOf(ProfileIds.TwoDBase), sources[^1].Id);
 
         // The detector saw the item's own signals (path, name), not a fabricated copy.
         Assert.Equal(MvcMoviePath, detectorScript!.LastCandidate!.Path);
@@ -223,8 +273,8 @@ public class AnaglyfinMediaSourceProviderTests
         var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
 
         Assert.Equal("3D Full Side-by-Side", sources[0].Name);
-        Assert.EndsWith(":sbs_full", sources[0].Id, StringComparison.Ordinal);
-        Assert.EndsWith(":anaglyph_arcd", sources[1].Id, StringComparison.Ordinal);
+        Assert.Equal(IdOf(ProfileIds.SideBySideFull), sources[0].Id);
+        Assert.Equal(IdOf(ProfileIds.AnaglyphRedCyanDubois), sources[1].Id);
     }
 
     [Fact]
@@ -243,8 +293,8 @@ public class AnaglyfinMediaSourceProviderTests
 
         // The custom grayscale preset is only offered when the administrator enables it.
         Assert.Equal(2, sources.Count);
-        Assert.EndsWith(":sbs_full", sources[0].Id, StringComparison.Ordinal);
-        Assert.EndsWith(":custom_grayscale", sources[1].Id, StringComparison.Ordinal);
+        Assert.Equal(IdOf(ProfileIds.SideBySideFull), sources[0].Id);
+        Assert.Equal(IdOf(ProfileIds.CustomGrayscale), sources[1].Id);
         Assert.Equal("3D Anaglyph Custom Colours", sources[1].Name);
     }
 
@@ -286,7 +336,9 @@ public class AnaglyfinMediaSourceProviderTests
 
         var source = Assert.Single(await provider.GetMediaSources(item, CancellationToken.None));
 
-        Assert.Equal($"anaglyfin:{ItemKey}:anaglyph_arcd", source.Id);
+        // The id is the server's own fold over "1c4c...:anaglyph_arcd", written out in
+        // full: an Anaglyfin version must be addressable by a GUID the HLS routes accept.
+        Assert.Equal(DeriveGuid(ItemKey + ":" + ProfileIds.AnaglyphRedCyanDubois), source.Id);
         Assert.Equal("3D Anaglyph Red/Cyan (Dubois)", source.Name);
         Assert.Equal(
             "http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmovies%2FAvatar%203D%20MVC.mkv",
@@ -397,8 +449,13 @@ public class AnaglyfinMediaSourceProviderTests
 
             Assert.True(parsed.IsSuccess, $"expected a valid marker, got {parsed.Status}");
             Assert.Equal(MvcMoviePath, parsed.SourcePath);
-            Assert.EndsWith($":{parsed.ProfileId}", source.Id, StringComparison.Ordinal);
             Assert.StartsWith(ProfileMarker.MarkerPrefix, source.Path, StringComparison.Ordinal);
+
+            // Which conversion a version is stays readable from the marker and nowhere
+            // else: the id is an opaque GUID - by design, because the HLS routes parse it
+            // - so the wrapper must keep getting the profile from this path.
+            Assert.Equal(IdOf(parsed.ProfileId!), source.Id);
+            Assert.DoesNotContain(parsed.ProfileId!, source.Id, StringComparison.Ordinal);
         }
     }
 
@@ -435,6 +492,46 @@ public class AnaglyfinMediaSourceProviderTests
     }
 
     [Fact]
+    public async Task SourceIdsAreStableAcrossInstancesBecauseTheyAreDerivedAndNotAssigned()
+    {
+        var item = CreateMvcItem();
+
+        // A fresh provider is what a server restart looks like to this code: nothing is
+        // generated at construction and nothing is stored, so the ids a client saved
+        // still name the same versions afterwards. An id minted per request or per
+        // instance would pass every other test here and still break resume.
+        var before = (await CreateProvider().GetMediaSources(item, CancellationToken.None)).ToList();
+        var after = (await CreateProvider().GetMediaSources(item, CancellationToken.None)).ToList();
+
+        Assert.Equal(before.Select(source => source.Id), after.Select(source => source.Id));
+    }
+
+    [Fact]
+    public async Task EveryOfferedSourceIdIsAGuidTheDynamicHlsRoutesAccept()
+    {
+        var provider = CreateProvider();
+
+        var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
+
+        Assert.NotEmpty(sources);
+        foreach (var source in sources)
+        {
+            // Guid.TryParse is the call the master and main playlists make on this value
+            // (via Guid.Parse); a source that survives PlaybackInfo and fails here is the
+            // bug this file exists for, not a limitation of the test.
+            AssertIsLowerCaseGuid(source.Id);
+
+            // The item's own source is keyed by the item id and put first, so wearing it
+            // would make the original version unreachable.
+            Assert.NotEqual(ItemKey, source.Id, StringComparer.Ordinal);
+            Assert.NotEqual(ItemId.ToString("D", CultureInfo.InvariantCulture), source.Id, StringComparer.Ordinal);
+        }
+
+        // One id per version: two versions with one id is one playable version.
+        Assert.Equal(sources.Count, sources.Select(source => source.Id).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
     public async Task TheProviderIsConstructedForRealDependencyResolutions()
     {
         // The server activates providers with ActivatorUtilities: the production wiring
@@ -448,7 +545,7 @@ public class AnaglyfinMediaSourceProviderTests
         var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
 
         Assert.Equal(4, sources.Count);
-        Assert.EndsWith(":anaglyph_arcd", sources[0].Id, StringComparison.Ordinal);
+        Assert.Equal(IdOf(ProfileIds.AnaglyphRedCyanDubois), sources[0].Id);
     }
 
     [Fact]
@@ -536,6 +633,45 @@ public class AnaglyfinMediaSourceProviderTests
                 new MediaStream { Type = MediaStreamType.Subtitle, Index = 3, Language = "spa" }
             }
         };
+
+    // --- id helpers ------------------------------------------------------------------------
+
+    /// <summary>
+    /// The id the provider is expected to give one profile of the shared test item, so the
+    /// order assertions can name the profile they mean instead of a hex string.
+    /// </summary>
+    private static string IdOf(string profileId)
+        => AnaglyfinMediaSourceProvider.BuildMediaSourceId(ItemId, MvcMoviePath, profileId);
+
+    /// <summary>
+    /// The provider's documented derivation, computed here rather than called: MD5 over the
+    /// UTF-16 bytes of <c>"&lt;item id, N&gt;:&lt;profile id&gt;"</c>, read as a GUID and
+    /// formatted lower-case "N" - which is what Jellyfin's own
+    /// <c>"&lt;seed&gt;".GetMD5().ToString("N")</c> answers. Restating it is the point: a
+    /// test that asks the provider for its own expectation proves nothing about the shape
+    /// the server is going to parse.
+    /// </summary>
+    private static string DeriveGuid(string seed)
+    {
+#pragma warning disable CA5351 // Deliberately the provider's id fold, weaknesses and all: an id hash, not a digest.
+        return new Guid(MD5.HashData(Encoding.Unicode.GetBytes(seed))).ToString("N", CultureInfo.InvariantCulture);
+#pragma warning restore CA5351
+    }
+
+    /// <summary>
+    /// Fails unless an id is a GUID in the single shape the playback routes agree on: 32
+    /// lower-case hex digits, no dashes, no braces, no decoration.
+    /// </summary>
+    private static void AssertIsLowerCaseGuid(string id)
+    {
+        Assert.True(Guid.TryParse(id, out var parsed), $"not a GUID: {id}");
+
+        // The round trip is what rejects the decoration: "N" is the canonical, lower-case,
+        // separator-free form, so an id that parses but is not that form is an id some
+        // comparison somewhere will eventually miss.
+        Assert.Equal(parsed.ToString("N", CultureInfo.InvariantCulture), id);
+        Assert.NotEqual(Guid.Empty, parsed);
+    }
 
     // --- fakes --------------------------------------------------------------------------
 

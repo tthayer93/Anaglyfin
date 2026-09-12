@@ -281,7 +281,7 @@ in `docs/validation.md` V5; the short version is:
 
 ```json
 {
-  "Id": "anaglyfin:<item-id>:anaglyph_arcd",
+  "Id": "3f2a1c9d7b6e4f5a8c2d9e0b1a4c7d63",
   "Name": "3D Anaglyph Red/Cyan (Dubois)",
   "Path": "http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmedia%2F...",
   "Protocol": "Http",
@@ -290,6 +290,12 @@ in `docs/validation.md` V5; the short version is:
   "SupportsDirectStream": false
 }
 ```
+
+`Id` is a GUID (lower-case `N` format), not a readable label: Jellyfin 12's DynamicHLS
+endpoints `Guid.Parse` the `MediaSourceId` on the way to the transcoder, so a descriptive
+id throws before FFmpeg is ever started. It is derived from the item id and the profile id,
+so it is stable across restarts; the profile itself is carried by `Path`, which is what the
+wrapper reads.
 
 Original source stays first and stays playable; the `Id` changes with the profile and not
 with the client; the item's own source is untouched.
