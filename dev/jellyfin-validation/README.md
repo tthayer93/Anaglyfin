@@ -283,11 +283,15 @@ in `docs/validation.md` V5; the short version is:
 {
   "Id": "3f2a1c9d7b6e4f5a8c2d9e0b1a4c7d63",
   "Name": "3D Anaglyph Red/Cyan (Dubois)",
-  "Path": "http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmedia%2F...",
+  "Path": "http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmedia%2F...&video=0",
   "Protocol": "Http",
   "SupportsTranscoding": true,
   "SupportsDirectPlay": false,
-  "SupportsDirectStream": false
+  "SupportsDirectStream": false,
+  "MediaStreams": [
+    { "Type": "Video", "Codec": "mvc", "Index": 0 },
+    { "Type": "Audio", "Codec": "DTS", "Index": 1 }
+  ]
 }
 ```
 
@@ -296,6 +300,21 @@ endpoints `Guid.Parse` the `MediaSourceId` on the way to the transcoder, so a de
 id throws before FFmpeg is ever started. It is derived from the item id and the profile id,
 so it is stable across restarts; the profile itself is carried by `Path`, which is what the
 wrapper reads.
+
+Read `MediaStreams` and `Path` rather than the three `Supports*` flags. The server overwrites
+`SupportsTranscoding` and `SupportsDirectStream` on a dynamic source with what the user's
+transcode profile and the device profile allow, so a `false` in the response is what the
+plugin asked for and not what the server believes; and its own stream-copy decision never
+consults those flags for video, only the reported codec. The two fields that do decide the
+outcome are:
+
+- `"Codec": "mvc"` on the video stream - no client transcode profile names that codec, so
+  there is nothing to copy and the server must encode. It is also the honest name for what
+  the file holds. The original library source keeps reporting its real codec; the `mvc`
+  stream is a clone belonging to this version alone.
+- `&video=0` in `Path` - the marker naming the position the video stream holds in the list
+  above, so the wrapper can recognise the numbered `-map 0:0` the server builds from it.
+  A source with no video stream carries no `video` parameter at all.
 
 Original source stays first and stays playable; the `Id` changes with the profile and not
 with the client; the item's own source is untouched.
@@ -335,7 +354,16 @@ jellyfin
   normalised away;
 - the child received the decoded real path, and **no** marker text;
 - the profile's inserted fragments are there (`docs/validation.md` V7 for the per-profile
-  list), and Jellyfin's own encoder, muxer and HLS arguments survived around them.
+  list), and Jellyfin's own encoder, muxer and HLS arguments survived around them;
+- the child names an encoder for the video - `-codec:v libx264`, `-c:v libx265`, `-vcodec
+  ...`, anything but `copy`. A profile that owns the video pipeline never runs over a copy:
+  the copy form of a Jellyfin command carries no encoder stack to write into, so the wrapper
+  refuses it and says `anaglyfin-wrapper: refused ... (ServerChoseVideoCopy)` in the log
+  rather than passing a command through that would have played the raw MVC track;
+- no numbered map names the marker's video index. `-map 0:0` (or `-map 0:0?`) in the command
+  the wrapper received is removed from the child's, because argv alone cannot tell that
+  `0` from an audio stream - the marker's `video=<index>` is what identifies it. Audio and
+  subtitle maps, negative maps and maps of other inputs survive untouched.
 
 The same command lines are written to the server's transcode logs, which is the artifact
 to capture rather than a screenshot:

@@ -70,13 +70,29 @@ whitespace-free token. It is not fetched and it does not name an HTTP endpoint.
 The marker may carry:
 
 ```text
-profile id       allowlisted Anaglyfin profile id
-source path      rooted library path, percent-encoded
-subtitle ordinal optional; currently not produced by the provider
+profile id        allowlisted Anaglyfin profile id
+source path       rooted library path, percent-encoded
+video stream index optional; the position of the video stream in the source's stream list
+subtitle ordinal  optional; currently not produced by the provider
 ```
 
 The wrapper replaces the marker with the real source path before FFmpeg is started. A
 marker that reaches the real FFmpeg child command is a bug.
+
+## Forcing the encode
+
+A profile only converts what the encoder is asked to encode, and Jellyfin decides video copy
+from the data a source reports rather than from any flag a plugin sets: it overwrites a
+dynamic source's transcode and direct-stream flags with the user's permissions, and its copy
+decision then looks only at the reported video codec against the client's transcode profile.
+So an alternate source reports its video as `mvc` - a codec no client profile names, and the
+honest name for what the file holds - which makes stream copy impossible for every client and
+every permission. The stream carrying that codec is a clone: the item's original source keeps
+the objects it was probed with.
+
+The wrapper will not run a profile pipeline over a command that copies its video anyway
+(`ServerChoseVideoCopy`), because the copy form of a Jellyfin command carries no encoder stack
+for the profile to write into.
 
 ## Profile command rules
 
@@ -90,7 +106,10 @@ marker that reaches the real FFmpeg child command is a bug.
 
 Rewritten commands keep Jellyfin's encoder, muxer, HLS, and output choices. The only audio
 argument the rewriter adds is `-map 0:a?` when the server command had no maps at all and the
-profile inserted a video map.
+profile inserted a video map. Of the server's own maps, a profile that owns the video pipeline
+takes away two shapes: a map that names the video type (`0:v`, `0:v:0`, a graph label), and the
+numbered map the marker's `video=<index>` identifies (`-map 0:<index>`, `-map 0:<index>?`),
+which no argv reader can tell video from audio.
 
 ## Security boundaries
 
