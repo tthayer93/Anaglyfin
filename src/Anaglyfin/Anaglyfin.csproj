@@ -33,6 +33,15 @@
     <EmbeddedResource Include="Plugin.manifest.xml">
       <LogicalName>Anaglyfin.Plugin.manifest.xml</LogicalName>
     </EmbeddedResource>
+    <!--
+      The admin page the dashboard serves (see ConfigurationPage). One document: the
+      stylesheet and the script travel inside it, because the page channel serves exactly
+      the resource a PluginPageInfo names and nothing else.
+    -->
+    <None Remove="Configuration/configPage.html" />
+    <EmbeddedResource Include="Configuration/configPage.html">
+      <LogicalName>Anaglyfin.Configuration.configPage.html</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>
