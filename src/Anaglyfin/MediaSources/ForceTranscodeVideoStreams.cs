@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using MediaBrowser.Model.Entities;
 
 namespace Anaglyfin.MediaSources;
@@ -24,10 +26,13 @@ namespace Anaglyfin.MediaSources;
 /// </para>
 /// <para>
 /// So the version reports a codec no client's direct-play or transcode profile names:
-/// <see cref="VideoCodec"/>. The server then finds the video codec unsupported, which is
-/// both honest about a dual-view MVC file and enough to make video copy impossible for
-/// every client and every permission, and it builds a real encode command with a real
-/// encoder stack behind it. Audio is untouched: audio copy is the normal Jellyfin
+/// <see cref="VideoCodec"/>. The lever is that nothing names it, and nothing else: the
+/// server finds the video codec unsupported by the client's profile, which is enough to make
+/// video copy impossible for every client and every permission, and it builds a real encode
+/// command with a real encoder stack behind it. <c>mvc</c> is not the codec the file's video
+/// track is encoded with - ffprobe reports <c>hevc</c> for an MVC track - so nothing here
+/// claims to be reporting the wire format; it is a name the copy decision cannot match, and
+/// that is the whole of its job. Audio is untouched: audio copy is the normal Jellyfin
 /// behaviour and this class does not look at audio streams at all.
 /// </para>
 /// <para>
@@ -41,22 +46,41 @@ namespace Anaglyfin.MediaSources;
 /// <para>
 /// <b>Why only the first video stream.</b> That is the stream a transcode with no explicit
 /// video-stream choice maps, and it is the stream the marker names with its
-/// <c>video=&lt;index&gt;</c> parameter, so the wrapper's map handling and the server's map
-/// agree on the same stream. A file carrying a second video stream keeps its real codec on
-/// screen: were the server ever to pick that one and stream-copy it, the wrapper would
-/// refuse the job loudly instead of silently converting a stream nobody asked for.
+/// <c>video=&lt;index&gt;</c> parameter - by its <see cref="MediaStream.Index"/>, the number
+/// the server spends on <c>-map 0:&lt;index&gt;</c> - so the wrapper's map handling and the
+/// server's map agree on the same stream. A file carrying a second video stream keeps its
+/// real codec on screen: were the server ever to pick that one and stream-copy it, the
+/// wrapper would refuse the job loudly instead of silently converting a stream nobody asked
+/// for.
 /// </para>
 /// </remarks>
 public static class ForceTranscodeVideoStreams
 {
     /// <summary>
-    /// The codec a version reports for its video stream: multiview MVC, which is what the
-    /// file actually holds and which no client's codec list contains, so no client can be
-    /// served a copy of it.
+    /// The codec a version reports for its video stream. Not the codec the file's video track
+    /// carries - an MVC track is reported by ffprobe as <c>hevc</c> - but a codec name no
+    /// client's direct-play list and no client's transcode profile contains, which is the
+    /// only property the server's video-copy decision reads and therefore the only one that
+    /// makes a version impossible to stream-copy.
     /// </summary>
     public const string VideoCodec = "mvc";
 
     private static readonly IReadOnlyList<MediaStream> NoStreams = Array.Empty<MediaStream>();
+
+    /// <summary>
+    /// The options the stream clone is round-tripped through.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="JsonNumberHandling.AllowNamedFloatingPointLiterals"/> is not decoration:
+    /// the default writer refuses <c>NaN</c> and <c>Infinity</c>, and a frame rate or
+    /// rotation carried by a hand-built or oddly probed source can hold one. Throwing here
+    /// would cost the item every Anaglyfin version, which is the wrong price for a number
+    /// the clone is only passing through.
+    /// </remarks>
+    private static readonly JsonSerializerOptions CloneOptions = new()
+    {
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
+    };
 
     /// <summary>
     /// Builds the stream list one version reports, and names the video stream it reports.
@@ -66,8 +90,9 @@ public static class ForceTranscodeVideoStreams
     /// information at all. Never modified.
     /// </param>
     /// <param name="videoStreamIndex">
-    /// The index of the re-labelled video stream inside the returned list, or
-    /// <c>-1</c> when there is no video stream to name.
+    /// The <see cref="MediaStream.Index"/> of the re-labelled video stream - the number a
+    /// <c>-map 0:&lt;index&gt;</c> of this source's video carries - or <c>-1</c> when there is
+    /// no video stream, or the reported one names no index for it.
     /// </param>
     /// <returns>
     /// <paramref name="reported"/> itself when it holds no video stream to re-label,
@@ -108,7 +133,16 @@ public static class ForceTranscodeVideoStreams
             return reported;
         }
 
-        videoStreamIndex = firstVideoIndex;
+        var firstVideo = reported[firstVideoIndex];
+
+        // What the marker has to name is the stream's own index and not the position this
+        // list happens to hold it at: they are the same number for a report the probe wrote
+        // in file order and different for anything else, and it is the first one that a
+        // -map 0:<index> spends. An unprobed or hand-built stream reporting -1 names nothing,
+        // and this does not guess a position for it - the codec re-label below still happens,
+        // because that is what keeps the version encoding, and only the map identification is
+        // left out.
+        videoStreamIndex = firstVideo.Index >= 0 ? firstVideo.Index : -1;
 
         var forcing = new List<MediaStream>(reported.Count);
         for (var index = 0; index < reported.Count; index++)
@@ -130,8 +164,8 @@ public static class ForceTranscodeVideoStreams
 
         // The one field a version reports differently, and the one the server's video-copy
         // decision reads. Everything a player or the transcode conditions look at - size,
-        // bit depth, frame rate, language, Dolby Vision metadata - stays as the file's own
-        // probe reported it.
+        // bit depth, frame rate, language, Dolby Vision metadata, HDR range - stays as the
+        // file's own probe reported it.
         reported.Codec = VideoCodec;
 
         return reported;
@@ -141,76 +175,23 @@ public static class ForceTranscodeVideoStreams
     /// Copies every field of a reported stream so the version can change one of them.
     /// </summary>
     /// <remarks>
-    /// Field-by-field rather than by reference: the copy must be as faithful as the
-    /// original, because this is what a client's version entry, the details page and the
-    /// server's own transcode conditions read - a video stream that lost its resolution,
-    /// bit depth or frame rate on the way would change which encode the server builds
-    /// while claiming to describe the same picture. The codec is copied like everything
-    /// else and then replaced by the caller, so that a stream missing a field never
-    /// reaches a client.
+    /// <para>
+    /// A serialisation round-trip rather than a hand-written field list, because a field
+    /// list fails quietly in one direction only: forget a field and the clone still builds,
+    /// still plays, and simply reports one thing less than the file does. Dropping
+    /// <c>VideoRange</c> or a colour transfer that way would change which encode the server
+    /// builds - and which HDR route the client takes - while the version claims to describe
+    /// the same picture. Writing the model's own JSON and reading it back into a fresh
+    /// instance copies whatever the model has today, including fields added by a server
+    /// upgrade this code was not written against.
+    /// </para>
+    /// <para>
+    /// The derived read-only members (<c>VideoRange</c>, <c>VideoRangeType</c>,
+    /// <c>VideoDoViTitle</c>) are computed from the fields this copies, so they answer on the
+    /// clone exactly as they do on the original; the codec is copied like everything else and
+    /// then replaced by the caller.
+    /// </para>
     /// </remarks>
     private static MediaStream Clone(MediaStream source)
-        => new()
-        {
-            Codec = source.Codec,
-            CodecTag = source.CodecTag,
-            Language = source.Language,
-            ColorRange = source.ColorRange,
-            ColorSpace = source.ColorSpace,
-            ColorTransfer = source.ColorTransfer,
-            ColorPrimaries = source.ColorPrimaries,
-            DvVersionMajor = source.DvVersionMajor,
-            DvVersionMinor = source.DvVersionMinor,
-            DvProfile = source.DvProfile,
-            DvLevel = source.DvLevel,
-            RpuPresentFlag = source.RpuPresentFlag,
-            ElPresentFlag = source.ElPresentFlag,
-            BlPresentFlag = source.BlPresentFlag,
-            DvBlSignalCompatibilityId = source.DvBlSignalCompatibilityId,
-            Rotation = source.Rotation,
-            Comment = source.Comment,
-            TimeBase = source.TimeBase,
-            CodecTimeBase = source.CodecTimeBase,
-            Title = source.Title,
-            Hdr10PlusPresentFlag = source.Hdr10PlusPresentFlag,
-            LocalizedUndefined = source.LocalizedUndefined,
-            LocalizedDefault = source.LocalizedDefault,
-            LocalizedForced = source.LocalizedForced,
-            LocalizedExternal = source.LocalizedExternal,
-            LocalizedHearingImpaired = source.LocalizedHearingImpaired,
-            LocalizedLanguage = source.LocalizedLanguage,
-            LocalizedOriginal = source.LocalizedOriginal,
-            NalLengthSize = source.NalLengthSize,
-            IsInterlaced = source.IsInterlaced,
-            IsAVC = source.IsAVC,
-            ChannelLayout = source.ChannelLayout,
-            BitRate = source.BitRate,
-            BitDepth = source.BitDepth,
-            RefFrames = source.RefFrames,
-            PacketLength = source.PacketLength,
-            Channels = source.Channels,
-            SampleRate = source.SampleRate,
-            IsDefault = source.IsDefault,
-            IsForced = source.IsForced,
-            IsHearingImpaired = source.IsHearingImpaired,
-            IsOriginal = source.IsOriginal,
-            Height = source.Height,
-            Width = source.Width,
-            AverageFrameRate = source.AverageFrameRate,
-            RealFrameRate = source.RealFrameRate,
-            Profile = source.Profile,
-            Type = source.Type,
-            AspectRatio = source.AspectRatio,
-            Index = source.Index,
-            Score = source.Score,
-            IsExternal = source.IsExternal,
-            DeliveryMethod = source.DeliveryMethod,
-            DeliveryUrl = source.DeliveryUrl,
-            IsExternalUrl = source.IsExternalUrl,
-            SupportsExternalStream = source.SupportsExternalStream,
-            Path = source.Path,
-            PixelFormat = source.PixelFormat,
-            Level = source.Level,
-            IsAnamorphic = source.IsAnamorphic
-        };
+        => JsonSerializer.Deserialize<MediaStream>(JsonSerializer.Serialize(source, CloneOptions), CloneOptions)!;
 }

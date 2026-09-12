@@ -64,9 +64,11 @@ public sealed record ProfileMarker
     /// Name of the optional query parameter carrying the index of the source's video stream.
     /// </summary>
     /// <remarks>
-    /// The index is the position of the video stream inside the media source's own stream
-    /// list, which is exactly what Jellyfin's <c>-map 0:&lt;index&gt;</c> names, so the
-    /// wrapper can tell the server's numeric video map apart from somebody else's map.
+    /// The value is that stream's <c>MediaStream.Index</c> - the number of the stream inside
+    /// the file, which is exactly what Jellyfin spends on its <c>-map 0:&lt;index&gt;</c> -
+    /// and not the position the stream happens to sit at in a reported stream list, which is
+    /// the same number only when the list is in file order. It is what lets the wrapper tell
+    /// the server's numeric video map apart from somebody else's map.
     /// </remarks>
     public const string VideoQueryParameter = "video";
 
@@ -155,15 +157,16 @@ public sealed record ProfileMarker
     public string SourcePath { get; init; }
 
     /// <summary>
-    /// Gets the index of the source's video stream inside the media source's own stream
-    /// list, or null when the version names none.
+    /// Gets the index of the source's video stream - its <c>MediaStream.Index</c> - or
+    /// null when the version names none.
     /// </summary>
     /// <remarks>
     /// Zero is a value, not an absence, exactly as for the subtitle ordinal: it names the
     /// first stream of the file, which is where a single-video file puts its video. It is
     /// the number Jellyfin's own <c>-map 0:&lt;index&gt;</c> will carry for that stream, so
     /// the wrapper can recognize the server's video map and take it out of the way of the
-    /// profile's own.
+    /// profile's own. A position in a reported stream list is not the same number as soon as
+    /// the list leaves file order, so this is never derived from one.
     /// </remarks>
     public int? VideoStreamIndex { get; init; }
 
@@ -183,7 +186,8 @@ public sealed record ProfileMarker
     /// <param name="sourcePath">The rooted path of the media file the version is made from.</param>
     /// <param name="subtitleOrdinal">The subtitle ordinal to burn in, or null for no subtitles.</param>
     /// <param name="videoStreamIndex">
-    /// The index of the video stream the version reports, or null to name none.
+    /// The <c>MediaStream.Index</c> of the video stream the version reports, or null to name
+    /// none.
     /// </param>
     /// <returns>The validated marker.</returns>
     /// <exception cref="ArgumentException">

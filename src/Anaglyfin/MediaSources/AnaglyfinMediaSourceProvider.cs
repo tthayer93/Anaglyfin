@@ -412,9 +412,11 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
         // already carry the optional field; wiring a per-playback subtitle choice to
         // it, mapped through SubtitleStreamOrdinals, is the follow-up task's job.
         //
-        // The video index travels with it because the server maps the video stream by
-        // number (-map 0:<index>), and a number only the provider can name: the wrapper
-        // has no way to tell a numeric video map from a numeric audio map out of argv.
+        // The video index travels with it because the server maps the video stream by number
+        // (-map 0:<index>, the stream's own MediaStream.Index) and that number is something
+        // only the provider can name: the wrapper has no way to tell a numeric video map from
+        // a numeric audio map out of argv, and no way to know that the list it was handed
+        // skips a stream the file has.
         var marker = ProfileMarker.Create(
             profile.Id,
             sourcePath,
