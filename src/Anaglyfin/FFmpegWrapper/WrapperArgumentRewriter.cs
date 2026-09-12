@@ -1,0 +1,508 @@
+using System;
+using System.Collections.Generic;
+using Anaglyfin.Ffmpeg;
+using Anaglyfin.Markers;
+using Anaglyfin.Profiles;
+
+namespace Anaglyfin.FFmpegWrapper;
+
+/// <summary>
+/// Rewrites a received FFmpeg argument vector into the one a profile asks for.
+/// </summary>
+/// <remarks>
+/// <para>
+/// This is the whole decision the Anaglyfin FFmpeg wrapper makes, and it is deliberately
+/// free of process handling: given the argv Jellyfin built, it returns the argv the real
+/// FFmpeg-mvc binary should run. The launcher (T5b) owns starting the process, concurrency
+/// and exit codes; keeping this part pure is what lets every command below be asserted
+/// without executing anything.
+/// </para>
+/// <para>
+/// <b>Dispatch.</b> Every value introduced by <c>-i</c> is put through
+/// <see cref="ProfileMarkerParser.Parse"/>, which leaves exactly three readings: no input
+/// is a marker, so the vector is returned unchanged and the server's own command - with
+/// its hardware decode choices - runs as written (see
+/// <see cref="WrapperRewriteStatus.PassedThrough"/>); one input is a valid marker, so the
+/// command is rewritten; or an input presents itself as a marker and fails to parse, which
+/// refuses the job outright - a token that wanted to be a marker is not an ordinary media
+/// path and must never reach FFmpeg (see <see cref="WrapperRewriteStatus.RejectedMarker"/>).
+/// </para>
+/// <para>
+/// <b>Where arguments go.</b> FFmpeg binds a per-file output option to the file it opens
+/// next, so output options are only unambiguous after the last input. Everything this
+/// rewriter inserts therefore lands immediately after the last <c>-i</c> value, and
+/// everything it examines or removes for a conflict lives in that same output segment: an
+/// option written before an input belongs to that input and is left alone.
+/// </para>
+/// <para>
+/// <b>What a rewrite does.</b> The marker token is replaced by the real source path the
+/// provider put into it. Then, through <see cref="IFfmpegProfileArgumentBuilder"/>, the
+/// profile's own view selection and filter chain are inserted, video maps that would
+/// compete with them are removed, subtitle stream maps give way to <c>-sn</c> when the
+/// profile burns subtitles in, and a linear profile filter is appended to an existing
+/// <c>-vf</c> chain rather than replacing it. Audio maps, encoder, muxer and HLS arguments
+/// are never touched: they are Jellyfin's business, and the product requirement is that
+/// Anaglyfin playback differs from stock playback in picture and not in delivery.
+/// </para>
+/// <para>
+/// <b>Where it refuses.</b> A profile that owns the output's video pipeline cannot share
+/// that pipeline with a filtergraph someone else wrote: this wrapper merges and inserts, it
+/// does not parse or graft foreign filter text (which is also a security requirement -
+/// nothing in a received command line is ever treated as filter syntax), so an existing
+/// <c>-filter_complex</c> in the output segment refuses the job. So does a marker that is
+/// not the first input, because every argument the builder emits addresses input <c>0</c>.
+/// Both refusals say which rule the command broke, and both return no vector at all.
+/// </para>
+/// </remarks>
+public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
+{
+    /// <summary>The FFmpeg option that introduces an input file; a marker rides on its value.</summary>
+    public const string InputFileArgument = "-i";
+
+    /// <summary>The <c>-map</c> option token, shared with the command builder.</summary>
+    public const string MapArgument = FfmpegProfileArgumentBuilder.MapArgument;
+
+    /// <summary>The <c>-vf</c> option token, shared with the command builder.</summary>
+    public const string VideoFilterArgument = FfmpegProfileArgumentBuilder.VideoFilterArgument;
+
+    /// <summary>The <c>-filter_complex</c> option token, shared with the command builder.</summary>
+    public const string FilterComplexArgument = FfmpegProfileArgumentBuilder.FilterComplexArgument;
+
+    /// <summary>
+    /// The <c>-filter_complex_script</c> option token. It carries a filtergraph just like
+    /// <see cref="FilterComplexArgument"/> does, only from a file, and is recognised for
+    /// the same reason.
+    /// </summary>
+    public const string FilterComplexScriptArgument = "-filter_complex_script";
+
+    /// <summary>The <c>-sn</c> option token: the output carries no subtitle stream.</summary>
+    public const string DisableSubtitlesArgument = "-sn";
+
+    private readonly IProfileCatalog _catalog;
+    private readonly IFfmpegProfileArgumentBuilder _builder;
+
+    /// <summary>
+    /// Initializes a rewriter over a profile catalog and a command builder.
+    /// </summary>
+    /// <param name="catalog">
+    /// The profile allowlist a marker id is resolved against. Out of process this is
+    /// <see cref="Profiles.ProfileCatalog"/>, the same built-in catalog the media source
+    /// provider offered versions from.
+    /// </param>
+    /// <param name="builder">
+    /// The command builder a parsed profile becomes arguments with; production uses
+    /// <see cref="FfmpegProfileArgumentBuilder.Shared"/>.
+    /// </param>
+    /// <exception cref="ArgumentNullException">Either argument is null.</exception>
+    public WrapperArgumentRewriter(IProfileCatalog catalog, IFfmpegProfileArgumentBuilder builder)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(builder);
+
+        _catalog = catalog;
+        _builder = builder;
+    }
+
+    /// <summary>
+    /// Gets the shared instance wired to the built-in catalog and the shared builder.
+    /// </summary>
+    /// <remarks>
+    /// The wrapper is an out-of-process executable and has no access to the plugin's
+    /// container, so this is the entry point it uses. Both collaborators are stateless,
+    /// which makes the instance safe to share across requests.
+    /// </remarks>
+    public static WrapperArgumentRewriter Shared { get; } =
+        new(new ProfileCatalog(), FfmpegProfileArgumentBuilder.Shared);
+
+    /// <inheritdoc />
+    public WrapperRewriteResult Rewrite(IReadOnlyList<string> arguments)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+
+        var firstInputIndex = -1;
+        var lastInputIndex = -1;
+        var markerIndex = -1;
+        MarkerParseResult? marker = null;
+        MarkerParseResult? rejected = null;
+
+        for (var index = 0; index < arguments.Count; index++)
+        {
+            // A trailing "-i" without a value is not Anaglyfin's to judge: there is no
+            // token to classify, and FFmpeg's own argument check is the right place for it.
+            if (!IsInputOption(arguments[index]) || index + 1 >= arguments.Count)
+            {
+                continue;
+            }
+
+            var valueIndex = index + 1;
+            if (firstInputIndex < 0)
+            {
+                firstInputIndex = valueIndex;
+            }
+
+            lastInputIndex = valueIndex;
+
+            // The value is data, never an option: step over it so a path that happens to
+            // read like an option token cannot be mistaken for one.
+            index = valueIndex;
+
+            var parsed = ProfileMarkerParser.Parse(arguments[valueIndex]);
+            if (parsed.IsSuccess)
+            {
+                if (marker is null)
+                {
+                    marker = parsed;
+                    markerIndex = valueIndex;
+                }
+            }
+            else if (rejected is null && parsed.Status != MarkerParseStatus.NotMarker)
+            {
+                rejected = parsed;
+            }
+        }
+
+        // A marker-shaped token that failed to parse outranks everything else in the
+        // command, including a valid marker elsewhere: a vector carrying both was not
+        // assembled by the media source provider, and guessing which half to believe is
+        // how a marker URL ends up being opened as a media file.
+        if (rejected is not null)
+        {
+            return WrapperRewriteResult.Failure(
+                WrapperRewriteStatus.RejectedMarker,
+                rejected.Error ?? "An input of the command is not a valid Anaglyfin marker.",
+                rejected.Status);
+        }
+
+        if (marker is null)
+        {
+            return WrapperRewriteResult.PassedThrough(arguments);
+        }
+
+        return RewriteMarker(arguments, marker.Marker!, markerIndex, firstInputIndex, lastInputIndex);
+    }
+
+    /// <summary>
+    /// Applies the profile of one validated marker to the command that carried it.
+    /// </summary>
+    /// <param name="arguments">The received vector.</param>
+    /// <param name="marker">The parsed marker.</param>
+    /// <param name="markerIndex">Index of the token the marker arrived in.</param>
+    /// <param name="firstInputIndex">Index of the first input value on the command.</param>
+    /// <param name="lastInputIndex">Index of the last input value on the command.</param>
+    /// <returns>The rewrite outcome.</returns>
+    private WrapperRewriteResult RewriteMarker(
+        IReadOnlyList<string> arguments,
+        ProfileMarker marker,
+        int markerIndex,
+        int firstInputIndex,
+        int lastInputIndex)
+    {
+        // Every map value and every filter input label the builder emits addresses input
+        // 0, which is the marker's own file only while the marker is the first input.
+        // Rewriting any other shape would apply the profile to somebody else's stream.
+        if (markerIndex != firstInputIndex)
+        {
+            return WrapperRewriteResult.Failure(
+                WrapperRewriteStatus.UnsupportedCommandShape,
+                "An Anaglyfin marker has to be the first input of the command, because every profile argument addresses input 0.");
+        }
+
+        if (!_catalog.TryGetProfile(marker.ProfileId, out var profile))
+        {
+            return WrapperRewriteResult.Failure(
+                WrapperRewriteStatus.UnknownProfile,
+                $"'{marker.ProfileId}' parsed from the marker is not a profile of this build's catalog, so no command can be built for it.");
+        }
+
+        // Both collaborators refuse instead of improvising: the builder rejects an id, an
+        // output code or a colour set it was not built to serve, the burn-in rejects a path
+        // that cannot denote a file. Neither refusal is a reason to run the received command
+        // as written, which is what a degraded pass-through would do, so both become a
+        // refusal of this rewrite.
+        ProfileRewrite rewrite;
+        try
+        {
+            rewrite = _builder.Build(profile, ToSubtitleBurnIn(marker));
+        }
+        catch (ArgumentException exception)
+        {
+            return WrapperRewriteResult.Failure(WrapperRewriteStatus.UnknownProfile, exception.Message);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return WrapperRewriteResult.Failure(WrapperRewriteStatus.UnknownProfile, exception.Message);
+        }
+
+        return ApplyRewrite(arguments, marker, markerIndex, lastInputIndex, rewrite);
+    }
+
+    /// <summary>
+    /// Splices a built rewrite into the output segment of the received vector.
+    /// </summary>
+    private static WrapperRewriteResult ApplyRewrite(
+        IReadOnlyList<string> arguments,
+        ProfileMarker marker,
+        int markerIndex,
+        int lastInputIndex,
+        ProfileRewrite rewrite)
+    {
+        // Only a profile with a map of its own may take other video maps away: the plain
+        // 2D profile inserts nothing, so removing the command's video map would leave the
+        // output without video at all.
+        var ownsVideoPipeline = rewrite.VideoMap is not null;
+
+        // The received vector is never mutated: removals and replacements are recorded by
+        // index and applied while the new vector is built, so one pass over the output
+        // segment is enough and no index can shift under another decision.
+        var removals = new HashSet<int>();
+        var replacements = new Dictionary<int, string> { [markerIndex] = marker.SourcePath };
+
+        var existingGraphIndex = -1;
+        var existingFilterValueIndex = -1;
+        var subtitlesAlreadyDisabled = false;
+
+        for (var index = lastInputIndex + 1; index < arguments.Count; index++)
+        {
+            var token = arguments[index];
+
+            if (IsMapOption(token) && index + 1 < arguments.Count)
+            {
+                var mapValue = arguments[index + 1];
+                if ((ownsVideoPipeline && IsConflictingVideoMap(mapValue))
+                    || (rewrite.ShouldSuppressSubtitleStreams && IsSubtitleMap(mapValue)))
+                {
+                    removals.Add(index);
+                    removals.Add(index + 1);
+                }
+            }
+            else if (IsVideoFilterOption(token) && index + 1 < arguments.Count)
+            {
+                // FFmpeg keeps the last value of a repeated option, so the chain the
+                // profile extends is the last one on the command.
+                existingFilterValueIndex = index + 1;
+            }
+            else if (IsFilterGraphOption(token))
+            {
+                existingGraphIndex = index;
+            }
+            else if (IsSubtitleDisableOption(token))
+            {
+                subtitlesAlreadyDisabled = true;
+            }
+        }
+
+        if (ownsVideoPipeline && existingGraphIndex >= 0)
+        {
+            return WrapperRewriteResult.Failure(
+                WrapperRewriteStatus.IncompatibleFilterGraph,
+                "The command already carries a filter graph, and this profile has to own the video pipeline of the output it is rewritten into.");
+        }
+
+        var insertions = new List<string>();
+
+        if (rewrite.FilterComplex is { } filterComplex)
+        {
+            insertions.Add(FilterComplexArgument);
+            insertions.Add(filterComplex);
+        }
+
+        if (rewrite.VideoMap is { } videoMap)
+        {
+            insertions.Add(MapArgument);
+            insertions.Add(videoMap);
+        }
+
+        // The builder already merged the profile conversion and the subtitle burn-in into
+        // one chain where they belong together, so the chain to splice is the one in
+        // InsertArguments rather than either half on its own.
+        if (ValueAfter(rewrite.InsertArguments, VideoFilterArgument) is { } profileFilter)
+        {
+            if (existingFilterValueIndex >= 0)
+            {
+                replacements[existingFilterValueIndex] = AppendToFilterChain(arguments[existingFilterValueIndex], profileFilter);
+            }
+            else
+            {
+                insertions.Add(VideoFilterArgument);
+                insertions.Add(profileFilter);
+            }
+        }
+
+        // Subtitles reach a converted picture through the burn-in filter alone; a mapped
+        // or codec-level subtitle stream on top of it would render the text twice.
+        if (rewrite.ShouldSuppressSubtitleStreams && !subtitlesAlreadyDisabled)
+        {
+            insertions.Add(DisableSubtitlesArgument);
+        }
+
+        return WrapperRewriteResult.Rewritten(
+            Rebuild(arguments, lastInputIndex, insertions, removals, replacements),
+            rewrite.ProfileId);
+    }
+
+    /// <summary>
+    /// Turns the subtitle ordinal of a marker into the burn-in the profile asks for.
+    /// </summary>
+    /// <remarks>
+    /// The filter re-opens the film by name to render its text, so the burn-in carries the
+    /// marker's real source path and not the marker itself. A marker without an ordinal is
+    /// the subtitle-free version, which still suppresses subtitle streams.
+    /// </remarks>
+    private static SubtitleBurnIn? ToSubtitleBurnIn(ProfileMarker marker)
+        => marker.SubtitleOrdinal is int ordinal ? new SubtitleBurnIn(marker.SourcePath, ordinal) : null;
+
+    /// <summary>
+    /// Builds the rewritten vector: replacements in place, removals dropped, insertions
+    /// after the last input.
+    /// </summary>
+    private static IReadOnlyList<string> Rebuild(
+        IReadOnlyList<string> arguments,
+        int insertAfterIndex,
+        IReadOnlyList<string> insertions,
+        HashSet<int> removals,
+        IReadOnlyDictionary<int, string> replacements)
+    {
+        var rewritten = new List<string>(arguments.Count + insertions.Count);
+
+        for (var index = 0; index < arguments.Count; index++)
+        {
+            if (!removals.Contains(index))
+            {
+                rewritten.Add(replacements.TryGetValue(index, out var replacement) ? replacement : arguments[index]);
+            }
+
+            if (index == insertAfterIndex)
+            {
+                rewritten.AddRange(insertions);
+            }
+        }
+
+        return rewritten;
+    }
+
+    /// <summary>
+    /// Reads the value that follows an option token in a generated argument list.
+    /// </summary>
+    private static string? ValueAfter(IReadOnlyList<string> arguments, string option)
+    {
+        for (var index = 0; index < arguments.Count - 1; index++)
+        {
+            if (string.Equals(arguments[index], option, StringComparison.Ordinal))
+            {
+                return arguments[index + 1];
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Appends the profile's chain to an existing <c>-vf</c> chain.
+    /// </summary>
+    /// <remarks>
+    /// Comma-chaining keeps whatever the command already asked for and puts the profile
+    /// conversion behind it, which is also where a burn-in belongs; replacing the chain
+    /// would silently drop server-side filtering. An empty existing chain is not chained,
+    /// because FFmpeg reads a leading comma as an empty filter name.
+    /// </remarks>
+    private static string AppendToFilterChain(string existingChain, string profileFilter)
+        => string.IsNullOrEmpty(existingChain) ? profileFilter : existingChain + "," + profileFilter;
+
+    private static bool IsInputOption(string? token)
+        => string.Equals(token, InputFileArgument, StringComparison.Ordinal);
+
+    private static bool IsMapOption(string? token)
+        => string.Equals(token, MapArgument, StringComparison.Ordinal);
+
+    private static bool IsVideoFilterOption(string? token)
+        => string.Equals(token, VideoFilterArgument, StringComparison.Ordinal);
+
+    private static bool IsSubtitleDisableOption(string? token)
+        => string.Equals(token, DisableSubtitlesArgument, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Whether a token carries a filtergraph this wrapper did not write.
+    /// </summary>
+    /// <remarks>
+    /// Both spellings count: a graph read from a script file is exactly as foreign to this
+    /// rewriter as one written inline, and the compatibility question is the same.
+    /// </remarks>
+    private static bool IsFilterGraphOption(string? token)
+        => string.Equals(token, FilterComplexArgument, StringComparison.Ordinal)
+           || string.Equals(token, FilterComplexScriptArgument, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Whether a <c>-map</c> value competes with the profile's own video selection.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two shapes do. A stream specifier of the video type - <c>0:v</c>, <c>0:v:0</c>,
+    /// <c>0:v:view:all</c>, with or without the exact-index spelling - would map a second
+    /// video into an output that the profile already maps, which on a MVC file means the
+    /// plain base view next to the profile's all-view pivot. A filtergraph output label is
+    /// video too as far as this rewriter is concerned: graphs are the profile's own
+    /// business, and the only label this command may map after a rewrite is the one the
+    /// profile inserted.
+    /// </para>
+    /// <para>
+    /// Anything else is somebody else's stream and stays: audio and subtitle specifiers,
+    /// data streams, and whole-file maps, which name no type at all and would drop audio
+    /// as easily as video if this removed them.
+    /// </para>
+    /// </remarks>
+    private static bool IsConflictingVideoMap(string? mapValue)
+    {
+        if (string.IsNullOrEmpty(mapValue))
+        {
+            return false;
+        }
+
+        return IsFilterGraphLabel(mapValue) || StreamSpecifierType(mapValue) == 'v';
+    }
+
+    /// <summary>
+    /// Whether a <c>-map</c> value selects a subtitle stream of an input file.
+    /// </summary>
+    private static bool IsSubtitleMap(string? mapValue)
+        => !string.IsNullOrEmpty(mapValue) && StreamSpecifierType(mapValue) == 's';
+
+    /// <summary>
+    /// The lowercased stream type a map value names, or <c>\0</c> for a value that names
+    /// none this rewriter reasons about.
+    /// </summary>
+    /// <remarks>
+    /// FFmpeg's specifier grammar is <c>fileIndex:streamType[:detail]</c> - <c>0:v</c>,
+    /// <c>0:v:0</c>, <c>0:v:view:all</c>, <c>0:a:0?</c> - or the bare type letter, with the
+    /// uppercase spelling asking for the exact index. Lowercasing keeps both spellings, and
+    /// only the type position is read: the whole file (<c>0</c>) and its negation
+    /// (<c>-0</c>) name no type and answer <c>\0</c>.
+    /// </remarks>
+    private static char StreamSpecifierType(string mapValue)
+    {
+        var separator = mapValue.IndexOf(':');
+
+        if (separator < 0)
+        {
+            return mapValue.Length == 1 && char.IsAsciiLetter(mapValue[0])
+                ? char.ToLowerInvariant(mapValue[0])
+                : '\0';
+        }
+
+        return separator + 1 < mapValue.Length
+            ? char.ToLowerInvariant(mapValue[separator + 1])
+            : '\0';
+    }
+
+    /// <summary>
+    /// Whether a value is a single filtergraph output label, <c>[name]</c>.
+    /// </summary>
+    /// <remarks>
+    /// A <c>-map</c> value holds one label, so a second closing bracket inside the value
+    /// means the text is not a label at all and is treated as an ordinary map value.
+    /// </remarks>
+    private static bool IsFilterGraphLabel(string value)
+        => value.Length >= 3
+           && value[0] == '['
+           && value[^1] == ']'
+           && value.IndexOf(']', 1) == value.Length - 1;
+}
