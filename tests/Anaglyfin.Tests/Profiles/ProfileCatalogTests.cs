@@ -318,7 +318,7 @@ public class ProfileCatalogTests
         configuration.EnabledProfileIds.Add(ProfileIds.SideBySideFull);
 
         Assert.Equal(ProfileIds.TwoDBase, _catalog.ResolveFallbackProfileId(configuration));
-        Assert.False(_catalog.GetEnabledProfileIds(configuration).Contains(ProfileIds.TwoDBase));
+        Assert.DoesNotContain(ProfileIds.TwoDBase, _catalog.GetEnabledProfileIds(configuration));
         Assert.Equal(ProfileKind.TwoDimensional, _catalog.GetFallbackProfile(configuration).Kind);
     }
 
