@@ -309,12 +309,15 @@ consults those flags for video, only the reported codec. The two fields that do 
 outcome are:
 
 - `"Codec": "mvc"` on the video stream - no client transcode profile names that codec, so
-  there is nothing to copy and the server must encode. It is also the honest name for what
-  the file holds. The original library source keeps reporting its real codec; the `mvc`
+  there is nothing to copy and the server must encode. That name is the lever and not a
+  description of the track (ffprobe reports an MVC video as `hevc`); it is the only field the
+  clone differs in, so the resolution, bit depth and HDR range the file was probed with stay
+  on the version. The original library source keeps reporting its real codec; the `mvc`
   stream is a clone belonging to this version alone.
-- `&video=0` in `Path` - the marker naming the position the video stream holds in the list
-  above, so the wrapper can recognise the numbered `-map 0:0` the server builds from it.
-  A source with no video stream carries no `video` parameter at all.
+- `&video=<index>` in `Path` - the marker naming the video stream by its `Index` above, which
+  is the number of that stream inside the file and the one the server spends on a
+  `-map 0:<index>` for it. A source whose video stream carries no known index writes no
+  `video` parameter at all, and keeps the codec report that forces the encode.
 
 Original source stays first and stays playable; the `Id` changes with the profile and not
 with the client; the item's own source is untouched.
@@ -360,10 +363,12 @@ jellyfin
   the copy form of a Jellyfin command carries no encoder stack to write into, so the wrapper
   refuses it and says `refused: the command was not started (ServerChoseVideoCopy)` in the
   log rather than passing a command through that would have played the raw MVC track;
-- no numbered map names the marker's video index. `-map 0:0` (or `-map 0:0?`) in the command
-  the wrapper received is removed from the child's, because argv alone cannot tell that
-  `0` from an audio stream - the marker's `video=<index>` is what identifies it. Audio and
-  subtitle maps, negative maps and maps of other inputs survive untouched.
+- no numbered map names the marker's video index. `-map 0:3` in the command the wrapper
+  received is removed from the child's when the marker said `video=3`, because argv alone
+  cannot tell that `3` from an audio stream - the marker's index is what identifies it. Audio
+  and subtitle maps, exclusion maps (`-map -0:a`, `-map -0:s`, `-map -0`) and maps of other
+  inputs survive untouched; the one exclusion that does not is `-map -0:v`, which would
+  subtract the picture the profile had just mapped.
 
 The same command lines are written to the server's transcode logs, which is the artifact
 to capture rather than a screenshot:

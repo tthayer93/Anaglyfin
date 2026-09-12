@@ -343,6 +343,10 @@ For each alternate source, check:
 - [ ] The source id changes when the profile id changes.
 - [ ] The video stream of an Anaglyfin source reports `Codec` = `mvc`, while the original library
       source on the same item still reports its real codec (`hevc`, `h264`, ...).
+- [ ] Every other field of that stream - resolution, bit depth, frame rate, colour transfer, the
+      Dolby Vision flags - matches the original source's video stream. The version re-labels one
+      field; a client that shows a stream title built from the codec will show `MVC` where the
+      original shows `HEVC`, and that is the only visible difference.
 - [ ] Resume position and seek behavior remain reasonable when switching between versions.
 - [ ] The original library source remains playable and unchanged.
 - [ ] Changing enabled profiles changes the offered versions without a server restart.
@@ -360,10 +364,13 @@ video stream never reads either flag anyway. So:
 - [ ] Do **not** use the response flags to judge whether a version will be converted. The
       evidence for that is the transcoding URL and the FFmpeg command line: see V7.
 
-What the plugin does instead is report the version's video with a codec no client's
-transcode profile can copy (`mvc`). The server then builds a real encode command, which is
-visible in the transcoding URL as a video codec that is not the source's own, and in the
-child FFmpeg command as `-codec:v <encoder>`.
+What the plugin does instead is report the version's video with a codec no client's transcode
+profile names (`mvc`), which leaves the server no codec it is allowed to copy and therefore no
+copy to build. The name is the lever, not a description: ffprobe reports an MVC track as
+`hevc`, and the version's stream report differs from the item's own in that one field and
+nothing else. The server then builds a real encode command, which is visible in the
+transcoding URL as a video codec that is not the source's own, and in the child FFmpeg command
+as `-codec:v <encoder>`.
 
 ## V6. Marker transport
 
@@ -386,10 +393,15 @@ Example for:
 http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmovies%2FMovie%20%282010%29%2FMovie.2010.3D.mkv&video=0
 ```
 
-The `video` parameter names the position of the video stream inside the source's own stream
-list - the same number Jellyfin spends on its `-map 0:<index>`. It is what lets the wrapper
-recognize the server's video map and remove it beside the profile's own; without it the
-server's numeric video map survives next to the profile's, and the output carries two videos.
+The `video` parameter names the source's video stream by its own stream index - `MediaStream.Index`
+in the stream report, the number of that stream inside the file, and therefore the number
+Jellyfin spends on its `-map 0:<index>`. It is not the position the stream happens to sit at in
+the reported list: the two are the same number only while the list is in file order, and a
+report that skips a stream the file carries (or adds one it does not) separates them. The
+parameter is what lets the wrapper recognize the server's video map and remove it beside the
+profile's own; without it the server's numeric video map survives next to the profile's, and
+the output carries two videos. A source whose video stream carries no known index omits the
+parameter rather than guessing one, and keeps the codec report that forces the encode.
 
 MVP markers do not include `subtitle`:
 
@@ -610,16 +622,21 @@ Expected shape:
 
 ### 7.7 The server's numbered maps
 
-Jellyfin's HLS commands name the streams they chose by position: `-map 0:<index>`. When a
-profile owns the video pipeline, the map the marker's `video=<index>` names is the server's
-video map, and the wrapper removes it; every other map is somebody else's stream.
+Jellyfin's HLS commands name the streams they chose by number: `-map 0:<index>`, the number
+being that stream's index inside the file. When a profile owns the video pipeline, the map the
+marker's `video=<index>` names is the server's video map, and the wrapper removes it; every
+other map is somebody else's stream.
 
 - [ ] The rewritten command carries exactly one video map, the profile's own.
 - [ ] The server's `-map 0:<index>` for the video is gone, including the optional
       `-map 0:<index>?` spelling.
 - [ ] The server's numbered audio and subtitle maps are still there, in the order the server
       wrote them.
-- [ ] Negative maps (`-map -0:a`, `-map -0:s`) survive.
+- [ ] Exclusion maps survive: `-map -0:a`, `-map -0:s` and a bare `-map -0` are the server
+      taking streams out of the output, and removing one would put the stream back -
+      subtitles under a profile that burns its own in being the case that matters.
+      (`-map -0:v` is the one exclusion the profile does take away: written after the
+      profile's own video map it would subtract that map and leave an output with no picture.)
 - [ ] A 2D base command keeps every map the server wrote: that profile owns no video pipeline
       and takes nothing away.
 
