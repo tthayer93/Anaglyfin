@@ -218,7 +218,9 @@ public sealed class PluginManifest
                 + " name and the installed assembly name, so it cannot contain path separators or whitespace.");
         }
 
-        if (!Version.TryParse(targetAbi, out var abi) || abi.Major < MinimumTargetAbiMajor)
+        // Qualified: this type's own Version property is the declared package version, not the
+        // System.Version the target ABI is parsed as.
+        if (!System.Version.TryParse(targetAbi, out var abi) || abi.Major < MinimumTargetAbiMajor)
         {
             throw new PackagingError(
                 $"The identity manifest in {origin} declares <targetAbi>'{targetAbi}'. This repository packages for"

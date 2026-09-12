@@ -96,7 +96,7 @@ public sealed class WrapperArtifact
                 | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
         }
 
-        return Measure(stagedPath, fileName, runtime);
+        return Measure(artifactDirectory, fileName, runtime);
     }
 
     /// <summary>
@@ -143,14 +143,17 @@ public sealed class WrapperArtifact
         }
 
         Span<byte> header = new byte[HeaderLength];
+        int read;
 
         using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            if (stream.ReadAtLeast(header, HeaderLength, throwOnEndOfStream: false) != HeaderLength)
-            {
-                throw new PackagingError(
-                    $"The file called '{path}' ({subject}) is too short to be a Linux executable.");
-            }
+            read = stream.ReadAtLeast(header, HeaderLength, throwOnEndOfStream: false);
+        }
+
+        if (read < 4)
+        {
+            throw new PackagingError(
+                $"The file called '{path}' ({subject}) is too short to be a Linux executable.");
         }
 
         if (header[0] != 0x7F || header[1] != (byte)'E' || header[2] != (byte)'L' || header[3] != (byte)'F')
@@ -158,6 +161,12 @@ public sealed class WrapperArtifact
             throw new PackagingError(
                 $"The file called '{path}' ({subject}) is not an ELF executable."
                 + " Publish the wrapper for linux-x64; a managed DLL or a script is not what the server starts.");
+        }
+
+        if (read < HeaderLength)
+        {
+            throw new PackagingError(
+                $"The file called '{path}' ({subject}) starts as an ELF binary but ends before its header does.");
         }
 
         const byte elfClass64 = 2;

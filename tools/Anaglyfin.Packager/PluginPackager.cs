@@ -194,7 +194,9 @@ public static class PluginPackager
 
     private static void RequireVersionMatchesManifest(PluginManifest manifest, PluginAssemblyProbe probe)
     {
-        if (probe.Version is null)
+        var built = probe.Version;
+
+        if (built is null)
         {
             throw new PackagingError(
                 $"'{probe.AssemblyPath}' declares no assembly version, while the manifest declares '{manifest.Version}'.");
@@ -203,8 +205,8 @@ public static class PluginPackager
         var declared = Version.Parse(manifest.Version);
 
         Require(
-            SameVersion(declared, probe.Version),
-            $"the manifest declares version '{manifest.Version}' but the built assembly is version '{probe.Version}'."
+            SameVersion(declared, built),
+            $"the manifest declares version '{manifest.Version}' but the built assembly is version '{built}'."
             + " Rebuild before packaging, or fix the manifest.");
     }
 
