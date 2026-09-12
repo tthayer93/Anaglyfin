@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using Anaglyfin.Ffmpeg;
 using Anaglyfin.Markers;
 using Anaglyfin.Profiles;
@@ -50,6 +51,20 @@ namespace Anaglyfin.FFmpegWrapper;
 /// carried no map at all - see <see cref="OptionalAudioMapValue"/>.
 /// </para>
 /// <para>
+/// <b>Which video maps are the profile's competition.</b> Two spellings, because the
+/// server has two reasons to write one. A specifier that names the video type -
+/// <c>0:v</c>, <c>0:v:0</c>, <c>0:v:view:all</c>, a filtergraph label - names video
+/// whatever else it says, and so does the exclusion of that type, which would take the
+/// profile's own picture back out of the output. A plain <c>-map 0:2</c> names nothing of
+/// the kind: it is a stream number, and FFmpeg's own grammar gives a number no type. That
+/// one is the shape Jellyfin's HLS commands actually carry, and the rewriter only knows
+/// which numbered stream is video because the marker says so - <c>video=&lt;index&gt;</c>
+/// is the provider naming the video stream of its own source by its stream index, the same
+/// number the server's <c>-map 0:&lt;index&gt;</c> spends on it. A numbered map for any
+/// other stream, and every audio, subtitle, whole-file and exclusion map that does not
+/// name video, stays exactly where the server put it.
+/// </para>
+/// <para>
 /// <b>Where it refuses.</b> A profile that owns the output's video pipeline cannot share
 /// that pipeline with a filtergraph someone else wrote: this wrapper merges and inserts, it
 /// does not parse or graft foreign filter text (which is also a security requirement -
@@ -57,7 +72,11 @@ namespace Anaglyfin.FFmpegWrapper;
 /// <c>-filter_complex</c> in the output segment refuses the job. So does a marker that is
 /// not the first input, because every argument the builder emits addresses input <c>0</c>,
 /// and so does a second valid marker anywhere in the vector: a rewrite resolves exactly
-/// one marker, and the one left behind would reach FFmpeg as a file to open. Every one of
+/// one marker, and the one left behind would reach FFmpeg as a file to open. And so does a
+/// command that copies its video - <c>-c copy</c>, <c>-c:v copy</c>, <c>-codec:v:0 copy</c>,
+/// <c>-vcodec copy</c> - because copying a stream is the server deciding that no
+/// conversion happens on this output, which would leave the profile's arguments present but
+/// inert (see <see cref="WrapperRewriteStatus.ServerChoseVideoCopy"/>). Every one of
 /// these refusals says which rule the command broke, and every one returns no vector at
 /// all.
 /// </para>
@@ -87,6 +106,21 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     public const string DisableSubtitlesArgument = "-sn";
 
     /// <summary>
+    /// The <c>copy</c> codec value: what a codec option carries when it asks FFmpeg to move
+    /// a stream through the output untouched instead of encoding it.
+    /// </summary>
+    public const string StreamCopyValue = "copy";
+
+    /// <summary>The long spelling of the option that sets a stream's codec.</summary>
+    public const string CodecOptionName = "codec";
+
+    /// <summary>The short spelling of the option that sets a stream's codec.</summary>
+    public const string ShortCodecOptionName = "c";
+
+    /// <summary>The option that sets the video codec without naming a stream specifier.</summary>
+    public const string VideoCodecOptionName = "vcodec";
+
+    /// <summary>
     /// The <c>-map</c> value that adds an input's audio to an output this rewriter has
     /// already given a video map of its own.
     /// </summary>
@@ -105,6 +139,13 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// </para>
     /// </remarks>
     public const string OptionalAudioMapValue = "0:a?";
+
+    /// <summary>
+    /// The prefix a <c>-map</c> value carries when it numbers a stream of the first input -
+    /// the input a marker is allowed to be, and therefore the only input whose numbered
+    /// maps the marker's <c>video=&lt;index&gt;</c> can identify.
+    /// </summary>
+    private const string FirstInputMapPrefix = "0:";
 
     private readonly IProfileCatalog _catalog;
     private readonly IFfmpegProfileArgumentBuilder _builder;
@@ -317,6 +358,12 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         var existingFilterValueIndex = -1;
         var subtitlesAlreadyDisabled = false;
 
+        // Whether the server told FFmpeg to copy the video instead of encoding one. The
+        // profile's own view selection and filters can only act on a picture they produce,
+        // so on such a command the whole rewrite would be decoration; the check and the
+        // refusal live together below.
+        var serverChoseVideoCopy = false;
+
         for (var index = lastInputIndex + 1; index < arguments.Count; index++)
         {
             var token = arguments[index];
@@ -328,7 +375,7 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
                 mapsReceived = true;
 
                 var mapValue = arguments[index + 1];
-                if ((ownsVideoPipeline && IsConflictingVideoMap(mapValue))
+                if ((ownsVideoPipeline && (IsConflictingVideoMap(mapValue) || IsNumberedVideoMap(mapValue, marker.VideoStreamIndex)))
                     || (rewrite.ShouldSuppressSubtitleStreams && IsSubtitleMap(mapValue)))
                 {
                     removals.Add(index);
@@ -349,6 +396,20 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
             {
                 subtitlesAlreadyDisabled = true;
             }
+            else if (index + 1 < arguments.Count && IsVideoCodecCopyOption(token, arguments[index + 1]))
+            {
+                serverChoseVideoCopy = true;
+            }
+        }
+
+        // Checked before the filter graph, because it is the earlier question: a command
+        // that copies its video has decided not to produce a picture at all, whatever else
+        // is on the command line.
+        if (ownsVideoPipeline && serverChoseVideoCopy)
+        {
+            return WrapperRewriteResult.Failure(
+                WrapperRewriteStatus.ServerChoseVideoCopy,
+                "The command copies its video stream, so the view selection and filters this profile asks for would have no encoded output to reach; the version was asked to convert a picture the server decided to pass through.");
         }
 
         if (ownsVideoPipeline && existingGraphIndex >= 0)
@@ -521,6 +582,18 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// data streams, and whole-file maps, which name no type at all and would drop audio
     /// as easily as video if this removed them.
     /// </para>
+    /// <para>
+    /// A negative value of the video type - <c>-map -0:v</c> - counts as competition too,
+    /// which is the opposite of the rule
+    /// <see cref="IsSubtitleMap"/> follows for the subtitle type, and the difference is where
+    /// the arguments land: what this rewriter inserts goes immediately after the last input,
+    /// ahead of every map the server wrote, so a standing <c>-map -0:v</c> would subtract the
+    /// views the profile has just mapped and produce an output with no picture in it. A
+    /// subtitle exclusion cannot do that to a profile - its own suppression is the same
+    /// direction of travel - so those are left alone, and so is every exclusion the server
+    /// writes of a stream number, which this rewriter's numbered rule has no part in: that
+    /// rule names the stream the server chose to map, not the ones it chose to drop.
+    /// </para>
     /// </remarks>
     private static bool IsConflictingVideoMap(string? mapValue)
     {
@@ -535,8 +608,28 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// <summary>
     /// Whether a <c>-map</c> value selects a subtitle stream of an input file.
     /// </summary>
+    /// <remarks>
+    /// An exclusion is not a selection. <c>-map -0:s</c> takes subtitle streams <em>away</em>
+    /// from an output, which is the direction subtitle suppression is already going in: the
+    /// profile asks for with <c>-sn</c>. Removing that map would add subtitles back, so an
+    /// exclusion of the subtitle type is left where the server wrote it, exactly as an
+    /// exclusion of audio is. (A negative <em>video</em> map is not treated this way, and the
+    /// reason is order rather than type: this rewriter inserts its own video map immediately
+    /// after the last input, which is ahead of every map the server wrote, so a standing
+    /// <c>-map -0:v</c> would subtract the streams the profile had just mapped. See
+    /// <see cref="IsConflictingVideoMap"/>.)
+    /// </remarks>
     private static bool IsSubtitleMap(string? mapValue)
-        => !string.IsNullOrEmpty(mapValue) && StreamSpecifierType(mapValue) == 's';
+        => !string.IsNullOrEmpty(mapValue)
+           && !IsStreamExclusion(mapValue)
+           && StreamSpecifierType(mapValue) == 's';
+
+    /// <summary>
+    /// Whether a <c>-map</c> value is an exclusion - the <c>-map -0:s</c> spelling, which
+    /// removes streams already selected rather than naming one to add.
+    /// </summary>
+    private static bool IsStreamExclusion(string mapValue)
+        => mapValue.Length > 0 && mapValue[0] == '-';
 
     /// <summary>
     /// The lowercased stream type a map value names, or <c>\0</c> for a value that names
@@ -563,6 +656,138 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         return separator + 1 < mapValue.Length
             ? char.ToLowerInvariant(mapValue[separator + 1])
             : '\0';
+    }
+
+    /// <summary>
+    /// Whether a <c>-map</c> value numbers the video stream the marker named.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The server's own HLS commands name the stream they chose by number -
+    /// <c>-map 0:&lt;index&gt;</c>, or <c>-map 0:&lt;index&gt;?</c> where it wants the map to
+    /// survive a file that turns out not to carry it - and a bare number carries no stream
+    /// type for <see cref="StreamSpecifierType"/> to read. This is therefore the one map
+    /// question this rewriter cannot answer out of the argv alone, and the one the marker
+    /// contract answers: the provider names its video stream by its own stream index
+    /// (<c>MediaStream.Index</c>), which is the number of that stream inside the file and so
+    /// the number a <c>-map 0:&lt;number&gt;</c> of this input addresses. The position the
+    /// stream happens to hold in a reported stream list is not that number as soon as the
+    /// list leaves file order - a data stream the server does not report, an externally
+    /// sourced track - which is why the marker carries the index and not the position.
+    /// </para>
+    /// <para>
+    /// Both the input and the number have to match. A map of another input file is not this
+    /// source's video, and a map of another stream of this one is somebody else's stream -
+    /// removing it would drop audio or subtitles, which is the same mistake this rewriter
+    /// refuses to make with a whole-file map.
+    /// </para>
+    /// </remarks>
+    private static bool IsNumberedVideoMap(string? mapValue, int? videoStreamIndex)
+    {
+        if (videoStreamIndex is not int named || string.IsNullOrEmpty(mapValue))
+        {
+            return false;
+        }
+
+        if (!mapValue.StartsWith(FirstInputMapPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var number = mapValue.AsSpan(FirstInputMapPrefix.Length);
+        if (number.EndsWith('?'))
+        {
+            // The optional-map suffix, not part of the number: FFmpeg tolerates a missing
+            // stream behind it, which is why the server writes it at all.
+            number = number[..^1];
+        }
+
+        return int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out var index)
+               && index == named;
+    }
+
+    /// <summary>
+    /// Whether a token and the value after it ask FFmpeg to copy a video stream.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// FFmpeg spells one option several ways: <c>-c</c>, <c>-codec</c> and <c>-vcodec</c>,
+    /// each carrying an optional <c>:stream-specifier</c> - and <c>-codec:v:0 copy</c> is
+    /// the exact spelling a Jellyfin HLS copy command writes. Whether a spelling can reach
+    /// the output's video is answered conservatively:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description><c>-vcodec</c> is video by name.</description></item>
+    /// <item><description>
+    /// <c>-c</c> or <c>-codec</c> with no specifier is every stream of the output, the video
+    /// among them.
+    /// </description></item>
+    /// <item><description>
+    /// A specifier of a known non-video type - audio, subtitle, data, attachment - is
+    /// provably not this output's video, which is what keeps the ordinary
+    /// <c>-c:a copy</c> of a normal transcode from refusing an Anaglyfin job.
+    /// </description></item>
+    /// <item><description>
+    /// A video specifier is video, and anything this rewriter cannot classify - a bare
+    /// stream number, a type letter it does not know, an empty <c>-c:</c> - cannot be shown
+    /// not to be. Guessing the wrong way here means running a profile pipeline that converts
+    /// nothing while reporting success, which is the outcome this guard exists to refuse.
+    /// </description></item>
+    /// </list>
+    /// </remarks>
+    private static bool IsVideoCodecCopyOption(string? token, string? value)
+    {
+        if (!string.Equals(value, StreamCopyValue, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(token) || token[0] != '-' || token.Length < 2)
+        {
+            return false;
+        }
+
+        var separator = token.IndexOf(':');
+        var name = separator < 0 ? token[1..] : token[1..separator];
+
+        if (string.Equals(name, VideoCodecOptionName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var setsEveryStream = string.Equals(name, CodecOptionName, StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(name, ShortCodecOptionName, StringComparison.OrdinalIgnoreCase);
+
+        if (!setsEveryStream)
+        {
+            return false;
+        }
+
+        return separator < 0 || StreamSpecifierMayBeVideo(token[(separator + 1)..]);
+    }
+
+    /// <summary>
+    /// Whether a codec option's stream specifier can address a video stream.
+    /// </summary>
+    /// <remarks>
+    /// Only the specifier's type position is read, exactly as for a map value, and the
+    /// uppercase spelling counts as video too: in FFmpeg's grammar it asks for the exact
+    /// index within that type rather than naming another one.
+    /// </remarks>
+    private static bool StreamSpecifierMayBeVideo(string specifier)
+    {
+        if (specifier.Length == 0)
+        {
+            // "-c:" with nothing behind it is a broken option, and a broken option is not
+            // evidence that nothing is being copied.
+            return true;
+        }
+
+        return char.ToLowerInvariant(specifier[0]) switch
+        {
+            'a' or 's' or 'd' or 't' => false,
+            _ => true
+        };
     }
 
     /// <summary>

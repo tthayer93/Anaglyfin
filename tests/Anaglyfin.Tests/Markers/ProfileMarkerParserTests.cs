@@ -59,6 +59,92 @@ public class ProfileMarkerParserTests
         Assert.Null(result.Marker!.SubtitleOrdinal);
     }
 
+    [Fact]
+    public void AMarkerNamingItsVideoStreamParsesThatIndexToo()
+    {
+        // The number a wrapper cannot recover from the command line on its own: Jellyfin
+        // maps the stream it picked by position, and only the provider knows which position
+        // that is, so the provider writes it here.
+        var result = ProfileMarkerParser.Parse(Prefix + "sbs_full?source=%2Fmovies%2FFilm.mkv&video=2");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(2, result.VideoStreamIndex);
+        Assert.Equal(2, result.Marker!.VideoStreamIndex);
+        Assert.Null(result.SubtitleOrdinal);
+        Assert.Equal(
+            Prefix + "sbs_full?source=%2Fmovies%2FFilm.mkv&video=2",
+            result.Marker.ToString());
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(17)]
+    public void EveryVideoIndexABuilderWritesParsesBackToItself(int? videoStreamIndex)
+    {
+        var marker = ProfileMarker.Create("anaglyph_arcd", "/movies/Movie (2010)/Movie.2010.3D.mkv", 1, videoStreamIndex);
+
+        var result = ProfileMarkerParser.Parse(marker.ToString());
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(marker, result.Marker);
+        Assert.Equal(videoStreamIndex, result.VideoStreamIndex);
+    }
+
+    [Fact]
+    public void AVideoParameterInAnyOrderStillCanonicallyRoundTrips()
+    {
+        var result = ProfileMarkerParser.Parse(Prefix + "sbs_half?video=1&subtitle=2&source=%2Fmovies%2FFilm.mkv");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, result.VideoStreamIndex);
+        Assert.Equal(2, result.SubtitleOrdinal);
+        Assert.Equal("/movies/Film.mkv", result.SourcePath);
+
+        var again = ProfileMarkerParser.Parse(result.Marker!.ToString());
+        Assert.Equal(result, again);
+    }
+
+    [Theory]
+    [InlineData("video=")]
+    [InlineData("video=-1")]
+    [InlineData("video=-0")]
+    [InlineData("video=+1")]
+    [InlineData("video=1.5")]
+    [InlineData("video=v")]
+    [InlineData("video=%30")]
+    [InlineData("video=%201")]
+    [InlineData("video=1 ")]
+    [InlineData("video=0x1")]
+    [InlineData("video=99999999999999999999999")]
+    [InlineData("video=0:view:all")]
+    public void AVideoStreamIndexMustBePlainNonNegativeDigits(string videoParameter)
+    {
+        // Fail closed rather than guess: an index the wrapper cannot read is a stream it
+        // cannot protect, and a marker that half-reads is how a map survives un-removed.
+        var result = ProfileMarkerParser.Parse(
+            Prefix + "anaglyph_arcd?source=%2Fmovies%2FFilm.mkv&" + videoParameter);
+
+        Assert.Equal(MarkerParseStatus.InvalidVideoStreamIndex, result.Status);
+        Assert.False(result.IsSuccess);
+        Assert.Null(result.Marker);
+    }
+
+    [Theory]
+    [InlineData(Prefix + "anaglyph_arcd?source=%2Fmovies%2FFilm.mkv&video=0&video=1")]
+    [InlineData(Prefix + "anaglyph_arcd?source=%2Fmovies%2FFilm.mkv&video")]
+    [InlineData(Prefix + "anaglyph_arcd?source=%2Fmovies%2FFilm.mkv&videos=0")]
+    public void AVideoParameterThatIsNotOneNumberIsMarkerShapedJunk(string markerShapedText)
+    {
+        // Repeated, valueless or near-miss spellings of the parameter are structure
+        // problems, not a broken index: they never reach the index reader at all.
+        var result = ProfileMarkerParser.Parse(markerShapedText);
+
+        Assert.Equal(MarkerParseStatus.MalformedMarker, result.Status);
+        Assert.Null(result.Marker);
+    }
+
     [Theory]
     [MemberData(nameof(RoundTripCases))]
     public void EveryBuiltMarkerReparsesToAnEqualMarker(string profileId, string sourcePath, int? subtitleOrdinal)
@@ -297,6 +383,7 @@ public class ProfileMarkerParserTests
         Assert.Null(failure.ProfileId);
         Assert.Null(failure.SourcePath);
         Assert.Null(failure.SubtitleOrdinal);
+        Assert.Null(failure.VideoStreamIndex);
         Assert.Null(success.Error);
         Assert.Equal(CanonicalExample, success.ToString());
         Assert.StartsWith("NotMarker:", failure.ToString(), StringComparison.Ordinal);

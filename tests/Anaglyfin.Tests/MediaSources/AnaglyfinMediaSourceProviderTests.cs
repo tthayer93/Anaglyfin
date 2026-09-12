@@ -340,11 +340,22 @@ public class AnaglyfinMediaSourceProviderTests
         // full: an Anaglyfin version must be addressable by a GUID the HLS routes accept.
         Assert.Equal(DeriveGuid(ItemKey + ":" + ProfileIds.AnaglyphRedCyanDubois), source.Id);
         Assert.Equal("3D Anaglyph Red/Cyan (Dubois)", source.Name);
+
+        // The marker names the video stream as well as the file: the server maps the stream it
+        // chose by its index inside the file, and the wrapper can only take that map out of the
+        // way of the profile's own if the provider told it which stream that is. This file's
+        // video is stream 0, so the marker says 0.
         Assert.Equal(
-            "http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmovies%2FAvatar%203D%20MVC.mkv",
+            "http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmovies%2FAvatar%203D%20MVC.mkv&video=0",
             source.Path);
         Assert.Equal(MediaProtocol.Http, source.Protocol);
         Assert.False(source.SupportsDirectPlay);
+
+        // The provider's own intent, not the server's decision: the server overwrites both
+        // flags with the user's permissions during PlaybackInfo, and the transcode path that
+        // decides video copy never reads them. What keeps this version encoding is the codec
+        // it reports for its video stream - see
+        // TheVersionsReportTheirVideoAsACodecNoTranscodeProfileCanCopy.
         Assert.False(source.SupportsDirectStream);
         Assert.True(source.SupportsTranscoding);
         Assert.False(source.SupportsProbing);
@@ -374,7 +385,229 @@ public class AnaglyfinMediaSourceProviderTests
             Assert.Equal(FileSize, source.Size);
             Assert.Equal(original.Bitrate, source.Bitrate);
             Assert.Equal(original.Formats, source.Formats);
-            Assert.Equal(original.MediaStreams, source.MediaStreams);
+
+            // The stream report travels at full length - same count, same order, same
+            // languages, same indices - with the one exception the versions exist for: the
+            // video stream is the version's own copy of it, because a version must be able
+            // to report that video differently without rewriting what the original source
+            // tells its own clients. See the tests below for that one stream.
+            Assert.Equal(original.MediaStreams.Count, source.MediaStreams.Count);
+            for (var index = 0; index < original.MediaStreams.Count; index++)
+            {
+                var reported = source.MediaStreams[index];
+                var expected = original.MediaStreams[index];
+
+                Assert.Equal(expected.Type, reported.Type);
+                Assert.Equal(expected.Index, reported.Index);
+                Assert.Equal(expected.Language, reported.Language);
+
+                if (expected.Type == MediaStreamType.Video)
+                {
+                    Assert.NotSame(expected, reported);
+                }
+                else
+                {
+                    // Audio and subtitles are the tracks the user already knows, handed over
+                    // as the same objects: nothing about a stereo version changes them.
+                    Assert.Same(expected, reported);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task TheVersionsReportTheirVideoAsACodecNoTranscodeProfileCanCopy()
+    {
+        // Why this assertion is load-bearing: Jellyfin decides video copy from the codec a
+        // source reports for its video stream, not from any flag a plugin can set. Report the
+        // file's real "hevc" and every client whose HLS profile copies hevc gets a command
+        // that stream-copies the picture, which leaves the profile's view selection and
+        // filters in the command with nothing to convert - a version that plays the original
+        // file while looking like a converted one. A codec name no client's direct-play list
+        // and no client's transcode profile contains cannot be matched by that decision, and
+        // so cannot be copied by any client under any permission. The name is the whole of the
+        // trick; it is not a report of what the track is encoded with.
+        var provider = CreateProvider();
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        item.StaticSources = new[] { original };
+
+        var sources = await provider.GetMediaSources(item, CancellationToken.None);
+
+        Assert.NotEmpty(sources);
+        foreach (var source in sources)
+        {
+            var video = Assert.Single(source.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+
+            Assert.Equal(ForceTranscodeVideoStreams.VideoCodec, video.Codec);
+
+            // Everything a player or the server's transcode conditions read stays as the
+            // file's own probe reported it: the version re-labels the codec, it does not
+            // re-describe the picture.
+            var probed = Assert.Single(original.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+            Assert.Equal(probed.Width, video.Width);
+            Assert.Equal(probed.Height, video.Height);
+            Assert.Equal(probed.BitDepth, video.BitDepth);
+            Assert.Equal(probed.RealFrameRate, video.RealFrameRate);
+            Assert.Equal(probed.Profile, video.Profile);
+            Assert.Equal(probed.Level, video.Level);
+            Assert.Equal(probed.Index, video.Index);
+        }
+    }
+
+    [Fact]
+    public async Task ReLabellingTheVersionsLeavesTheItemsOwnReportAlone()
+    {
+        // The item's original version reports the very same stream objects this provider was
+        // handed. Mutating them in place would leave the one version that must always keep
+        // working - the file as it sits on disk - claiming its video is something it is not,
+        // which is a broken original library source for every client on the server.
+        var provider = CreateProvider();
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        item.StaticSources = new[] { original };
+
+        await provider.GetMediaSources(item, CancellationToken.None);
+
+        var probed = Assert.Single(original.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+        Assert.Equal("hevc", probed.Codec);
+        Assert.Equal(4, original.MediaStreams.Count);
+    }
+
+    [Fact]
+    public async Task TheMarkerNamesTheVideoStreamByIdItsOwnReportCarries()
+    {
+        // The number the server spends on "-map 0:<index>" is the stream's index inside the
+        // file, and for a report the probe wrote in file order that is also the position the
+        // stream sits at in the list. Naming it matters: a marker saying stream 0 while the
+        // server maps 0:2 leaves both maps on the command and converts nothing.
+        var provider = CreateProvider();
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        original.MediaStreams = new[]
+        {
+            new MediaStream { Type = MediaStreamType.Audio, Index = 0, Codec = "aac", Language = "eng" },
+            new MediaStream { Type = MediaStreamType.Subtitle, Index = 1, Language = "eng" },
+            new MediaStream { Type = MediaStreamType.Video, Index = 2, Codec = "hevc", Width = 1920, Height = 1080 },
+            new MediaStream { Type = MediaStreamType.Audio, Index = 3, Codec = "ac3", Language = "spa" }
+        };
+
+        item.StaticSources = new[] { original };
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        foreach (var source in sources)
+        {
+            var parsed = ProfileMarkerParser.Parse(source.Path);
+
+            Assert.True(parsed.IsSuccess);
+            Assert.Equal(2, parsed.VideoStreamIndex);
+            Assert.Contains("&video=2", source.Path, StringComparison.Ordinal);
+
+            // The named stream is the version's re-labelled video, and it is still the only
+            // video stream in the report.
+            Assert.Equal(MediaStreamType.Video, source.MediaStreams[2].Type);
+            Assert.Equal(ForceTranscodeVideoStreams.VideoCodec, source.MediaStreams[2].Codec);
+            Assert.Same(original.MediaStreams[0], source.MediaStreams[0]);
+            Assert.Same(original.MediaStreams[1], source.MediaStreams[1]);
+            Assert.Same(original.MediaStreams[3], source.MediaStreams[3]);
+        }
+    }
+
+    [Fact]
+    public async Task TheMarkerNamesTheStreamIndexAndNotThePlaceTheStreamSitsInTheList()
+    {
+        // The two numbers are only ever the same while the report is in file order, and a
+        // report is out of it as soon as the file carries a stream the server does not report
+        // (a data stream, an attached picture) or appends one it does. Here the video is the
+        // file's stream 1 and the first entry of the list. A marker that named the position
+        // would say 0, the server would map 0:1, and the wrapper would take the audio out of
+        // the playlist while leaving the base view beside the profile's own.
+        var provider = CreateProvider();
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        original.MediaStreams = new[]
+        {
+            new MediaStream { Type = MediaStreamType.Video, Index = 1, Codec = "hevc", Width = 1920, Height = 1080 },
+            new MediaStream { Type = MediaStreamType.Audio, Index = 2, Codec = "aac", Language = "eng" },
+            new MediaStream { Type = MediaStreamType.Subtitle, Index = 4, Language = "eng" }
+        };
+
+        item.StaticSources = new[] { original };
+
+        foreach (var source in await provider.GetMediaSources(item, CancellationToken.None))
+        {
+            var parsed = ProfileMarkerParser.Parse(source.Path);
+
+            Assert.True(parsed.IsSuccess);
+            Assert.Equal(1, parsed.VideoStreamIndex);
+            Assert.Contains("&video=1", source.Path, StringComparison.Ordinal);
+
+            // The re-labelled video is the stream this list holds first, and it kept the index
+            // the file gave it: the version's report and the server's map count the same file.
+            var video = source.MediaStreams[0];
+            Assert.Equal(MediaStreamType.Video, video.Type);
+            Assert.Equal(ForceTranscodeVideoStreams.VideoCodec, video.Codec);
+            Assert.Equal(1, video.Index);
+            Assert.NotSame(original.MediaStreams[0], video);
+            Assert.Same(original.MediaStreams[1], source.MediaStreams[1]);
+            Assert.Same(original.MediaStreams[2], source.MediaStreams[2]);
+        }
+    }
+
+    [Fact]
+    public async Task AVideoStreamThatNamesNoIndexIsStillForcedToEncodeButIsNotNamed()
+    {
+        // A stream carried over from a source that was never probed for an index answers -1.
+        // Guessing a position for it would put a number the server's map does not use into the
+        // marker, and the wrapper would then remove whichever stream did use it. The codec
+        // re-label is a separate question and still happens, because that is what keeps the
+        // version off the copy path.
+        var provider = CreateProvider();
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        original.MediaStreams = new[]
+        {
+            new MediaStream { Type = MediaStreamType.Video, Index = -1, Codec = "hevc", Width = 1920, Height = 1080 },
+            new MediaStream { Type = MediaStreamType.Audio, Index = 0, Codec = "aac", Language = "eng" }
+        };
+
+        item.StaticSources = new[] { original };
+
+        foreach (var source in await provider.GetMediaSources(item, CancellationToken.None))
+        {
+            Assert.DoesNotContain("&video=", source.Path, StringComparison.Ordinal);
+            Assert.Null(ProfileMarkerParser.Parse(source.Path).VideoStreamIndex);
+
+            var video = source.MediaStreams[0];
+            Assert.Equal(ForceTranscodeVideoStreams.VideoCodec, video.Codec);
+            Assert.NotSame(original.MediaStreams[0], video);
+            Assert.Equal(-1, video.Index);
+            Assert.Same(original.MediaStreams[1], source.MediaStreams[1]);
+        }
+    }
+
+    [Fact]
+    public async Task AVersionWithNoVideoStreamToNameCarriesNoVideoParameter()
+    {
+        // An item the server has no video stream for is not this provider's problem to
+        // invent one for: the version keeps its streams as reported and its marker keeps
+        // quiet about a position that does not exist.
+        var provider = CreateProvider();
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        original.MediaStreams = new[]
+        {
+            new MediaStream { Type = MediaStreamType.Audio, Index = 0, Codec = "aac", Language = "eng" }
+        };
+
+        item.StaticSources = new[] { original };
+
+        foreach (var source in await provider.GetMediaSources(item, CancellationToken.None))
+        {
+            Assert.DoesNotContain("&video=", source.Path, StringComparison.Ordinal);
+            Assert.Null(ProfileMarkerParser.Parse(source.Path).VideoStreamIndex);
+            Assert.Same(original.MediaStreams[0], Assert.Single(source.MediaStreams));
         }
     }
 

@@ -34,11 +34,11 @@ namespace Anaglyfin.Markers;
 /// query-parameter order and casing are tolerated because they cannot change meaning,
 /// while a second <c>source</c> parameter, a parameter Anaglyfin does not define, a
 /// raw control character, a percent-decoded path that is not rooted or carries control
-/// characters, a non-allowlisted profile id, or a subtitle ordinal that is not plain
-/// ASCII digits of a non-negative int are all refused. In canonical marker text every
-/// path character outside <c>A-Za-z0-9-._~</c> arrives percent-encoded, so a filename
-/// can never forge an extra query parameter, and the decoded path is only ever treated
-/// as data: it is validated to contain no control characters and is passed to
+/// characters, a non-allowlisted profile id, or a subtitle ordinal or video stream index
+/// that is not plain ASCII digits of a non-negative int are all refused. In canonical
+/// marker text every path character outside <c>A-Za-z0-9-._~</c> arrives percent-encoded,
+/// so a filename can never forge an extra query parameter, and the decoded path is only
+/// ever treated as data: it is validated to contain no control characters and is passed to
 /// argument-vector consumers, never to a shell.
 /// </para>
 /// </remarks>
@@ -143,7 +143,12 @@ public static class ProfileMarkerParser
                 "The marker carries no source parameter.");
         }
 
-        if (!TryReadParameters(query, out var sourceValue, out var subtitleValue, out var structureError))
+        if (!TryReadParameters(
+                query,
+                out var sourceValue,
+                out var videoValue,
+                out var subtitleValue,
+                out var structureError))
         {
             return MarkerParseResult.Failure(MarkerParseStatus.MalformedMarker, structureError);
         }
@@ -190,20 +195,35 @@ public static class ProfileMarkerParser
             subtitleOrdinal = parsedOrdinal;
         }
 
+        int? videoStreamIndex = null;
+        if (videoValue is not null)
+        {
+            if (!TryParseOrdinal(videoValue, out var parsedVideoIndex))
+            {
+                return MarkerParseResult.Failure(
+                    MarkerParseStatus.InvalidVideoStreamIndex,
+                    "The marker video stream index is not a non-negative integer.");
+            }
+
+            videoStreamIndex = parsedVideoIndex;
+        }
+
         // profileId is allowlisted and sourcePath validated, so construction cannot throw here.
-        return MarkerParseResult.Success(new ProfileMarker(profileId, sourcePath, subtitleOrdinal));
+        return MarkerParseResult.Success(new ProfileMarker(profileId, sourcePath, subtitleOrdinal, videoStreamIndex));
     }
 
     /// <summary>
-    /// Splits the query into the two allowlisted parameters, refusing anything else.
+    /// Splits the query into the allowlisted parameters, refusing anything else.
     /// </summary>
     private static bool TryReadParameters(
         string query,
         out string? sourceValue,
+        out string? videoValue,
         out string? subtitleValue,
         [NotNullWhen(false)] out string? error)
     {
         sourceValue = null;
+        videoValue = null;
         subtitleValue = null;
         error = null;
 
@@ -222,7 +242,7 @@ public static class ProfileMarkerParser
                 return false;
             }
 
-            // Only the two known parameters are read at all; a raw '=' inside a value
+            // Only the known parameters are read at all; a raw '=' inside a value
             // is content of that value, and unknown or repeated keys cannot smuggle a
             // second opinion past the allowlist.
             var key = Uri.UnescapeDataString(segment[..separator]);
@@ -237,6 +257,16 @@ public static class ProfileMarkerParser
                 }
 
                 sourceValue = value;
+            }
+            else if (key.Equals(ProfileMarker.VideoQueryParameter, StringComparison.OrdinalIgnoreCase))
+            {
+                if (videoValue is not null)
+                {
+                    error = "The marker query repeats the video parameter.";
+                    return false;
+                }
+
+                videoValue = value;
             }
             else if (key.Equals(ProfileMarker.SubtitleQueryParameter, StringComparison.OrdinalIgnoreCase))
             {
@@ -260,7 +290,8 @@ public static class ProfileMarkerParser
 
     /// <summary>
     /// Strictly reads a non-negative int: plain ASCII digits only, no signs, spaces or
-    /// escapes, so only an unambiguous ordinal becomes a subtitle track choice.
+    /// escapes, so only an unambiguous number becomes a subtitle track choice or a video
+    /// stream index.
     /// </summary>
     private static bool TryParseOrdinal(string value, out int ordinal)
     {

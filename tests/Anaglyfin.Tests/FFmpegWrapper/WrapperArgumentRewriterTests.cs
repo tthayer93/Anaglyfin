@@ -478,6 +478,61 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
+    public void AnExclusionMapIsNobodysSubtitleStreamAndSurvivesSubtitleSuppression()
+    {
+        // "-map -0:s" is the server taking subtitle streams out of the output, which is the
+        // same direction -sn travels: removing that map would answer "no subtitles" by putting
+        // them back. An exclusion names no stream for this rewriter to own, so it stays - as do
+        // an audio exclusion and the bare whole-file one. A positive subtitle map beside them
+        // is a stream the server did select, and still gives way.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "0:v", "-map", "0:a", "-map", "0:s:0",
+            "-map", "-0:s", "-map", "-0:a", "-map", "-0",
+            "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all", "-sn",
+                "-map", "0:a",
+                "-map", "-0:s", "-map", "-0:a", "-map", "-0",
+                "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void AnExclusionOfTheVideoTypeIsStillTheProfilesPictureBeingTakenAway()
+    {
+        // The one exclusion a profile-owned pipeline does remove. What this rewriter inserts
+        // lands immediately after the last input, ahead of the server's own maps, so a
+        // "-map -0:v" left standing would subtract the views the profile had just mapped and
+        // run FFmpeg against an output with no video in it.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "0:a", "-map", "-0:v", "-c:v", "libx264", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all", "-sn",
+                "-map", "0:a", "-c:v", "libx264", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
     public void AnSnAlreadyOnTheCommandIsNotDuplicated()
     {
         var arguments = new List<string>
@@ -826,6 +881,285 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(arguments.ToArray(), result.Arguments);
     }
 
+    // ----- the server chose video copy ---------------------------------------------------
+
+    [Theory]
+    [InlineData("-c", "copy")]
+    [InlineData("-codec", "copy")]
+    [InlineData("-vcodec", "copy")]
+    [InlineData("-c:v", "copy")]
+    [InlineData("-c:v:0", "copy")]
+    [InlineData("-codec:v", "copy")]
+    [InlineData("-codec:v:0", "copy")]
+    [InlineData("-c:V", "copy")]
+    [InlineData("-c:2", "copy")]
+    public void AProfileThatOwnsThePipelineRefusesACommandThatCopiesItsVideo(string option, string value)
+    {
+        // Every spelling of "do not encode this" reaches the same decision. Running the
+        // command anyway would put "-map 0:v:view:all" and a stereo3d chain onto a command
+        // whose video is streamed through the muxer untouched - a player would be shown the
+        // plain base view of the film under a version label that promised an anaglyph, and
+        // nothing in the log would say so.
+        var arguments = CommandCopyingVideo(option, value, Marker(ProfileIds.SideBySideFull));
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.ServerChoseVideoCopy, result.Status);
+        Assert.False(result.IsSuccess);
+        Assert.Empty(result.Arguments);
+        Assert.False(string.IsNullOrEmpty(result.Error));
+
+        // The refusal is about the shape of the command, not its secrets: no marker text and
+        // no media path in the line an administrator will read.
+        Assert.DoesNotContain("127.0.0.1", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("source=", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("Movie.2010.3D.mkv", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheStreamCopyCommandTheServerBuildsForAVersionsSourceIsRefused()
+    {
+        // The shape Jellyfin 12 actually writes when it decides to stream-copy a dynamic
+        // source's video: the map is numeric, the copy option is the long "-codec:v:0"
+        // spelling, and the encode arguments (bitrate, preset, keyframes) are simply absent,
+        // because the server only emits them in its encode branch. There is nothing here for
+        // a profile to convert, and nothing here to replace "copy" with either - writing an
+        // encoder stack would be the wrapper making Jellyfin's encoding decisions for it.
+        var arguments = new List<string>
+        {
+            "-hide_banner", "-loglevel", "warning",
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 0),
+            "-map", "0:0", "-map", "0:1",
+            "-codec:v:0", "copy", "-start_at_zero",
+            "-codec:a:0", "copy",
+            "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.ServerChoseVideoCopy, result.Status);
+        Assert.Empty(result.Arguments);
+    }
+
+    [Theory]
+    [InlineData("-c:a", "copy")]
+    [InlineData("-c:a:0", "copy")]
+    [InlineData("-codec:a", "copy")]
+    [InlineData("-c:s", "copy")]
+    [InlineData("-c:d", "copy")]
+    [InlineData("-c:t", "copy")]
+    public void ACopyOfSomebodyElsesStreamIsNotAreasonToRefuseAVersion(string option, string value)
+    {
+        // Audio copy is what normal Jellyfin playback does with an AAC track, and the product
+        // requirement is that an Anaglyfin version differs in picture and not in delivery.
+        // A specifier that names a non-video type proves the copy cannot be the profile's.
+        var arguments = CommandWithCodecOption(option, value, Marker(ProfileIds.SideBySideFull));
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.True(
+            CarriesOptionAndValue(result.Arguments, option, value),
+            $"the rewritten command lost or split '{option} {value}': {string.Join(' ', result.Arguments)}");
+    }
+
+    [Fact]
+    public void ACodecCopyTheProfileCannotOwnIsLeftAlone()
+    {
+        // The plain 2D version inserts no map and no filter, so nothing of the command's
+        // video pipeline belongs to it and nothing entitles it to refuse the server's choice.
+        var arguments = CommandCopyingVideo("-codec:v:0", "copy", Marker(ProfileIds.TwoDBase));
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Equal(ProfileIds.TwoDBase, result.ProfileId);
+        Assert.Equal(SourcePath, result.Arguments[4]);
+        Assert.Contains("copy", result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void ACodecCopyWrittenBeforeTheInputIsNotTheOutputsDecision()
+    {
+        // Options before an input belong to that input. The profile's output segment starts
+        // after the last input, and a copy choice made for a different file does not refuse
+        // this job.
+        var arguments = new List<string>
+        {
+            "-c", "copy",
+            "-i", Marker(ProfileIds.SideBySideFull, videoStreamIndex: 0),
+            "-map", "0:0", "-c:v", "libx264", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Equal("copy", result.Arguments[1]);
+    }
+
+    // ----- the server's numbered video map -----------------------------------------------
+
+    [Fact]
+    public void TheServersNumberedVideoMapMakesWayForTheProfilesOwn()
+    {
+        // "-map 0:0" is Jellyfin naming the video stream by position, and a profile that maps
+        // its own all-view video cannot share the output with a second picture: the base view
+        // next to the converted one would be an output FFmpeg either refuses or fills with
+        // two videos. The marker said which numbered stream is this source's video, so the
+        // audio map beside it - numbered too - stays.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull, videoStreamIndex: 0),
+            "-map", "0:0", "-map", "0:1",
+            "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all", "-sn",
+                "-map", "0:1",
+                "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void ANumberedVideoMapTheServerWroteAsOptionalIsRemovedLikeAnyOther()
+    {
+        // The trailing '?' means "if this file has one", not "this is a different stream".
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 3),
+            "-map", "0:3?", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all",
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void ANumberedMapIsOnlyRemovedWhenItIsTheStreamTheMarkerNamed()
+    {
+        // A numbered map of another stream is somebody else's stream: audio, subtitles, or a
+        // second video that is not this version's business. Guessing from the number alone
+        // would drop the audio out of the playlist.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 2),
+            "-map", "0:0", "-map", "0:2", "-map", "0:10", "-map", "1:2", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all",
+                "-vf", "scale=iw/2:ih:flags=bicubic,format=yuv420p", "-sn",
+                "-map", "0:0", "-map", "0:10", "-map", "1:2", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void ACommandWithNumberedMapsAndNoVideoToNameKeepsThemAll()
+    {
+        // A marker that names no video stream (an older provider, or a source with no video
+        // stream to name) leaves the server's stream selection exactly as written. The copy
+        // guard below is still what stops an inert profile pipeline from running; this rule is
+        // only about which maps this rewriter is allowed to recognize.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "0:0", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all", "-sn",
+                "-map", "0:0", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void DroppingTheServersNumberedVideoMapDoesNotInventAnAudioMap()
+    {
+        // A command that mapped only video had already chosen a video-only output. Removing
+        // that map is a replacement of one video choice by another, not a return to FFmpeg's
+        // automatic selection, so the optional audio map this rewriter writes only for a
+        // command that never named a stream still does not belong here.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 0),
+            "-map", "0:0", "-c:v", "libx264", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all",
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-c:v", "libx264", "playlist.m3u8"
+            },
+            result.Arguments);
+        Assert.DoesNotContain("0:a?", result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void ANumberedMapAndItsProfileRewriteSurviveTogetherInOnePass()
+    {
+        // The realistic Jellyfin shape after the provider reports an un-copyable codec: a real
+        // encoder stack, numeric maps for both streams, and the profile's conversion slotted in
+        // where the server's video map used to be.
+        var arguments = new List<string>
+        {
+            "-hide_banner", "-loglevel", "warning",
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 0),
+            "-map", "0:0", "-map", "0:1",
+            "-codec:v:0", "libx264", "-preset:v", "medium", "-b:v", "8000k",
+            "-codec:a:0", "copy",
+            "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-hide_banner", "-loglevel", "warning",
+                "-i", SourcePath,
+                "-map", "0:v:view:all",
+                "-vf", "scale=iw/2:ih:flags=bicubic,format=yuv420p", "-sn",
+                "-map", "0:1",
+                "-codec:v:0", "libx264", "-preset:v", "medium", "-b:v", "8000k",
+                "-codec:a:0", "copy",
+                "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
     [Fact]
     public void TheSharedInstanceIsWiredToTheBuiltInCatalogAndTheSharedBuilder()
     {
@@ -865,8 +1199,76 @@ public class WrapperArgumentRewriterTests
             "playlist.m3u8"
         };
 
-    private static string Marker(string profileId, int? subtitleOrdinal = null)
-        => ProfileMarker.Create(profileId, SourcePath, subtitleOrdinal).ToString();
+    private static string Marker(
+        string profileId,
+        int? subtitleOrdinal = null,
+        int? videoStreamIndex = null)
+        => ProfileMarker.Create(profileId, SourcePath, subtitleOrdinal, videoStreamIndex).ToString();
+
+    /// <summary>
+    /// A Jellyfin HLS transcode whose output segment carries one codec option and no encoder
+    /// stack - the shape a stream-copied video arrives in, because the server writes its
+    /// bitrate, preset and keyframe arguments only in the encode branch.
+    /// </summary>
+    private static List<string> CommandCopyingVideo(string option, string value, string input)
+        => new()
+        {
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-i",
+            input,
+            "-map",
+            "0:v",
+            "-map",
+            "0:a",
+            option,
+            value,
+            "-f",
+            "hls",
+            "-hls_time",
+            "6",
+            "playlist.m3u8"
+        };
+
+    /// <summary>
+    /// The same command with its encoder stack in place: here a <c>copy</c> value can only be
+    /// somebody else's stream, because the video is provably being encoded.
+    /// </summary>
+    private static List<string> CommandWithCodecOption(string option, string value, string input)
+        => new()
+        {
+            "-i",
+            input,
+            "-map",
+            "0:v",
+            "-map",
+            "0:a",
+            "-c:v",
+            "libx264",
+            option,
+            value,
+            "-f",
+            "hls",
+            "playlist.m3u8"
+        };
+
+    /// <summary>
+    /// Whether an argument vector carries an option and its value next to each other.
+    /// </summary>
+    private static bool CarriesOptionAndValue(IReadOnlyList<string> arguments, string option, string value)
+    {
+        for (var index = 0; index < arguments.Count - 1; index++)
+        {
+            if (string.Equals(arguments[index], option, StringComparison.Ordinal)
+                && string.Equals(arguments[index + 1], value, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// The Jellyfin HLS transcode shape that carries no <c>-map</c> at all. Nothing names a

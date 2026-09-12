@@ -283,11 +283,15 @@ in `docs/validation.md` V5; the short version is:
 {
   "Id": "3f2a1c9d7b6e4f5a8c2d9e0b1a4c7d63",
   "Name": "3D Anaglyph Red/Cyan (Dubois)",
-  "Path": "http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmedia%2F...",
+  "Path": "http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmedia%2F...&video=0",
   "Protocol": "Http",
   "SupportsTranscoding": true,
   "SupportsDirectPlay": false,
-  "SupportsDirectStream": false
+  "SupportsDirectStream": false,
+  "MediaStreams": [
+    { "Type": "Video", "Codec": "mvc", "Index": 0 },
+    { "Type": "Audio", "Codec": "DTS", "Index": 1 }
+  ]
 }
 ```
 
@@ -296,6 +300,24 @@ endpoints `Guid.Parse` the `MediaSourceId` on the way to the transcoder, so a de
 id throws before FFmpeg is ever started. It is derived from the item id and the profile id,
 so it is stable across restarts; the profile itself is carried by `Path`, which is what the
 wrapper reads.
+
+Read `MediaStreams` and `Path` rather than the three `Supports*` flags. The server overwrites
+`SupportsTranscoding` and `SupportsDirectStream` on a dynamic source with what the user's
+transcode profile and the device profile allow, so a `false` in the response is what the
+plugin asked for and not what the server believes; and its own stream-copy decision never
+consults those flags for video, only the reported codec. The two fields that do decide the
+outcome are:
+
+- `"Codec": "mvc"` on the video stream - no client transcode profile names that codec, so
+  there is nothing to copy and the server must encode. That name is the lever and not a
+  description of the track (ffprobe reports an MVC video as `hevc`); it is the only field the
+  clone differs in, so the resolution, bit depth and HDR range the file was probed with stay
+  on the version. The original library source keeps reporting its real codec; the `mvc`
+  stream is a clone belonging to this version alone.
+- `&video=<index>` in `Path` - the marker naming the video stream by its `Index` above, which
+  is the number of that stream inside the file and the one the server spends on a
+  `-map 0:<index>` for it. A source whose video stream carries no known index writes no
+  `video` parameter at all, and keeps the codec report that forces the encode.
 
 Original source stays first and stays playable; the `Id` changes with the profile and not
 with the client; the item's own source is untouched.
@@ -335,7 +357,18 @@ jellyfin
   normalised away;
 - the child received the decoded real path, and **no** marker text;
 - the profile's inserted fragments are there (`docs/validation.md` V7 for the per-profile
-  list), and Jellyfin's own encoder, muxer and HLS arguments survived around them.
+  list), and Jellyfin's own encoder, muxer and HLS arguments survived around them;
+- the child names an encoder for the video - `-codec:v libx264`, `-c:v libx265`, `-vcodec
+  ...`, anything but `copy`. A profile that owns the video pipeline never runs over a copy:
+  the copy form of a Jellyfin command carries no encoder stack to write into, so the wrapper
+  refuses it and says `refused: the command was not started (ServerChoseVideoCopy)` in the
+  log rather than passing a command through that would have played the raw MVC track;
+- no numbered map names the marker's video index. `-map 0:3` in the command the wrapper
+  received is removed from the child's when the marker said `video=3`, because argv alone
+  cannot tell that `3` from an audio stream - the marker's index is what identifies it. Audio
+  and subtitle maps, exclusion maps (`-map -0:a`, `-map -0:s`, `-map -0`) and maps of other
+  inputs survive untouched; the one exclusion that does not is `-map -0:v`, which would
+  subtract the picture the profile had just mapped.
 
 The same command lines are written to the server's transcode logs, which is the artifact
 to capture rather than a screenshot:
@@ -434,6 +467,7 @@ config.
 | `Running /config/anaglyfin/ffmpeg/ffprobe ... No such file or directory` | no ffprobe beside the wrapper: `sh harness.sh ffprobe`, then restart |
 | `anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running`, child exit `75` | the concurrency limit doing its job with `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1`; stop the first job or raise the limit |
 | `anaglyfin-wrapper: refused: the command was not started (RejectedMarker/...)` | a marker the parser rejected. The line never contains the marker or the path, so look at the playback-info response (step 7) to see what was offered |
+| `anaglyfin-wrapper: refused: the command was not started (ServerChoseVideoCopy)`, child exit `65` | the server asked for a video copy of an Anaglyfin version, so the profile had nothing to write into. Expected after a codec report the client can copy, which the step 7 `MediaStreams` check should have caught first; the reported `mvc` codec exists to make this line rare |
 | Anaglyfin versions never appear for a file you expect | the name has no MVC marker, or the provider is not eligible: step 6's Debug lines say which decision was made |
 | `No users, creating one with username root` during first start | the container is root and the wizard had not run yet; set a password in the wizard |
 | `harness: ... wrapper, not executable` | the checkout dropped the mode bit: `chmod 0755 <artifact>`, or let preflight do it |

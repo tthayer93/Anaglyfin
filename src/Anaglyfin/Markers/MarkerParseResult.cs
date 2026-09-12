@@ -59,6 +59,12 @@ public sealed record MarkerParseResult
     public int? SubtitleOrdinal => Marker?.SubtitleOrdinal;
 
     /// <summary>
+    /// Gets the video stream index of a successful parse; null also when a valid marker
+    /// simply names no video stream.
+    /// </summary>
+    public int? VideoStreamIndex => Marker?.VideoStreamIndex;
+
+    /// <summary>
     /// Creates the accepting outcome for a validated marker.
     /// </summary>
     /// <param name="marker">The parsed marker.</param>

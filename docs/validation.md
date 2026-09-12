@@ -327,23 +327,50 @@ For each alternate source, check:
 | --- | --- |
 | `Id` | GUID, lower-case `N` format, derived from the item id and the profile id |
 | `Name` | human-readable profile display name |
-| `Path` | Anaglyfin marker URL |
+| `Path` | Anaglyfin marker URL, carrying `video=<index>` |
 | `Protocol` | `Http` |
 | `IsRemote` | `false` |
 | `SupportsDirectPlay` | `false` |
-| `SupportsDirectStream` | `false` |
-| `SupportsTranscoding` | `true` |
+| `SupportsDirectStream` | not assertable: see the note below |
+| `SupportsTranscoding` | `true` unless the user's permission revokes it |
 | `SupportsProbing` | `false` |
 | `RequiresOpening` | `false` |
 | `Type` | `Default` |
-| `MediaStreams` | copied from the original source |
+| `MediaStreams` | the original source's streams, with one exception: the video stream's `Codec` |
 
 - [ ] The Anaglyfin source ids are lower-case `N`-format GUIDs, unique per profile and different from the item id.
       DynamicHLS parses `MediaSourceId` as a `Guid`, so a descriptive id fails playback before FFmpeg starts.
 - [ ] The source id changes when the profile id changes.
+- [ ] The video stream of an Anaglyfin source reports `Codec` = `mvc`, while the original library
+      source on the same item still reports its real codec (`hevc`, `h264`, ...).
+- [ ] Every other field of that stream - resolution, bit depth, frame rate, colour transfer, the
+      Dolby Vision flags - matches the original source's video stream. The version re-labels one
+      field; a client that shows a stream title built from the codec will show `MVC` where the
+      original shows `HEVC`, and that is the only visible difference.
 - [ ] Resume position and seek behavior remain reasonable when switching between versions.
 - [ ] The original library source remains playable and unchanged.
 - [ ] Changing enabled profiles changes the offered versions without a server restart.
+
+### Why `SupportsDirectStream: false` is not a check
+
+Jellyfin 12 overwrites both flags for every plugin-created source during PlaybackInfo, with
+the user's permissions: `SupportsTranscoding` becomes "may transcode video" and
+`SupportsDirectStream` becomes "may remux". A provider that reports `false` is overruled
+before the response is written, and the transcode path that later decides whether to copy the
+video stream never reads either flag anyway. So:
+
+- [ ] Do **not** record a FAIL for `SupportsDirectStream: true` in the response. It is the
+      server's permission, not Anaglyfin's claim.
+- [ ] Do **not** use the response flags to judge whether a version will be converted. The
+      evidence for that is the transcoding URL and the FFmpeg command line: see V7.
+
+What the plugin does instead is report the version's video with a codec no client's transcode
+profile names (`mvc`), which leaves the server no codec it is allowed to copy and therefore no
+copy to build. The name is the lever, not a description: ffprobe reports an MVC track as
+`hevc`, and the version's stream report differs from the item's own in that one field and
+nothing else. The server then builds a real encode command, which is visible in the
+transcoding URL as a video codec that is not the source's own, and in the child FFmpeg command
+as `-codec:v <encoder>`.
 
 ## V6. Marker transport
 
@@ -353,7 +380,7 @@ and must never be fetched over HTTP.
 Canonical shape:
 
 ```text
-http://127.0.0.1/anaglyfin/profile/<profileId>?source=<percent-encoded-rooted-path>
+http://127.0.0.1/anaglyfin/profile/<profileId>?source=<percent-encoded-rooted-path>&video=<index>
 ```
 
 Example for:
@@ -363,8 +390,18 @@ Example for:
 ```
 
 ```text
-http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmovies%2FMovie%20%282010%29%2FMovie.2010.3D.mkv
+http://127.0.0.1/anaglyfin/profile/anaglyph_arcd?source=%2Fmovies%2FMovie%20%282010%29%2FMovie.2010.3D.mkv&video=0
 ```
+
+The `video` parameter names the source's video stream by its own stream index - `MediaStream.Index`
+in the stream report, the number of that stream inside the file, and therefore the number
+Jellyfin spends on its `-map 0:<index>`. It is not the position the stream happens to sit at in
+the reported list: the two are the same number only while the list is in file order, and a
+report that skips a stream the file carries (or adds one it does not) separates them. The
+parameter is what lets the wrapper recognize the server's video map and remove it beside the
+profile's own; without it the server's numeric video map survives next to the profile's, and
+the output carries two videos. A source whose video stream carries no known index omits the
+parameter rather than guessing one, and keeps the codec report that forces the encode.
 
 MVP markers do not include `subtitle`:
 
@@ -377,6 +414,8 @@ ordinal.
 
 - [ ] The provider's `MediaSourceInfo.Path` contains a canonical marker.
 - [ ] The percent-encoded `source` query parameter contains the rooted library file path.
+- [ ] The `video` query parameter is the index of the video stream in that source's
+      `MediaStreams` list.
 - [ ] The wrapper process receives the marker as one unbroken argv token.
 - [ ] The real FFmpeg child process receives the decoded real source path.
 - [ ] The marker text does **not** appear in the real FFmpeg child command.
@@ -422,6 +461,29 @@ away, or passed to HTTP is not safe to rewrite.
 Capture the real child FFmpeg command while playback starts. The wrapper should replace the
 marker token and insert the profile's output arguments after the last input. Server-owned
 encoder, muxer, HLS, and output arguments should survive.
+
+Before any per-profile fragment, check that the command is an encode at all. A profile converts
+pictures; a command that copies the video stream has decided not to produce one.
+
+- [ ] The child command carries a video encoder: `-codec:v <name>` / `-c:v <name>` naming
+      something like `libx264`, `libx265`, `h264_qsv`, `hevc_nvenc`.
+- [ ] The child command does **not** carry a video copy: no `-codec:v copy`, `-c:v copy`,
+      `-c:v:0 copy`, `-codec:v:0 copy` or `-vcodec copy`.
+- [ ] The server's encode stack came with it: a bitrate or quality argument, a preset, and the
+      HLS keyframe arguments. Their absence next to a video copy means the server stream-copied
+      the version, and the profile fragments below will be present but inert.
+- [ ] The transcoding URL the server built for the version names a video codec, and does not
+      carry `allowVideoStreamCopy=false` as the only reason it encodes - the provider's job is
+      to report a codec that cannot be copied, not to ask the client for a favour.
+- [ ] If the wrapper refused the job instead, its line says so and names the reason:
+
+  ```text
+  anaglyfin-wrapper: refused: the command was not started (ServerChoseVideoCopy). ...
+  ```
+
+  A refusal with that classification is a plugin finding, not a configuration problem: it means
+  the server still chose video copy for a source the provider said it had to encode. Capture the
+  PlaybackInfo response (V5) and the full argv.
 
 Useful capture command:
 
@@ -557,6 +619,33 @@ Expected shape:
 - [ ] Map-less full SBS, half SBS, red-cyan, and custom grayscale commands keep audio.
 - [ ] A command that already had audio maps is not given an extra optional audio map.
 - [ ] 2D base does not invent stream maps.
+
+### 7.7 The server's numbered maps
+
+Jellyfin's HLS commands name the streams they chose by number: `-map 0:<index>`, the number
+being that stream's index inside the file. When a profile owns the video pipeline, the map the
+marker's `video=<index>` names is the server's video map, and the wrapper removes it; every
+other map is somebody else's stream.
+
+- [ ] The rewritten command carries exactly one video map, the profile's own.
+- [ ] The server's `-map 0:<index>` for the video is gone, including the optional
+      `-map 0:<index>?` spelling.
+- [ ] The server's numbered audio and subtitle maps are still there, in the order the server
+      wrote them.
+- [ ] Exclusion maps survive: `-map -0:a`, `-map -0:s` and a bare `-map -0` are the server
+      taking streams out of the output, and removing one would put the stream back -
+      subtitles under a profile that burns its own in being the case that matters.
+      (`-map -0:v` is the one exclusion the profile does take away: written after the
+      profile's own video map it would subtract that map and leave an output with no picture.)
+- [ ] A 2D base command keeps every map the server wrote: that profile owns no video pipeline
+      and takes nothing away.
+
+Expected shape for a red-cyan version of a source whose video is stream 0 and audio is
+stream 1:
+
+```text
+-i <real source path> -map 0:v:view:all -vf stereo3d=sbsl:arcd,format=yuv420p -sn -map 0:1 -codec:v libx264 ...
+```
 
 ## V8. Ordinary playback pass-through
 
@@ -737,6 +826,8 @@ Refusal safety requirements:
 - [ ] A marker that is not the first input is refused.
 - [ ] A profile that owns the video pipeline refuses when the command already carries a foreign
   `-filter_complex` or `-filter_complex_script`.
+- [ ] A profile that owns the video pipeline refuses a command that copies its video
+  (`ServerChoseVideoCopy`) instead of running a pipeline that would convert nothing.
 - [ ] Refusal diagnostics do not echo marker URLs, query parameters, or media paths.
 - [ ] Refusal diagnostics name configured environment variables when the fix is administrator
   configuration.
@@ -754,9 +845,9 @@ checks are optional unless a failure shows a provider-created marker being refus
 | V2 | Admin page | Page renders and settings round-trip |  |  |
 | V3 | Wrapper deployment | Jellyfin -> wrapper -> FFmpeg-mvc works |  |  |
 | V4 | Detection | MVC-positive items offer versions; negatives do not |  |  |
-| V5 | Media sources | Provider sources have stable ids and transcode-only flags |  |  |
-| V6 | Marker transport | Marker survives one token and never reaches FFmpeg child |  |  |
-| V7 | Profile commands | Required profile fragments appear in child FFmpeg |  |  |
+| V5 | Media sources | GUID source ids, and a video codec no profile can stream-copy |  |  |
+| V6 | Marker transport | Marker survives one token, names the video stream, never reaches FFmpeg child |  |  |
+| V7 | Profile commands | Required profile fragments appear behind a real video encoder |  |  |
 | V8 | Pass-through | Ordinary playback remains unchanged |  |  |
 | V9 | Concurrency | Slot file appears; second job exits `75`; release works |  |  |
 | V10 | Current limitations | Limitations are recorded, not mistaken for regressions |  |  |

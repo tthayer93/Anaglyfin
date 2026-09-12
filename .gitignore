@@ -11,10 +11,16 @@
 /movies/
 
 # Disposable Jellyfin validation harness state: a throwaway server config/cache, the
-# media mounted into it, and the evidence bundles `harness.sh collect` writes.
+# media mounted into it, and the evidence bundles `harness.sh collect` writes. A run is
+# free to point HARNESS_CONFIG_DIR / HARNESS_MEDIA_DIR at a sibling directory of its own
+# (jellyfin-t11/, media-sp2/, collect-rerun/ and friends), so none of that shape is
+# allowed to reach the index either.
 /dev/jellyfin-validation/jellyfin/
+/dev/jellyfin-validation/jellyfin*/
 /dev/jellyfin-validation/media/
+/dev/jellyfin-validation/media*/
 /dev/jellyfin-validation/collect/
+/dev/jellyfin-validation/collect*/
 
 # .NET build output
 bin/

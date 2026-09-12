@@ -24,6 +24,7 @@ public class WrapperRewriteResultTests
     [InlineData(WrapperRewriteStatus.RejectedMarker, false)]
     [InlineData(WrapperRewriteStatus.UnknownProfile, false)]
     [InlineData(WrapperRewriteStatus.IncompatibleFilterGraph, false)]
+    [InlineData(WrapperRewriteStatus.ServerChoseVideoCopy, false)]
     [InlineData(WrapperRewriteStatus.UnsupportedCommandShape, false)]
     public void OnlyPassThroughAndRewriteMayBeExecuted(WrapperRewriteStatus status, bool executable)
     {

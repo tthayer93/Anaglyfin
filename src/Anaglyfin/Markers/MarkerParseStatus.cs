@@ -57,5 +57,11 @@ public enum MarkerParseStatus
     /// <summary>
     /// The <c>subtitle</c> parameter is not a non-negative integer.
     /// </summary>
-    InvalidSubtitleOrdinal
+    InvalidSubtitleOrdinal,
+
+    /// <summary>
+    /// The <c>video</c> parameter is not a non-negative integer, so the marker names no
+    /// video stream the wrapper could act on.
+    /// </summary>
+    InvalidVideoStreamIndex
 }

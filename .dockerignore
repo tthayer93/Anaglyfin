@@ -17,7 +17,11 @@
 
 # The runtime-validation harness keeps a disposable Jellyfin server, its library mount,
 # and captured evidence bundles here. The compose file and scripts belong to the image
-# build only as text; everything a run writes stays out of the context.
+# build only as text; everything a run writes stays out of the context - including a run
+# that points its state at a sibling directory of its own (jellyfin-t11/, media-sp2/).
 /dev/jellyfin-validation/jellyfin/
+/dev/jellyfin-validation/jellyfin*/
 /dev/jellyfin-validation/media/
+/dev/jellyfin-validation/media*/
 /dev/jellyfin-validation/collect/
+/dev/jellyfin-validation/collect*/

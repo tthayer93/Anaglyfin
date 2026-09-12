@@ -58,6 +58,19 @@ public enum WrapperRewriteStatus
     IncompatibleFilterGraph,
 
     /// <summary>
+    /// The profile has to own the command's video pipeline, but the command tells FFmpeg
+    /// to copy the video stream instead of encoding one. A profile converts pictures, and
+    /// a stream copy has no picture for the profile's view selection and filters to act
+    /// on: the inserted arguments would sit on the command line, inert, while the output
+    /// carried the unconverted original. Refused rather than run, because the command the
+    /// server built in copy mode carries no encoder stack at all - the bitrate, preset,
+    /// level and HLS keyframe arguments exist only in the server's encode branch - so
+    /// there is nothing this wrapper could substitute for <c>copy</c> that would still be
+    /// Jellyfin's own encoding decision.
+    /// </summary>
+    ServerChoseVideoCopy,
+
+    /// <summary>
     /// The marker is present in a command shape whose profile arguments this rewriter
     /// cannot place safely: today, a marker that is not the first input (while every profile
     /// argument addresses input <c>0</c>), and more than one input carrying a valid marker
