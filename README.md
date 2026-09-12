@@ -5,7 +5,8 @@ Jellyfin plugin that exposes 3D MVC sources as selectable playback versions
 Jellyfin HLS pipeline.
 
 Runtime design and validation notes live in `docs/architecture.md` and
-`docs/validation.md`. Orchestrator planning notes are not tracked in this checkout.
+`docs/validation.md`. Install and packaging layout - bare-metal and Docker - is in
+`docs/install.md`. Orchestrator planning notes are not tracked in this checkout.
 
 ## Current state
 
@@ -20,14 +21,16 @@ The source tree now contains the working code path, not just the bootstrap scaff
 - exact FFmpeg profile argument builder
 - out-of-process `Anaglyfin.FFmpegWrapper` executable with marker rewrite,
   concurrency guard, and real FFmpeg launcher
-- xUnit tests covering the pure seams and command contract
+- `tools/Anaglyfin.Packager`, which writes the plugin zip, `meta.json`, and the staged
+  linux-x64 wrapper, and refuses a build whose assembly and manifest disagree
+- xUnit tests covering the pure seams, the command contract, and the packaging job
 
-This repository does not yet contain a packaging/release job, and real Jellyfin
-runtime validation is tracked separately in `docs/validation.md`.
+Real Jellyfin runtime validation is tracked separately in `docs/validation.md`, and the install
+shapes for a bare-metal server and for `jellyfin/jellyfin:latest` are in `docs/install.md`.
 
 Current implementation follow-ups are documented there and include subtitle ordinal
-wiring through the provider, applying device/client defaults in the provider path,
-enforcing the stored encoder policy, wrapper signal forwarding, and packaging metadata.
+wiring through the provider, applying device/client defaults in the provider path, and
+enforcing the stored encoder policy.
 
 ## Requirements
 
@@ -42,12 +45,15 @@ enforcing the stored encoder policy, wrapper signal forwarding, and packaging me
 
 ```text
 .ci/                           CI container definition (toolchain only)
-docs/                          Architecture and validation notes
+docs/                          Architecture, install, and validation notes
 src/Anaglyfin/                 Plugin project
 src/Anaglyfin.FFmpegWrapper/   Out-of-process FFmpeg wrapper executable
+tools/Anaglyfin.Packager/      Build-time packaging job for the plugin zip and wrapper artifact
 tests/Anaglyfin.Tests/         xUnit unit tests
-Anaglyfin.sln                  Solution: plugin + wrapper + tests
+Anaglyfin.sln                  Solution: plugin + wrapper + packager + tests
 ```
+
+Packaging output goes to `artifacts/` and publish output under `bin/`; both are ignored.
 
 * `Plugin` derives from `BasePlugin<PluginConfiguration>` and carries the fixed
   plugin GUID (`Plugin.PluginId`). The same GUID is declared in
@@ -94,7 +100,21 @@ docker compose --env-file .env -f .ci/test.yml run --rm test
 ```
 
 Steps executed by the job: `dotnet restore` → `dotnet build -warnaserror` (Release)
-→ `dotnet test` → `dotnet format whitespace --verify-no-changes`.
+→ `dotnet test` → `dotnet format whitespace --verify-no-changes` → publish the linux-x64
+wrapper → `Anaglyfin.Packager pack` → `Anaglyfin.Packager verify`.
+
+## Packaging
+
+The last two steps above are the packaging gate, and they run on every branch: the job writes
+`artifacts/Anaglyfin_<version>.zip` with `Anaglyfin.dll` at the archive root, `meta.json` holding
+the manifest identity plus the archive's measured size and SHA-256, and
+`artifacts/anaglyfin-ffmpeg` - the wrapper published self-contained for `linux-x64`. A missing
+assembly, a manifest the build does not carry, an archive with the DLL nested in a directory, a
+record whose checksum or size does not match the file, or a wrapper that is not a Linux x86-64
+ELF binary all fail the job rather than being noted in the log.
+
+`docs/install.md` covers where those three files go on a bare-metal server and in a container
+that gets `./jellyfin/config` mounted at `/config`.
 
 Job conventions: scratch space `/tmp/anaglyfin-test`, test port `8098` reserved
 for a future integration job (nothing listens yet, so it is not published), and
