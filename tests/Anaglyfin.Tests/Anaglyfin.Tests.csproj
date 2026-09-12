@@ -39,6 +39,12 @@
       exercised against /bin/sh rather than against a real FFmpeg.
     -->
     <ProjectReference Include="..\..\src\Anaglyfin.FFmpegWrapper\Anaglyfin.FFmpegWrapper.csproj" />
+    <!--
+      The packaging job is referenced the same way, for the same reason: its Main is private,
+      so the tests drive PackagingCommand.Run and the packaging types in-process instead of
+      starting a process per assertion. The real command line is what CI runs.
+    -->
+    <ProjectReference Include="..\..\tools\Anaglyfin.Packager\Anaglyfin.Packager.csproj" />
   </ItemGroup>
 
 </Project>
