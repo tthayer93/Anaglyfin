@@ -113,7 +113,7 @@ public class SubtitleFilterEscapingTests
         @"filename=/movies/film.mkv:si=1")]
     [InlineData(
         "/data/dirs:with colon/film.mkv",
-        @"subtitles=filename='/data/dirs'\:'with colon/film.mkv':si=1",
+        @"subtitles=filename='/data/dirs'\\:'with colon/film.mkv':si=1",
         @"filename=/data/dirs\:with colon/film.mkv:si=1")]
     [InlineData(
         "/movies/It's Here/film.mkv",

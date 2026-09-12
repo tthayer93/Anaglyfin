@@ -76,7 +76,7 @@ public class FakeFfmpegCommandCollectorTests
     [Theory]
     [InlineData(
         @"/data/dirs:with colon/Movie.2010.3D.mkv",
-        @"stereo3d=sbsl:arcd,format=yuv420p,subtitles=filename='/data/dirs'\:'with colon/Movie.2010.3D.mkv':si=2")]
+        @"stereo3d=sbsl:arcd,format=yuv420p,subtitles=filename='/data/dirs'\\:'with colon/Movie.2010.3D.mkv':si=2")]
     [InlineData(
         "/movies/It's Here (2010)/Movie.2010.3D.mkv",
         @"stereo3d=sbsl:arcd,format=yuv420p,subtitles=filename='/movies/It'\\\''s Here (2010)/Movie.2010.3D.mkv':si=2")]

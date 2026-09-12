@@ -351,13 +351,17 @@ public class FfmpegProfileArgumentBuilderTests
     [Theory]
     [InlineData("/movies/Movie (2010)/Movie.2010.3D.mkv", @"subtitles=filename='/movies/Movie (2010)/Movie.2010.3D.mkv':si=0")]
     [InlineData("/movies/a=b/film.mkv", @"subtitles=filename='/movies/a=b/film.mkv':si=0")]
-    [InlineData("/data/dirs:with colon/film.mkv", @"subtitles=filename='/data/dirs'\:'with colon/film.mkv':si=0")]
+    [InlineData("/data/dirs:with colon/film.mkv", @"subtitles=filename='/data/dirs'\\:'with colon/film.mkv':si=0")]
     [InlineData("/movies/It's Here (2010)/film.mkv", @"subtitles=filename='/movies/It'\\\''s Here (2010)/film.mkv':si=0")]
-    [InlineData("/data/dirs:with[brackets];and,commas/film.mkv", @"subtitles=filename='/data/dirs'\:'with'\['brackets'\]'\;'and'\,'commas/film.mkv':si=0")]
+    [InlineData("/data/dirs:with[brackets];and,commas/film.mkv", @"subtitles=filename='/data/dirs'\\:'with'\['brackets'\]\;'and'\,'commas/film.mkv':si=0")]
     public void BurnInEscapesThePluginProvidedPathWithoutChangingIt(string path, string expectedFilter)
     {
         var rewrite = _builder.BuildSideBySideFull(new SubtitleBurnIn(path, 0));
 
+        // A colon carries two backslashes where a bracket carries one: both parser passes
+        // consume a colon, so it is escaped once per pass, while only the filtergraph
+        // pass looks at a bracket. Dropping either backslash changes what FFmpeg opens.
+        //
         // What the emitted value means - that FFmpeg reads every one of these paths back
         // unchanged, ordinal and all - is asserted by decoding them in
         // SubtitleFilterEscapingTests against the parser of the pinned FFmpeg-mvc tree.
