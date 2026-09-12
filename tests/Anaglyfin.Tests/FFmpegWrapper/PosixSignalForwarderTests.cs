@@ -49,10 +49,14 @@ public sealed class PosixSignalForwarderTests
         using var forwarder = new PosixSignalForwarder(registrar.Register, sender.Send);
 
         // Exactly the stop signals a server, a terminal or a dying session sends - not
-        // SIGQUIT (a core dump nobody asked for), not SIGUSR1 (somebody else's protocol).
+        // SIGQUIT (a core dump nobody asked for). Ordered by name rather than value
+        // because the named members' enum values are negative sentinels, not numbers.
         Assert.Equal(
             new[] { PosixSignal.SIGHUP, PosixSignal.SIGINT, PosixSignal.SIGTERM },
-            registrar.Registrations.Select(registration => registration.Signal).OrderBy(signal => signal).ToArray());
+            registrar.Registrations
+                .Select(registration => registration.Signal)
+                .OrderBy(signal => signal.ToString(), StringComparer.Ordinal)
+                .ToArray());
 
         // Listening began with the constructor: a signal that arrives before the child
         // does must find a listener that answers "no child", not the old silence.
@@ -249,10 +253,14 @@ public sealed class PosixSignalForwarderTests
     [Fact]
     public void ASignalThatIsNotOneOfTheThreeHasNoNumberToSend()
     {
-        // SIGUSR1 is somebody else's protocol and SIGKILL is nobody's stop; the wrapper
-        // delivers what it understands and refuses anything else at the mapping itself.
-        Assert.Throws<ArgumentException>(() => PosixSignalForwarder.SignalNumber(PosixSignal.SIGUSR1));
+        // Anything outside the three stop signals is refused at the mapping itself.
+        // SIGQUIT is a core dump nobody asked the wrapper to forward. The raw numbers -
+        // 9, which is SIGKILL's, and 15, which is SIGTERM's - are refused too, and that
+        // is not a hole: the wrapper only ever registers the named members, so a raw
+        // number arriving here is a caller reaching outside what was registered.
+        Assert.Throws<ArgumentException>(() => PosixSignalForwarder.SignalNumber(PosixSignal.SIGQUIT));
         Assert.Throws<ArgumentException>(() => PosixSignalForwarder.SignalNumber((PosixSignal)9));
+        Assert.Throws<ArgumentException>(() => PosixSignalForwarder.SignalNumber((PosixSignal)15));
     }
 
     [Fact]

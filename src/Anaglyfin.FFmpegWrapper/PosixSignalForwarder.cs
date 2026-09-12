@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -24,15 +25,17 @@ namespace Anaglyfin.FFmpegWrapper;
 /// wrapper in the middle of relaying.
 /// </para>
 /// <para>
-/// <b>Sending is <c>kill(2)</c>'s job.</b> There is no managed way in this runtime to
-/// deliver an arbitrary signal: <see cref="System.Diagnostics.Process.Kill()"/> knows only
-/// <c>SIGKILL</c>, and a wrapper that answered a <c>SIGTERM</c> with a <c>SIGKILL</c> would
-/// deny FFmpeg the final segment and the finished playlist that the graceful stop is the
-/// encoder's last chance to write. So the send is one P/Invoke of <c>kill(pid, sig)</c> -
-/// the call the shell's own <c>kill</c> command makes - kept behind
-/// <see cref="SendSignal"/> and injectable for the tests. Its return code is deliberately
-/// unread beyond being retained: a child that has already exited is not an error worth
-/// acting on, and the wait for it ends on its own.
+/// <b>Sending is the C library's <c>kill(2)</c>.</b> There is no managed way in this
+/// runtime to deliver an arbitrary signal: <see cref="System.Diagnostics.Process.Kill()"/>
+/// knows only <c>SIGKILL</c>, and a wrapper that answered a <c>SIGTERM</c> with a
+/// <c>SIGKILL</c> would deny FFmpeg the final segment and the finished playlist that the
+/// graceful stop is the encoder's last chance to write. So the send is the platform call
+/// the shell's own <c>kill</c> command makes, bound once through
+/// <see cref="NativeLibrary"/> and kept behind <see cref="SendSignal"/> and injectable for
+/// the tests - directly, through a delegate, because the alternative syntax is compiled
+/// through unsafe code and this assembly does not enable it. The return code is retained
+/// and deliberately unread: a child that has already exited is not an error worth acting
+/// on, and the wait for it ends on its own.
 /// </para>
 /// <para>
 /// <b>The three signals, and only the three.</b> <c>SIGTERM</c>, <c>SIGINT</c> and
@@ -51,7 +54,7 @@ namespace Anaglyfin.FFmpegWrapper;
 /// not an exception handled later.
 /// </para>
 /// </remarks>
-public sealed partial class PosixSignalForwarder : IChildSignalForwarder
+public sealed class PosixSignalForwarder : IChildSignalForwarder
 {
     /// <summary>
     /// The stop signals a wrapper invocation listens for, in the order the forwarder
@@ -63,6 +66,32 @@ public sealed partial class PosixSignalForwarder : IChildSignalForwarder
         PosixSignal.SIGINT,
         PosixSignal.SIGHUP
     };
+
+    /// <summary>
+    /// The names a C library answers to on the POSIX families this wrapper runs on.
+    /// </summary>
+    /// <remarks>
+    /// The library that owns <c>kill(2)</c> is one thing with different names: glibc
+    /// answers to <c>libc.so.6</c>, musl to <c>libc.so</c>, and Apple platforms folded it
+    /// into <c>libSystem.B.dylib</c>; the bare <c>libc</c> is the name the
+    /// platform-invoke convention uses for it. Trying them in order rather than picking
+    /// one is what lets a single wrapper build talk signals on every POSIX deployment
+    /// without asking beforehand which C library it got. A handle that loads is never
+    /// released - the bound function keeps pointing into it.
+    /// </remarks>
+    private static readonly string[] LibCNames = { "libc", "libc.so.6", "libc.so", "libSystem.B.dylib" };
+
+    /// <summary>
+    /// The process's one binding of <c>kill(2)</c>, resolved on first use.
+    /// </summary>
+    /// <remarks>
+    /// A <see cref="Lazy{T}"/> with publication-safe initialization because two threads
+    /// can meet this function for the first time in production: the launcher's thread
+    /// and - if a stop signal arrives while the launcher is still starting the binary -
+    /// the signal delivery thread. A failed resolution is cached like a successful one:
+    /// a C library that was not there on the first question is not found by asking again.
+    /// </remarks>
+    private static readonly Lazy<KillFunction?> Kill = new(ResolveKill, LazyThreadSafetyMode.ExecutionAndPublication);
 
     private readonly IDisposable?[] _registrations = new IDisposable?[StopSignals.Length];
     private readonly ChildSignalSender _sender;
@@ -89,7 +118,8 @@ public sealed partial class PosixSignalForwarder : IChildSignalForwarder
 
     /// <summary>
     /// Registers <paramref name="handler"/> for one signal until the returned token is
-    /// disposed - the seam over <see cref="PosixSignalRegistration.Create(PosixSignal, Action{PosixSignalContext})"/>,
+    /// disposed - the seam over
+    /// <see cref="PosixSignalRegistration.Create(PosixSignal, Action{PosixSignalContext})"/>,
     /// which is what production registers with.
     /// </summary>
     /// <param name="signal">The signal to listen for.</param>
@@ -108,6 +138,18 @@ public sealed partial class PosixSignalForwarder : IChildSignalForwarder
     /// which the wrapper keeps rather than throws over - a child mid-exit is not a failure.
     /// </returns>
     public delegate int ChildSignalSender(int processId, int signalNumber);
+
+    /// <summary>
+    /// The native <c>kill(2)</c> as a delegate: deliver a signal, get the return code.
+    /// </summary>
+    /// <remarks>
+    /// A delegate rather than a direct native declaration because declarations of native
+    /// imports compile through unsafe code, which this assembly does not enable for
+    /// anything - and <c>kill(int, int)</c> is entirely blittable, so the delegate route
+    /// gives up nothing but the keyword.
+    /// </remarks>
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int KillFunction(int pid, int sig);
 
     /// <summary>
     /// Creates a forwarder that is already listening, over an explicit registration and an
@@ -277,6 +319,14 @@ public sealed partial class PosixSignalForwarder : IChildSignalForwarder
     /// </summary>
     /// <param name="signal">One of the three stop signals.</param>
     /// <returns><c>1</c>, <c>2</c> or <c>15</c>.</returns>
+    /// <remarks>
+    /// A cast of the enum would be wrong twice over: the named <see cref="PosixSignal"/>
+    /// members carry negative sentinel values precisely because they are platform-neutral
+    /// names rather than numbers, and a positive member - a raw signal number, which the
+    /// type also admits - would reach <c>kill(2)</c> as itself, unasked. This table is
+    /// the only place the wrapper turns a name into a number, and it answers for the three
+    /// names it owns.
+    /// </remarks>
     /// <exception cref="ArgumentException">
     /// The signal is not one of the three; the wrapper has no business delivering anything
     /// it has not decided to understand.
@@ -302,7 +352,7 @@ public sealed partial class PosixSignalForwarder : IChildSignalForwarder
     /// </returns>
     /// <remarks>
     /// Public because it is the wrapper's whole sending capability stated once: the tests
-    /// of the mapping and of the P/Invoke itself go through this method rather than
+    /// of the mapping and of the binding itself go through this method rather than
     /// repeating it, and production reaches it only through the injected
     /// <see cref="ChildSignalSender"/>.
     /// </remarks>
@@ -312,7 +362,17 @@ public sealed partial class PosixSignalForwarder : IChildSignalForwarder
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(processId, 0);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(signalNumber, 0);
 
-        return kill(processId, signalNumber);
+        var killFunction = Kill.Value;
+        if (killFunction is null)
+        {
+            // The C library could not be bound on this machine. Answering like the
+            // operating system answering "no" is the only honest default: nothing is
+            // delivered, the wrapper still waits for its child, and the forwarder is
+            // exactly as effective as it was before this type existed.
+            return -1;
+        }
+
+        return killFunction(processId, signalNumber);
     }
 
     /// <summary>
@@ -347,6 +407,26 @@ public sealed partial class PosixSignalForwarder : IChildSignalForwarder
 #pragma warning restore CA1031
 
         return true;
+    }
+
+    /// <summary>
+    /// Finds <c>kill(2)</c> in the first C library that loads and exports it.
+    /// </summary>
+    /// <returns>
+    /// The bound function, or <c>null</c> when no candidate named a library that has it.
+    /// </returns>
+    private static KillFunction? ResolveKill()
+    {
+        foreach (var name in LibCNames)
+        {
+            if (NativeLibrary.TryLoad(name, out var handle)
+                && NativeLibrary.TryGetExport(handle, "kill", out var entryPoint))
+            {
+                return Marshal.GetDelegateForFunctionPointer<KillFunction>(entryPoint);
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -390,19 +470,4 @@ public sealed partial class PosixSignalForwarder : IChildSignalForwarder
 
         return PosixSignalRegistration.Create(signal, context => context.Cancel = handler());
     }
-
-    /// <summary>
-    /// The operating system's <c>kill(2)</c>: deliver a signal to a process.
-    /// </summary>
-    /// <param name="pid">The process to signal.</param>
-    /// <param name="sig">The raw signal number.</param>
-    /// <returns>Zero on success, minus one with <c>errno</c> set otherwise.</returns>
-    /// <remarks>
-    /// The declaration is the entire dependency: no shell is started to send a signal to a
-    /// process this process already knows the id of, the same reasoning that keeps the
-    /// launcher off <c>cmd</c> and <c>/bin/sh</c>. The name is spelled lower-case because
-    /// it is the C symbol, and the entry point follows the name.
-    /// </remarks>
-    [LibraryImport("libc", SetLastError = true)]
-    private static partial int kill(int pid, int sig);
 }
