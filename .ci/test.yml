@@ -3,9 +3,11 @@
 # Usage (from any checkout of this repository):
 #   SRC_DIR="$HOST_WORKSPACE/Anaglyfin/.worktrees/agent-T0" docker compose -f .ci/test.yml run --rm test
 #
-# SRC_DIR is the only parameter: it is used both as the Docker build context and
-# as the bind mount the job builds and tests. No container-side path of the
-# caller's repository is hardcoded here (the container always sees /src).
+# SRC_DIR is the only required parameter: it is used both as the Docker build
+# context and as the bind mount the job builds and tests. No path of the caller's
+# repository is hardcoded here (inside the container it is always /src).
+# Optional: ANAGLYFIN_CI_TAG (image tag, default "local"), BUILD_CONTEXT (see
+# below), BUILD_UID / BUILD_GID (toolchain image user).
 name: anaglyfin-ci
 
 services:

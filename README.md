@@ -49,12 +49,19 @@ Steps executed by the job: `dotnet restore` → `dotnet build -warnaserror` (Rel
 
 Job conventions: scratch space `/tmp/anaglyfin-test`, test port `8098` reserved
 for a future integration job (nothing listens yet, so it is not published), and
-no database.
+no database. The job runs on the host network namespace: it listens on nothing
+and talks to no other service, so it does not need (and does not consume) a
+daemon-managed bridge network.
 
 The container runs as UID/GID `1000:1000` (overridable with the `BUILD_UID` /
 `BUILD_GID` build args) so build output written into the bind mount is not
 root-owned, with `HOME`/`DOTNET_CLI_HOME`/`NUGET_PACKAGES` pointed at `/tmp` so
 restore has writable state.
+
+`BUILD_CONTEXT` may be set when the compose CLI and the Docker daemon see the
+same checkout under different mount points; it overrides only the build context
+and must never be needed on a machine where `$HOST_WORKSPACE` is readable by
+both.
 
 Style enforcement is `dotnet format whitespace` (formatter/`.editorconfig`
 conformance) plus compiler warnings as errors. StyleCop and the Jellyfin
