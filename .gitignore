@@ -7,6 +7,9 @@
 .env
 .env.local
 
+# Local 3D test media used for manual runs; never part of the repository
+/movies/
+
 # .NET build output
 bin/
 obj/
