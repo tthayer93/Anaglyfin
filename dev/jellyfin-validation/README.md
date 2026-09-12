@@ -222,8 +222,12 @@ whose folder is `/media`. A few things worth knowing before you do:
   `-mvc` - because plain `3D` does not make an item eligible (`docs/validation.md` V4).
   Two negatives next to it - one `3D` item without a marker and one `HSBS` item - make
   the result self-evident.
-- `/media` is a mount, not a copy. The default `./media` starts empty; put or link a
-  sample in, or point `HARNESS_MEDIA_DIR` at a library you already have.
+- `/media` is a mount, not a copy, and the default mount is read-write. The default
+  `./media` starts empty; put or link a sample in, or point `HARNESS_MEDIA_DIR` at a
+  library you already have. If you point it at a real library, first untick that library's
+  metadata savers, or disable "Save metadata into media folders", or expect Jellyfin to
+  write `.nfo` files and artwork into the mounted directory. A copy of the sample, or a
+  read-only mount for the library folder, is the safer default.
 
 Expected in the log: the scan finds the items and finishes without errors. Nothing
 Anaglyfin-specific happens during the scan - the provider is asked at playback-info time.

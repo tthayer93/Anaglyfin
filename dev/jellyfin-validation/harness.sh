@@ -65,6 +65,63 @@ local_view() {
     printf '%s' "$path"
 }
 
+# Preflight accepts either view for filesystem checks: the raw daemon-visible path or the
+# translated local path. Compose still receives the raw daemon-visible paths.
+path_pair() {
+    raw="$1"
+    translated=$(local_view "$raw")
+    if [ "$translated" = "$raw" ]; then
+        printf '%s' "$raw"
+    else
+        printf '%s (this shell: %s)' "$raw" "$translated"
+    fi
+}
+
+first_nonempty_view() {
+    raw="$1"
+    translated=$(local_view "$raw")
+    if [ -n "$translated" ] && [ "$translated" != "$raw" ] && [ -s "$translated" ]; then
+        printf '%s' "$translated"
+        return 0
+    fi
+    if [ -s "$raw" ]; then
+        printf '%s' "$raw"
+        return 0
+    fi
+    return 1
+}
+
+first_existing_dir_view() {
+    raw="$1"
+    translated=$(local_view "$raw")
+    if [ -n "$translated" ] && [ "$translated" != "$raw" ] && [ -d "$translated" ]; then
+        printf '%s' "$translated"
+        return 0
+    fi
+    if [ -d "$raw" ]; then
+        printf '%s' "$raw"
+        return 0
+    fi
+    return 1
+}
+
+create_dir_view() {
+    raw="$1"
+    translated=$(local_view "$raw")
+    if [ -n "$translated" ] && [ "$translated" != "$raw" ]; then
+        if mkdir -p -- "$translated" 2>/dev/null; then
+            printf '%s' "$translated"
+            return 0
+        fi
+    else
+        if mkdir -p -- "$raw" 2>/dev/null; then
+            printf '%s' "$raw"
+            return 0
+        fi
+    fi
+    return 1
+}
+
 say() { printf '%s\n' "$*"; }
 die() { printf 'harness: %s\n' "$*" >&2; exit 1; }
 
@@ -76,11 +133,11 @@ preflight() {
     say "== validation harness preflight =="
     say "image          $IMAGE"
     say "web ui         http://localhost:${WEB_PORT}"
-    say "plugin dll     $PLUGIN_DLL"
-    say "wrapper        $WRAPPER_BIN"
-    say "config         $CONFIG_DIR -> /config"
-    say "cache          $CACHE_DIR  -> /cache"
-    say "media          $MEDIA_DIR  -> /media"
+    say "plugin dll     $(path_pair "$PLUGIN_DLL")"
+    say "wrapper        $(path_pair "$WRAPPER_BIN")"
+    say "config         $(path_pair "$CONFIG_DIR") -> /config"
+    say "cache          $(path_pair "$CACHE_DIR")  -> /cache"
+    say "media          $(path_pair "$MEDIA_DIR")  -> /media"
     say "ffmpeg target  ANAGLYFIN_FFMPEG (in container) = ${HARNESS_JELLYFIN_FFMPEG:-/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg}"
     say "real ffmpeg    ANAGLYFIN_REAL_FFMPEG (in container) = $REAL_FFMPEG"
     say "lock dir       ANAGLYFIN_LOCK_DIR (in container) = $LOCK_DIR"
@@ -93,49 +150,59 @@ preflight() {
     # A bind mount whose source does not exist is created for you, as an empty root-owned
     # directory. For a plugin assembly and a wrapper binary that is the worst possible
     # mistake - the server would find a directory where a file belongs - so the two
-    # artifacts are checked before anything starts.
-    if [ ! -s "$PLUGIN_DLL" ]; then
-        say "MISSING  plugin dll: $PLUGIN_DLL"
+    # artifacts are checked before anything starts. The checks accept either the raw
+    # daemon path or its local view when `HARNESS_DAEMON_PREFIX` / `HARNESS_LOCAL_PREFIX`
+    # name the split.
+    plugin_dll_found=$(first_nonempty_view "$PLUGIN_DLL")
+    if [ -z "$plugin_dll_found" ]; then
+        say "MISSING  plugin dll: $(path_pair "$PLUGIN_DLL")"
         say '         run the CI job (README.md step 1), or point HARNESS_PLUGIN_DLL at'
         say '         the Anaglyfin.dll extracted from artifacts/Anaglyfin_<version>.zip'
         missing=$((missing + 1))
     else
-        say "found    plugin dll ($PLUGIN_DLL)"
+        say "found    plugin dll ($plugin_dll_found)"
     fi
 
-    if [ ! -s "$WRAPPER_BIN" ]; then
-        say "MISSING  wrapper: $WRAPPER_BIN"
+    wrapper_found=$(first_nonempty_view "$WRAPPER_BIN")
+    if [ -z "$wrapper_found" ]; then
+        say "MISSING  wrapper: $(path_pair "$WRAPPER_BIN")"
         say '         run the CI job (README.md step 1), or point HARNESS_WRAPPER_BIN at'
         say '         an anaglyfin-ffmpeg artifact'
         missing=$((missing + 1))
     else
-        if [ -x "$WRAPPER_BIN" ]; then
-            say "found    wrapper, executable ($WRAPPER_BIN)"
+        if [ -x "$wrapper_found" ]; then
+            say "found    wrapper, executable ($wrapper_found)"
         else
-            chmod 0755 "$WRAPPER_BIN" 2>/dev/null \
-                && say "found    wrapper; executable bit restored ($WRAPPER_BIN)" \
-                || { say "MISSING  executable bit on $WRAPPER_BIN and chmod failed"; missing=$((missing + 1)); }
+            chmod 0755 "$wrapper_found" 2>/dev/null \
+                && say "found    wrapper; executable bit restored ($wrapper_found)" \
+                || { say "MISSING  executable bit on $(path_pair "$WRAPPER_BIN") and chmod failed"; missing=$((missing + 1)); }
         fi
     fi
 
     # These three are written to by the container, so they exist as directories before
-    # Docker creates them as root.
+    # Docker creates them as root. In split-prefix setups the local view is the path this
+    # shell can create; compose still gets the raw daemon path.
     for dir in "$CONFIG_DIR" "$CACHE_DIR" "$MEDIA_DIR"; do
-        if [ -d "$dir" ]; then
-            say "found    state dir ($dir)"
-        elif mkdir -p -- "$dir" 2>/dev/null; then
-            say "created  state dir ($dir)"
+        dir_found=$(first_existing_dir_view "$dir")
+        if [ -n "$dir_found" ]; then
+            say "found    state dir ($dir_found)"
         else
-            say "MISSING  state dir $dir could not be created"
-            missing=$((missing + 1))
+            created=$(create_dir_view "$dir") || created=""
+            if [ -n "$created" ]; then
+                say "created  state dir ($created)"
+            else
+                say "MISSING  state dir $(path_pair "$dir") could not be created"
+                missing=$((missing + 1))
+            fi
         fi
     done
 
-    if [ -z "$(ls -A -- "$MEDIA_DIR" 2>/dev/null)" ]; then
+    media_found=$(first_existing_dir_view "$MEDIA_DIR")
+    if [ -n "$media_found" ] && [ -z "$(ls -A -- "$media_found" 2>/dev/null)" ]; then
         say ''
-        say "note:    $MEDIA_DIR is empty. The scan will find nothing to offer versions"
+        say "note:    $media_found is empty. The scan will find nothing to offer versions"
         say '         for. Copy or link a sample in, e.g.'
-        say '           cp "/path/to/Movie.2010.3D.1080p.MVC.mkv" '"$MEDIA_DIR/"
+        say '           cp "/path/to/Movie.2010.3D.1080p.MVC.mkv" '"$media_found/"
     fi
 
     [ "$missing" -eq 0 ] || die "$missing required input(s) missing; nothing was started"
@@ -171,11 +238,14 @@ case "${1:-help}" in
         # wrapper's directory, so that directory has to hold one. Copy the image's own
         # - or the matching build's, when an FFmpeg-mvc build is mounted, by naming its
         # ffprobe inside the container:  sh harness.sh ffprobe /opt/anaglyfin/ffmpeg-mvc/ffprobe
+        # The target is refused as a source, and the copy is staged through a temporary
+        # file, so a bad source cannot leave the wrapper directory without an ffprobe.
         shift
         src="${1:-}"
         # Quoted for the container's shell, which is the one that reads these paths.
         compose exec -T jellyfin sh -eu -c '
             target_dir=$(dirname "${JELLYFIN_FFMPEG:?only reachable through JELLYFIN_FFMPEG}")
+            target="$target_dir/ffprobe"
             src=${1:-}
             if [ -z "$src" ]; then
                 for candidate in /usr/lib/jellyfin-ffmpeg/ffprobe /usr/bin/ffprobe /bin/ffprobe; do
@@ -189,11 +259,17 @@ case "${1:-help}" in
                 echo "no ffprobe to copy; name one inside the container" >&2
                 exit 1
             fi
-            rm -f "$target_dir/ffprobe"
-            cp -f "$src" "$target_dir/ffprobe"
-            chmod 0755 "$target_dir/ffprobe"
-            "$target_dir/ffprobe" -version | head -n 1
-            echo "copied $src to $target_dir/ffprobe; restart the server to pick it up"
+            if [ "$src" = "$target" ]; then
+                echo "refusing to copy the ffprobe target onto itself: $src" >&2
+                exit 1
+            fi
+            tmp="$target.tmp.$$"
+            trap "rm -f \"$tmp\" 2>/dev/null || true" EXIT
+            cp -f "$src" "$tmp"
+            chmod 0755 "$tmp"
+            mv -f "$tmp" "$target"
+            "$target" -version | head -n 1
+            echo "copied $src to $target; restart the server to pick it up"
         ' sh "$src"
         ;;
     collect)
