@@ -622,6 +622,31 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
+    public void ALabelledVideoMapIsRemovedWhereTheProfileHasNoGraphToMerge()
+    {
+        // A labelled map only means anything together with a graph, and a command that
+        // carries both is refused outright (see the filter-graph refusals above). The rule
+        // still has to hold on its own: as far as this rewriter goes a label is video, and
+        // after a rewrite the only label the output may map is the profile's own.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "[v]", "-map", "0:a", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all", "-sn",
+                "-map", "0:a", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
     public void ACommandWhoseInputOptionCarriesNoValueIsPassedThrough()
     {
         // There is nothing to classify, and this is not the wrapper's typo to fix: FFmpeg's
