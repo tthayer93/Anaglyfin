@@ -10,6 +10,12 @@
 # Local 3D test media used for manual runs; never part of the repository
 /movies/
 
+# Disposable Jellyfin validation harness state: a throwaway server config/cache, the
+# media mounted into it, and the evidence bundles `harness.sh collect` writes.
+/dev/jellyfin-validation/jellyfin/
+/dev/jellyfin-validation/media/
+/dev/jellyfin-validation/collect/
+
 # .NET build output
 bin/
 obj/

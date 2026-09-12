@@ -1,0 +1,97 @@
+# Anaglyfin disposable runtime-validation stack.
+#
+# One Jellyfin container, fed entirely by bind mounts, mirroring the mounts the real
+# test server uses:
+#
+#   ./jellyfin/config -> /config
+#   ./jellyfin/cache  -> /cache
+#   <media dir>       -> /media
+#
+# Nothing here is installed into the image and nothing in the image is replaced: the
+# plugin arrives as one mounted assembly file, the wrapper as one mounted executable
+# file, and the server is pointed at the wrapper with JELLYFIN_FFMPEG. That is the same
+# shape docs/install.md describes for a container deployment, so a PASS here transfers
+# to a real server that is mounted the same way.
+#
+# This file is not part of the CI gate. It is started by hand, through harness.sh, and
+# thrown away afterwards; everything it writes lands under this directory, which git
+# ignores. See dev/jellyfin-validation/README.md for the runbook.
+name: anaglyfin-validation
+
+services:
+  jellyfin:
+    # The target runtime: Jellyfin 12.0.0 on the Debian-based official image. Override
+    # HARNESS_IMAGE to pin a digest if you need byte-identical reruns.
+    image: ${HARNESS_IMAGE:-jellyfin/jellyfin:latest}
+    # A validation stack should not come back after a reboot, and it should not restart
+    # itself into a half-torn-down state while a transcode is being captured.
+    restart: "no"
+    ports:
+      - "${HARNESS_WEB_PORT:-8096}:8096"
+    environment:
+      # --- The Anaglyfin deployment contract (docs/install.md, "Docker server") ---
+      # The server's FFmpeg path: the wrapper, mounted from the CI artifacts.
+      JELLYFIN_FFMPEG: ${HARNESS_JELLYFIN_FFMPEG:-/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg}
+      # What the wrapper hands commands to. The default is the FFmpeg the official image
+      # ships, which is enough to validate marker transport, command rewrite, and
+      # ordinary pass-through - and is NOT an FFmpeg-mvc build, so it cannot decode MVC.
+      # See README.md step 4 for discovering the real path in this image, and step 9 for
+      # pointing this at a mounted FFmpeg-mvc build, which is what a real MVC playback
+      # needs.
+      ANAGLYFIN_REAL_FFMPEG: ${HARNESS_REAL_FFMPEG:-/usr/lib/jellyfin-ffmpeg/ffmpeg}
+      # Concurrency slots are runtime state, deleted with the process that made them, so
+      # they live in the container's tmp and not in the mounted config.
+      ANAGLYFIN_LOCK_DIR: ${HARNESS_LOCK_DIR:-/tmp/anaglyfin/ffmpeg-wrapper}
+      ANAGLYFIN_MAX_CONCURRENT_TRANSCODES: "${HARNESS_MAX_CONCURRENT_TRANSCODES:-1}"
+      # --- The image's own directory contract; written out so the run is readable ---
+      JELLYFIN_DATA_DIR: /config
+      JELLYFIN_CONFIG_DIR: /config/config
+      JELLYFIN_CACHE_DIR: /cache
+    volumes:
+      # Mount shape of the real server.
+      - ${HARNESS_CONFIG_DIR:-./jellyfin/config}:/config
+      - ${HARNESS_CACHE_DIR:-./jellyfin/cache}:/cache
+      - ${HARNESS_MEDIA_DIR:-./media}:/media
+      # The plugin: one assembly file in the server's plugin directory. The archive
+      # Anaglyfin_<version>.zip contains exactly this DLL, so mounting it at this path
+      # is the unpacked archive.
+      - ${HARNESS_PLUGIN_DLL:-../../src/Anaglyfin/bin/Release/net10.0/Anaglyfin.dll}:/config/plugins/Anaglyfin/Anaglyfin.dll:ro
+      # The wrapper: the staged CI artifact, executable, read-only. The server only ever
+      # executes it; .NET single-file extraction goes to the container's tmp.
+      - ${HARNESS_WRAPPER_BIN:-../../artifacts/anaglyfin-ffmpeg}:/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg:ro
+    # Two things are deliberately not here, because compose cannot express "only if it
+    # exists" and a stack that needs either one is not a stack everyone can start:
+    #
+    #   - an ffprobe beside the wrapper. Jellyfin looks for ffprobe next to the FFmpeg it
+    #     was given, so the wrapper's directory has to hold one; `sh harness.sh ffprobe`
+    #     copies the image's own in, and a real deployment copies its FFmpeg-mvc build's.
+    #   - an FFmpeg-mvc build, which is what turns ordinary playback into 3D output:
+    #
+    #       - ${HARNESS_FFMPEG_MVC}:/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc:ro
+    #
+    #     with HARNESS_FFMPEG_MVC in .env naming the binary on this host, and
+    #     HARNESS_REAL_FFMPEG=/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc to point the wrapper at
+    #     it. README.md step 9 has the pair, docs/install.md the bare-metal shape.
+    #
+    # Intel GPU access is the same story and lives in compose.qsv.yml.
+
+  # Optional, opt-in, one-shot: proves the CI wrapper artifact is a runnable Linux
+  # x64 binary inside this same image, without starting a server. It is in a profile so
+  # that a missing artifact or a missing GPU cannot break a normal `up`.
+  #
+  #   docker compose -f compose.jellyfin.yml run --rm wrapper-check
+  wrapper-check:
+    image: ${HARNESS_IMAGE:-jellyfin/jellyfin:latest}
+    profiles:
+      - harness-check
+    restart: "no"
+    # Same filesystem view the wrapper gets in the server container, at the same paths,
+    # so a failure here is a failure there.
+    volumes:
+      - ${HARNESS_WRAPPER_BIN:-../../artifacts/anaglyfin-ffmpeg}:/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg:ro
+      - ${HARNESS_CHECK_SCRIPT:-./wrapper-check.sh}:/harness/wrapper-check.sh:ro
+    environment:
+      ANAGLYFIN_REAL_FFMPEG: ${HARNESS_REAL_FFMPEG:-/usr/lib/jellyfin-ffmpeg/ffmpeg}
+      ANAGLYFIN_LOCK_DIR: /tmp/anaglyfin/ffmpeg-wrapper
+      ANAGLYFIN_MAX_CONCURRENT_TRANSCODES: "${HARNESS_MAX_CONCURRENT_TRANSCODES:-1}"
+    entrypoint: ["/bin/sh", "/harness/wrapper-check.sh"]

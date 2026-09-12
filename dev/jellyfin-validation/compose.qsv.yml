@@ -1,0 +1,30 @@
+# Optional overlay: Intel QSV / any /dev/dri GPU, added to the validation stack.
+#
+# The base stack runs on a host with no GPU at all, which is the shape most people have
+# and the shape ordinary playback has to survive. Add this overlay when the host has an
+# Intel GPU and you want to see hardware encode in the process list:
+#
+#   docker compose -f compose.jellyfin.yml -f compose.qsv.yml up -d
+#
+# Hardware acceleration is still a dashboard setting: Dashboard -> Playback ->
+# Transcoding -> Hardware encoding has to be enabled (and the Anaglyfin admin page's
+# encoder policy is stored but not yet enforced, docs/validation.md V10). What this
+# overlay buys you is the device node, nothing else.
+#
+# Notes that matter for a 3D job:
+#   - MVC decoding is software-only in FFmpeg-mvc whatever the GPU can do; the GPU
+#     matters for the encode at the end of the command.
+#   - If the container cannot open /dev/dri, check the host group of the device
+#     (usually `render`/`video`) and pass it through instead of the node:
+#
+#       group_add:
+#         - "989"        # host `getent group render`
+#
+#   - With an FFmpeg-mvc build mounted for the converted profiles, that build needs the
+#     same hardware stack the image's own FFmpeg has, or its encode falls back to
+#     software while ordinary playback still uses the GPU. That difference is a finding
+#     to record, not something the harness hides.
+services:
+  jellyfin:
+    devices:
+      - /dev/dri:/dev/dri
