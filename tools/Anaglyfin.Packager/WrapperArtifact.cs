@@ -63,20 +63,16 @@ public sealed class WrapperArtifact
     /// <param name="runtime">The runtime it was published for.</param>
     /// <returns>The staged artifact.</returns>
     /// <exception cref="PackagingError">
-    /// The published binary is missing, or is not a Linux x86-64 executable.
+    /// The name carries a path, the published binary is missing, or it is not a Linux x86-64
+    /// executable.
     /// </exception>
     public static WrapperArtifact Stage(string publishedPath, string artifactDirectory, string fileName, string runtime)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(publishedPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactDirectory);
-        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         ArgumentException.ThrowIfNullOrWhiteSpace(runtime);
 
-        if (fileName.IndexOf('/') >= 0 || fileName.IndexOf('\\') >= 0)
-        {
-            throw new PackagingError(
-                $"The wrapper artifact name '{fileName}' contains a path. It is staged at the root of the artifact directory.");
-        }
+        RequireFileName(fileName);
 
         RequireLinuxX64Executable(publishedPath, "the published wrapper");
 
@@ -100,18 +96,41 @@ public sealed class WrapperArtifact
     }
 
     /// <summary>
+    /// Checks the file name an artifact is recorded or staged under: a bare name, because the
+    /// artifact sits at the root of the artifact directory.
+    /// </summary>
+    /// <param name="fileName">The name to check.</param>
+    /// <exception cref="PackagingError">It carries a path.</exception>
+    /// <remarks>
+    /// The name is read back out of <c>meta.json</c> before it is ever combined with a directory,
+    /// so a record naming <c>../../etc/something</c> as its wrapper is a refusal rather than a
+    /// hint about where on the host to look for an ELF binary.
+    /// </remarks>
+    public static void RequireFileName(string fileName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+
+        if (fileName.IndexOf('/') >= 0 || fileName.IndexOf('\\') >= 0)
+        {
+            throw new PackagingError(
+                $"The wrapper artifact name '{fileName}' contains a path. It is staged at the root of the artifact directory.");
+        }
+    }
+
+    /// <summary>
     /// Describes an artifact that already sits in the artifact directory.
     /// </summary>
     /// <param name="artifactDirectory">The directory the artifacts are installed from.</param>
     /// <param name="fileName">The file name the metadata says to look for.</param>
     /// <param name="runtime">The runtime it claims to be published for.</param>
     /// <returns>The artifact as it actually is on disk.</returns>
-    /// <exception cref="PackagingError">It is missing, or is not a Linux x86-64 executable.</exception>
+    /// <exception cref="PackagingError">The name carries a path, the file is missing, or it is not a Linux x86-64 executable.</exception>
     public static WrapperArtifact Measure(string artifactDirectory, string fileName, string runtime)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactDirectory);
-        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         ArgumentException.ThrowIfNullOrWhiteSpace(runtime);
+
+        RequireFileName(fileName);
 
         var path = Path.Combine(artifactDirectory, fileName);
 

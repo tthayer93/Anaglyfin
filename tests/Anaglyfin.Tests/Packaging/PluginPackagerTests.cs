@@ -153,6 +153,24 @@ public sealed class PluginPackagerTests : IDisposable
     }
 
     [Fact]
+    public void VerifyRefusesAWrapperRecordNamedOutsideTheArtifactDirectory()
+    {
+        var wrapper = FakeLinuxExecutable.WriteInto(_build);
+
+        PluginPackager.Pack(Request(wrapperInputPath: wrapper));
+
+        // The record is input by the time a gate or an administrator hands it back, so a name
+        // that walks out of the artifact directory is refused before it is ever combined.
+        RewriteInstallRecord(
+            "\"fileName\": \"anaglyfin-ffmpeg\"",
+            "\"fileName\": \"../../../../etc/anaglyfin-ffmpeg\"");
+
+        var refusal = Assert.Throws<PackagingError>(() => PluginPackager.Verify(VerifyRequest()));
+
+        Assert.Contains("contains a path", refusal.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void VerifyAcceptsTheArtifactsTheJobWrote()
     {
         PluginPackager.Pack(Request());

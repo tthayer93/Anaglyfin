@@ -199,8 +199,14 @@ public sealed class PackageMetadata
 
         if (document["wrapper"] is JsonObject wrapperNode)
         {
+            // Rejected before anything is combined with the artifact directory: the record is
+            // untrusted input by the time a gate or an administrator hands it back.
+            var wrapperFileName = Text(wrapperNode, "fileName", path);
+
+            WrapperArtifact.RequireFileName(wrapperFileName);
+
             wrapper = new WrapperArtifactRecord(
-                Text(wrapperNode, "fileName", path),
+                wrapperFileName,
                 Text(wrapperNode, "runtime", path),
                 ChecksumType(wrapperNode, "checksumType", path),
                 Text(wrapperNode, "checksum", path),
