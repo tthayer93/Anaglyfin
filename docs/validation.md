@@ -81,8 +81,9 @@ Notes:
 ## V1. Plugin installation and discovery
 
 Install the plugin by placing the built `Anaglyfin.dll` in the server's configured plugin
-directory, or by using your local plugin repository workflow. Restart or reload Jellyfin
-after installation.
+directory, or by using your local plugin repository workflow. `docs/install.md` gives the paths
+for a bare-metal server and for a container that mounts `./jellyfin/config` at `/config`.
+Restart or reload Jellyfin after installation.
 
 - [ ] Jellyfin lists the plugin with name `Anaglyfin`.
 - [ ] The plugin id shown by the server matches

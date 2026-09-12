@@ -103,19 +103,6 @@ Steps executed by the job: `dotnet restore` → `dotnet build -warnaserror` (Rel
 → `dotnet test` → `dotnet format whitespace --verify-no-changes` → publish the linux-x64
 wrapper → `Anaglyfin.Packager pack` → `Anaglyfin.Packager verify`.
 
-## Packaging
-
-The last two steps above are the packaging gate, and they run on every branch: the job writes
-`artifacts/Anaglyfin_<version>.zip` with `Anaglyfin.dll` at the archive root, `meta.json` holding
-the manifest identity plus the archive's measured size and SHA-256, and
-`artifacts/anaglyfin-ffmpeg` - the wrapper published self-contained for `linux-x64`. A missing
-assembly, a manifest the build does not carry, an archive with the DLL nested in a directory, a
-record whose checksum or size does not match the file, or a wrapper that is not a Linux x86-64
-ELF binary all fail the job rather than being noted in the log.
-
-`docs/install.md` covers where those three files go on a bare-metal server and in a container
-that gets `./jellyfin/config` mounted at `/config`.
-
 Job conventions: scratch space `/tmp/anaglyfin-test`, test port `8098` reserved
 for a future integration job (nothing listens yet, so it is not published), and
 no database. The job runs on the host network namespace: it listens on nothing
@@ -136,3 +123,16 @@ Style enforcement is `dotnet format whitespace` (formatter/`.editorconfig`
 conformance) plus compiler warnings as errors. StyleCop and the Jellyfin
 analyzer set are deliberately not wired in yet; adding them is a
 dependency-level change, not an in-task one.
+
+## Packaging
+
+The last two CI steps are the packaging gate, and they run on every branch: the job writes
+`artifacts/Anaglyfin_<version>.zip` with `Anaglyfin.dll` at the archive root, `meta.json` holding
+the manifest identity plus the archive's measured size and SHA-256, and
+`artifacts/anaglyfin-ffmpeg` - the wrapper published self-contained for `linux-x64`. A missing
+assembly, a manifest the build does not carry, an archive with the DLL nested in a directory, a
+record whose checksum or size does not match the file, or a wrapper that is not a Linux x86-64
+ELF binary all fail the job rather than being noted in the log.
+
+`docs/install.md` covers where those three files go on a bare-metal server and in a container
+that gets `./jellyfin/config` mounted at `/config`.
