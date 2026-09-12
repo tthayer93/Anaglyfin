@@ -325,7 +325,7 @@ For each alternate source, check:
 
 | Field | Expected |
 | --- | --- |
-| `Id` | `anaglyfin:<item-id-n>:<profile-id>`, lower-cased |
+| `Id` | GUID, lower-case `N` format, derived from the item id and the profile id |
 | `Name` | human-readable profile display name |
 | `Path` | Anaglyfin marker URL |
 | `Protocol` | `Http` |
@@ -338,7 +338,8 @@ For each alternate source, check:
 | `Type` | `Default` |
 | `MediaStreams` | copied from the original source |
 
-- [ ] The Anaglyfin source ids start with `anaglyfin:`.
+- [ ] The Anaglyfin source ids are lower-case `N`-format GUIDs, unique per profile and different from the item id.
+      DynamicHLS parses `MediaSourceId` as a `Guid`, so a descriptive id fails playback before FFmpeg starts.
 - [ ] The source id changes when the profile id changes.
 - [ ] Resume position and seek behavior remain reasonable when switching between versions.
 - [ ] The original library source remains playable and unchanged.
