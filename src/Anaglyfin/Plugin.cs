@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using Anaglyfin.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
+using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 
 namespace Anaglyfin;
@@ -9,7 +11,7 @@ namespace Anaglyfin;
 /// <summary>
 /// The Anaglyfin plugin entry point.
 /// </summary>
-public class Plugin : BasePlugin<PluginConfiguration>
+public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
     /// <summary>
     /// The fixed identity GUID of the plugin.
@@ -41,4 +43,14 @@ public class Plugin : BasePlugin<PluginConfiguration>
     /// <inheritdoc />
     public override string Description
         => "Exposes 3D MVC sources to Jellyfin as selectable playback versions.";
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// One page: the admin settings page. The dashboard is told where to find it
+    /// (<see cref="ConfigurationPage.HtmlResourceName"/>) and serves it unchanged, so the
+    /// page reads and writes the settings through the server's plugin settings endpoint
+    /// rather than through anything this assembly exposes.
+    /// </remarks>
+    public IEnumerable<PluginPageInfo> GetPages()
+        => new[] { ConfigurationPage.CreatePageInfo() };
 }

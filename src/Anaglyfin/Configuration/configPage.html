@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Anaglyfin</title>
+</head>
+<body>
+    <div id="AnaglyfinConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+        <!--
+          The dashboard parses this document as a fragment and keeps only the element
+          carrying data-role="page": anything outside that element is parsed away and
+          never reaches the browser, a stylesheet in the head included. The page therefore
+          carries its own stylesheet inside itself.
+        -->
+        <style>
+            .anaglyfin-intro {
+                margin-bottom: 1.2em;
+            }
+
+            .anaglyfin-section {
+                margin-top: 1.8em;
+            }
+
+            .anaglyfin-deviceDefaults {
+                margin-bottom: 0.6em;
+            }
+
+            .anaglyfin-deviceDefault {
+                border-left: 0.2em solid rgba(255, 255, 255, 0.12);
+                padding-left: 0.8em;
+                margin-bottom: 0.8em;
+            }
+
+            .anaglyfin-deviceDefault-fields {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.6em;
+            }
+
+            .anaglyfin-deviceDefault-field {
+                flex: 1 1 12em;
+                min-width: 10em;
+            }
+
+            .anaglyfin-colorRow {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.6em;
+            }
+
+            .anaglyfin-colorField {
+                flex: 1 1 10em;
+                min-width: 9em;
+            }
+
+            .anaglyfin-colorInput {
+                width: 100%;
+                min-height: 2.2em;
+                padding: 0.2em;
+            }
+
+            .anaglyfin-envGuidance {
+                margin: 1em 0;
+                padding: 0.8em 1em;
+                border-left: 0.25em solid rgba(255, 255, 255, 0.2);
+                background: rgba(0, 0, 0, 0.18);
+            }
+
+            .anaglyfin-envGuidance dl {
+                margin: 0;
+            }
+
+            .anaglyfin-envGuidance dt {
+                font-family: monospace;
+                margin-top: 0.6em;
+            }
+
+            .anaglyfin-envGuidance dd {
+                margin: 0 0 0 1em;
+            }
+
+            .anaglyfin-message {
+                min-height: 1.2em;
+                margin-top: 0.6em;
+            }
+        </style>
+
+        <div data-role="content">
+            <div class="content-primary">
+                <h1 class="headerLogo">Anaglyfin</h1>
+                <div class="fieldDescription anaglyfin-intro">
+                    Choose which 3D versions Anaglyfin offers for MVC videos, which one a
+                    client gets by default, and how much of the server Anaglyfin may spend
+                    converting them. Everything on this page is a name from Anaglyfin's own
+                    profile list or a number: it accepts no conversion description, no
+                    encoder argument and no path.
+                </div>
+
+                <form id="AnaglyfinConfigForm">
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="AnaglyfinDefaultProfileId">Default profile</label>
+                        <select is="emby-select" id="AnaglyfinDefaultProfileId" class="emby-select-withcolor emby-select" data-anaglyfin-field="DefaultProfileId" data-anaglyfin-kind="profileChoice" data-anaglyfin-default="anaglyph_arcd"></select>
+                        <div class="fieldDescription">
+                            The version listed first for every client that has no override
+                            below. Anaglyfin only offers versions ticked as enabled, so a
+                            default that is not ticked is never used.
+                        </div>
+                    </div>
+
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="AnaglyfinFallbackProfileId">Fallback profile</label>
+                        <select is="emby-select" id="AnaglyfinFallbackProfileId" class="emby-select-withcolor emby-select" data-anaglyfin-field="FallbackProfileId" data-anaglyfin-kind="profileChoice" data-anaglyfin-default="two_d_base"></select>
+                        <div class="fieldDescription">
+                            The version Anaglyfin serves when the default cannot be. The 2D
+                            base view plays on every client, which is why it ships as the
+                            fallback.
+                        </div>
+                    </div>
+
+                    <div class="section anaglyfin-section">
+                        <h2 class="sectionTitle">Enabled profiles</h2>
+                        <div class="fieldDescription">
+                            The versions a client can pick from. Unticking every one of them
+                            is answered with the shipped set rather than with an empty version
+                            list.
+                        </div>
+                        <div id="AnaglyfinEnabledProfiles" data-anaglyfin-field="EnabledProfileIds" data-anaglyfin-kind="profileChoiceList"></div>
+                    </div>
+
+                    <div class="section anaglyfin-section">
+                        <h2 class="sectionTitle">Device and client defaults</h2>
+                        <div class="fieldDescription">
+                            Pin the default for one device or one client, so that a TV driving
+                            shutter glasses can start on an anaglyph while a browser starts on
+                            side-by-side. An entry that names neither is ignored, and an entry
+                            that names both wins over one that names either.
+                        </div>
+                        <div id="AnaglyfinDeviceDefaults" class="anaglyfin-deviceDefaults" data-anaglyfin-field="DeviceDefaultProfiles" data-anaglyfin-kind="deviceDefaultList"></div>
+                        <button is="emby-button" type="button" id="AnaglyfinAddDeviceDefault" class="raised button-alt block emby-button">
+                            <span>Add override</span>
+                        </button>
+                    </div>
+
+                    <div class="section anaglyfin-section">
+                        <h2 class="sectionTitle">Custom anaglyph colours</h2>
+                        <div class="fieldDescription">
+                            Used by the "3D Anaglyph Custom Colours" profile only: each eye is
+                            converted to grayscale and tinted with this colour, which is
+                            stored as <b>#RRGGBB</b>.
+                        </div>
+                        <div class="anaglyfin-colorRow">
+                            <div class="inputContainer anaglyfin-colorField">
+                                <label class="inputLabel inputLabelUnfixed" for="AnaglyfinCustomLeftEyeColor">Left eye colour</label>
+                                <input type="color" id="AnaglyfinCustomLeftEyeColor" class="anaglyfin-colorInput" data-anaglyfin-field="CustomLeftEyeColor" data-anaglyfin-kind="color" data-anaglyfin-default="#FF0000">
+                            </div>
+                            <div class="inputContainer anaglyfin-colorField">
+                                <label class="inputLabel inputLabelUnfixed" for="AnaglyfinCustomRightEyeColor">Right eye colour</label>
+                                <input type="color" id="AnaglyfinCustomRightEyeColor" class="anaglyfin-colorInput" data-anaglyfin-field="CustomRightEyeColor" data-anaglyfin-kind="color" data-anaglyfin-default="#00FFFF">
+                            </div>
+                        </div>
+                        <div class="fieldDescription">
+                            A preset anaglyph - red/cyan, green/magenta, yellow/blue and the
+                            rest - is a profile of its own and ignores these two colours.
+                        </div>
+                    </div>
+
+                    <div class="section anaglyfin-section">
+                        <h2 class="sectionTitle">Conversion limits</h2>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfixed" for="AnaglyfinMaxConcurrentTranscodes">Maximum concurrent Anaglyfin transcodes</label>
+                            <input type="number" is="emby-input" id="AnaglyfinMaxConcurrentTranscodes" min="1" step="1" data-anaglyfin-field="MaxConcurrentTranscodes" data-anaglyfin-kind="positiveInteger" data-anaglyfin-default="1">
+                            <div class="fieldDescription">
+                                Decoding MVC is software work on every supported build, so this
+                                is the knob that decides how much of the server Anaglyfin may
+                                take. One at a time is the shipped default.
+                            </div>
+                        </div>
+
+                        <div class="selectContainer">
+                            <label class="selectLabel" for="AnaglyfinEncoderPolicy">Video encoder policy</label>
+                            <select is="emby-select" id="AnaglyfinEncoderPolicy" class="emby-select-withcolor emby-select" data-anaglyfin-field="EncoderPolicy" data-anaglyfin-kind="encoderPolicy" data-anaglyfin-default="Automatic">
+                                <option value="Automatic">Automatic - hardware when the configured FFmpeg offers one</option>
+                                <option value="HardwareOnly">Hardware only - fail instead of falling back</option>
+                                <option value="SoftwareOnly">Software only - the same result on every server</option>
+                            </select>
+                            <div class="fieldDescription">
+                                Only the encode stage of an Anaglyfin job is affected. MVC is
+                                always decoded in software, and ordinary playback keeps the
+                                decode path the server picked.
+                            </div>
+                        </div>
+
+                        <div class="anaglyfin-envGuidance">
+                            <div class="fieldDescription">
+                                The Anaglyfin FFmpeg wrapper is started by the server and not
+                                by this plugin, so it reads its own setup from the environment
+                                the server passes it. These variables are listed as guidance
+                                only: this page cannot write them, and a path typed into this
+                                page could not reach the wrapper anyway.
+                            </div>
+                            <dl>
+                                <dt>ANAGLYFIN_REAL_FFMPEG</dt>
+                                <dd>The real FFmpeg-mvc binary the wrapper hands commands to. Checked first.</dd>
+                                <dt>FFMPEG_MVC_PATH</dt>
+                                <dd>Where the same binary comes from when ANAGLYFIN_REAL_FFMPEG is unset, so a standard FFmpeg-mvc installation needs no second setting. The server's own <b>ffmpeg</b> on PATH is the last resort when neither names it.</dd>
+                                <dt>ANAGLYFIN_MAX_CONCURRENT_TRANSCODES</dt>
+                                <dd>The limit the wrapper enforces. Keep it equal to the value saved above: the wrapper starts in the server's environment and cannot read this page.</dd>
+                                <dt>ANAGLYFIN_LOCK_DIR</dt>
+                                <dd>The directory the wrapper counts running jobs in. Every wrapper process on the server has to see the same directory, which on a containerised server means a mounted shared one.</dd>
+                            </dl>
+                        </div>
+                    </div>
+
+                    <div class="section anaglyfin-section">
+                        <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                            <span>Save</span>
+                        </button>
+                        <div id="AnaglyfinMessage" class="fieldDescription anaglyfin-message"></div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <template id="AnaglyfinDeviceDefaultRowTemplate">
+            <div class="anaglyfin-deviceDefault">
+                <div class="anaglyfin-deviceDefault-fields">
+                    <div class="inputContainer anaglyfin-deviceDefault-field">
+                        <label class="inputLabel inputLabelUnfixed">Device</label>
+                        <input type="text" is="emby-input" maxlength="128" data-anaglyfin-device-field="deviceId">
+                    </div>
+                    <div class="inputContainer anaglyfin-deviceDefault-field">
+                        <label class="inputLabel inputLabelUnfixed">Client</label>
+                        <input type="text" is="emby-input" maxlength="128" data-anaglyfin-device-field="clientName">
+                    </div>
+                    <div class="selectContainer anaglyfin-deviceDefault-field">
+                        <label class="inputLabel inputLabelUnfixed">Default profile</label>
+                        <select is="emby-select" class="emby-select-withcolor emby-select" data-anaglyfin-device-field="profileId"></select>
+                    </div>
+                </div>
+                <button is="emby-button" type="button" class="raised button-alt emby-button anaglyfin-deviceDefault-remove">
+                    <span>Remove</span>
+                </button>
+            </div>
+        </template>
+
+        <script type="text/javascript">
+            var AnaglyfinConfigurationPage = {
+                pluginId: 'c7f4a1d9-3b58-4e2a-9d6c-84f0b1e5a723'
+            };
+
+            // Mirrors the Anaglyfin profile catalog: id, label and shipped-enabled flag, in
+            // catalog order. A unit test compares this list against the catalog, so a profile
+            // that appears, disappears or is renamed cannot drift out of this page silently.
+            var AnaglyfinProfiles = [
+                { "id": "sbs_full", "name": "3D Full Side-by-Side", "enabledByDefault": true },
+                { "id": "anaglyph_arcd", "name": "3D Anaglyph Red/Cyan (Dubois)", "enabledByDefault": true },
+                { "id": "anaglyph_arcc", "name": "3D Anaglyph Red/Cyan", "enabledByDefault": false },
+                { "id": "anaglyph_arch", "name": "3D Anaglyph Red/Cyan (Half Colour)", "enabledByDefault": false },
+                { "id": "anaglyph_arcg", "name": "3D Anaglyph Red/Cyan (Gray)", "enabledByDefault": false },
+                { "id": "anaglyph_agmd", "name": "3D Anaglyph Green/Magenta (Dubois)", "enabledByDefault": false },
+                { "id": "anaglyph_agmc", "name": "3D Anaglyph Green/Magenta", "enabledByDefault": false },
+                { "id": "anaglyph_agmh", "name": "3D Anaglyph Green/Magenta (Half Colour)", "enabledByDefault": false },
+                { "id": "anaglyph_agmg", "name": "3D Anaglyph Green/Magenta (Gray)", "enabledByDefault": false },
+                { "id": "anaglyph_aybd", "name": "3D Anaglyph Yellow/Blue (Dubois)", "enabledByDefault": false },
+                { "id": "anaglyph_aybc", "name": "3D Anaglyph Yellow/Blue", "enabledByDefault": false },
+                { "id": "anaglyph_aybh", "name": "3D Anaglyph Yellow/Blue (Half Colour)", "enabledByDefault": false },
+                { "id": "anaglyph_aybg", "name": "3D Anaglyph Yellow/Blue (Gray)", "enabledByDefault": false },
+                { "id": "anaglyph_arbg", "name": "3D Anaglyph Red/Blue (Gray)", "enabledByDefault": false },
+                { "id": "anaglyph_argg", "name": "3D Anaglyph Red/Green (Gray)", "enabledByDefault": false },
+                { "id": "custom_grayscale", "name": "3D Anaglyph Custom Colours", "enabledByDefault": false },
+                { "id": "sbs_half", "name": "3D Half Side-by-Side", "enabledByDefault": true },
+                { "id": "two_d_base", "name": "2D Base", "enabledByDefault": true }
+            ];
+
+            (function () {
+                'use strict';
+
+                var pageId = 'AnaglyfinConfigPage';
+                var hexColorPattern = /^#?([0-9A-Fa-f]{6})$/;
+                var encoderPolicyNames = ['Automatic', 'HardwareOnly', 'SoftwareOnly'];
+
+                /*
+                 * One handler per kind of field on the page. Every handler is total: reading
+                 * yields a value the settings model can store, and writing tolerates anything
+                 * the stored settings contain, falling back to the default the markup names.
+                 * Nothing here interprets a value as anything other than a profile id, an enum
+                 * name, a hex colour or a number.
+                 */
+                var fieldKinds = {
+                    profileChoice: {
+                        read: function (element) {
+                            return element.value;
+                        },
+                        write: function (element, value) {
+                            if (!element.firstChild) {
+                                fillProfileOptions(element);
+                            }
+
+                            // A stored id this build does not know is displayed as the default
+                            // the markup declares, which is how the catalog treats it too.
+                            element.value = knownProfileId(value, knownProfileId(fieldDefault(element), profileIds()[0]));
+                        }
+                    },
+                    encoderPolicy: {
+                        read: function (element) {
+                            return element.value;
+                        },
+                        write: function (element, value) {
+                            element.value = encoderPolicyName(value, fieldDefault(element));
+                        }
+                    },
+                    color: {
+                        read: function (element) {
+                            return hexColor(element.value, fieldDefault(element));
+                        },
+                        write: function (element, value) {
+                            element.value = hexColor(value, fieldDefault(element));
+                        }
+                    },
+                    positiveInteger: {
+                        read: function (element) {
+                            var floor = positiveInteger(attributeName(element, 'min'), 1);
+                            return positiveInteger(element.value, floor);
+                        },
+                        write: function (element, value) {
+                            element.value = positiveInteger(value, positiveInteger(fieldDefault(element), 1));
+                        }
+                    },
+                    profileChoiceList: {
+                        read: function (element) {
+                            var wanted = [];
+
+                            for (var i = 0; i < AnaglyfinProfiles.length; i++) {
+                                if (isChecked(element, AnaglyfinProfiles[i].id)) {
+                                    wanted.push(AnaglyfinProfiles[i].id);
+                                }
+                            }
+
+                            return wanted;
+                        },
+                        write: function (element, value) {
+                            var wanted = Array.isArray(value) && value.length > 0 ? value : defaultProfileIds();
+
+                            for (var i = 0; i < AnaglyfinProfiles.length; i++) {
+                                var checkbox = profileCheckbox(element, AnaglyfinProfiles[i].id);
+                                if (checkbox) {
+                                    checkbox.checked = containsProfile(wanted, AnaglyfinProfiles[i].id);
+                                }
+                            }
+                        }
+                    },
+                    deviceDefaultList: {
+                        read: function (element) {
+                            var rows = deviceRows(element);
+                            var entries = [];
+
+                            for (var i = 0; i < rows.length; i++) {
+                                var entry = readDeviceRow(rows[i]);
+
+                                // An entry pinning neither device nor client matches nothing,
+                                // so an empty row is dropped instead of stored.
+                                if (entry.deviceId.length > 0 || entry.clientName.length > 0) {
+                                    entries.push(entry);
+                                }
+                            }
+
+                            return entries;
+                        },
+                        write: function (element, value) {
+                            var rows = deviceRows(element);
+                            for (var i = 0; i < rows.length; i++) {
+                                element.removeChild(rows[i]);
+                            }
+
+                            var entries = Array.isArray(value) ? value : [];
+                            for (var j = 0; j < entries.length; j++) {
+                                addDeviceRow(element, entries[j]);
+                            }
+                        }
+                    }
+                };
+
+                function attributeName(element, name) {
+                    return element && element.getAttribute ? (element.getAttribute(name) || '') : '';
+                }
+
+                function fieldDefault(element) {
+                    return attributeName(element, 'data-anaglyfin-default');
+                }
+
+                /*
+                 * The dashboard holds more than one plugin page in the same document, so a
+                 * query against the document would read another plugin's fields as this
+                 * page's own and write them back under Anaglyfin's settings. Everything the
+                 * page reads and writes is answered from the page's own element.
+                 */
+                function pageElement() {
+                    return document.getElementById(pageId);
+                }
+
+                function fieldElements() {
+                    var page = pageElement();
+
+                    return page ? Array.prototype.slice.call(page.querySelectorAll('[data-anaglyfin-field]')) : [];
+                }
+
+                function fieldKindHandler(element) {
+                    return fieldKinds[attributeName(element, 'data-anaglyfin-kind')] || null;
+                }
+
+                function profileById(profileId) {
+                    for (var i = 0; i < AnaglyfinProfiles.length; i++) {
+                        if (AnaglyfinProfiles[i].id === profileId) {
+                            return AnaglyfinProfiles[i];
+                        }
+                    }
+
+                    return null;
+                }
+
+                function profileIds() {
+                    var ids = [];
+                    for (var i = 0; i < AnaglyfinProfiles.length; i++) {
+                        ids.push(AnaglyfinProfiles[i].id);
+                    }
+
+                    return ids;
+                }
+
+                function defaultProfileIds() {
+                    var ids = [];
+                    for (var i = 0; i < AnaglyfinProfiles.length; i++) {
+                        if (AnaglyfinProfiles[i].enabledByDefault) {
+                            ids.push(AnaglyfinProfiles[i].id);
+                        }
+                    }
+
+                    return ids;
+                }
+
+                // Anything the stored settings name that this build does not know is answered
+                // with the shipped default, the same way the profile catalog answers it: a
+                // settings file written against another build cannot put a stranger on the page.
+                function knownProfileId(candidate, fallback) {
+                    var value = typeof candidate === 'string' ? candidate.trim() : '';
+                    if (profileById(value)) {
+                        return value;
+                    }
+
+                    return profileById(fallback) ? fallback : profileIds()[0];
+                }
+
+                function containsProfile(values, profileId) {
+                    for (var i = 0; i < values.length; i++) {
+                        if (typeof values[i] === 'string' && values[i].trim().toLowerCase() === profileId.toLowerCase()) {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                }
+
+                function hexColor(value, fallback) {
+                    var match = hexColorPattern.exec(typeof value === 'string' ? value.trim() : '');
+                    if (match) {
+                        return '#' + match[1].toUpperCase();
+                    }
+
+                    // An empty or malformed colour is not stored: the catalog answers an
+                    // unparseable colour with its own default, so this page ships the same
+                    // default back instead of persisting something nothing can read.
+                    match = hexColorPattern.exec(typeof fallback === 'string' ? fallback.trim() : '');
+                    return match ? '#' + match[1].toUpperCase() : '';
+                }
+
+                function positiveInteger(value, fallback) {
+                    var parsed = parseInt(value, 10);
+                    if (isNaN(parsed) || parsed < 1) {
+                        return fallback;
+                    }
+
+                    return parsed;
+                }
+
+                function encoderPolicyName(value, fallback) {
+                    if (typeof value === 'string' && encoderPolicyNames.indexOf(value) >= 0) {
+                        return value;
+                    }
+
+                    // The settings endpoint spells an enum as text, but a hand written settings
+                    // file goes through XML, where an enum is its ordinal.
+                    if (typeof value === 'number' && encoderPolicyNames[value]) {
+                        return encoderPolicyNames[value];
+                    }
+
+                    return encoderPolicyNames.indexOf(fallback) >= 0 ? fallback : encoderPolicyNames[0];
+                }
+
+                function profileOption(value, text) {
+                    var option = document.createElement('option');
+                    option.setAttribute('value', value);
+                    option.textContent = text;
+                    return option;
+                }
+
+                function fillProfileOptions(select) {
+                    while (select.firstChild) {
+                        select.removeChild(select.firstChild);
+                    }
+
+                    for (var i = 0; i < AnaglyfinProfiles.length; i++) {
+                        select.appendChild(profileOption(AnaglyfinProfiles[i].id, AnaglyfinProfiles[i].name));
+                    }
+                }
+
+                function profileCheckbox(container, profileId) {
+                    return container.querySelector('[data-anaglyfin-profile="' + profileId + '"]');
+                }
+
+                function isChecked(container, profileId) {
+                    var checkbox = profileCheckbox(container, profileId);
+                    return !!checkbox && checkbox.checked === true;
+                }
+
+                /*
+                 * The dashboard checkbox, in the shape the dashboard's own emby-checkbox
+                 * expects: an input carrying is="emby-checkbox" inside a label that also
+                 * holds a span for its caption. Two things about that are load bearing. An
+                 * element is only ever upgraded to emby-checkbox while it is being created,
+                 * which is what a parser reading markup does and what setting the attribute
+                 * afterwards does not; and the upgrade adopts the first span of the label as
+                 * the caption, so a label that only holds a text node leaves it with nothing
+                 * to name. The box is therefore parsed rather than assembled, and only the
+                 * caption and the profile id - never markup - come from the profile list.
+                 */
+                function enabledProfileCheckbox(profile) {
+                    var parsed = document.createElement('div');
+                    parsed.innerHTML = '<label class="checkboxContainer checkboxContainer-withDescription"><input type="checkbox" is="emby-checkbox"><span></span></label>';
+
+                    var label = parsed.firstElementChild;
+                    label.querySelector('input').setAttribute('data-anaglyfin-profile', profile.id);
+                    label.querySelector('span').textContent = profile.name;
+
+                    return label;
+                }
+
+                function buildEnabledProfileList(container) {
+                    for (var i = 0; i < AnaglyfinProfiles.length; i++) {
+                        container.appendChild(enabledProfileCheckbox(AnaglyfinProfiles[i]));
+                    }
+                }
+
+                function deviceRowTemplate() {
+                    var template = document.querySelector('#AnaglyfinDeviceDefaultRowTemplate');
+                    var content = template.content || template;
+                    return content.querySelector('.anaglyfin-deviceDefault').cloneNode(true);
+                }
+
+                function deviceRowField(row, name) {
+                    return row.querySelector('[data-anaglyfin-device-field="' + name + '"]');
+                }
+
+                function deviceRows(container) {
+                    return Array.prototype.slice.call(container.querySelectorAll('[data-anaglyfin-device-row]'));
+                }
+
+                function textOf(element) {
+                    return element && typeof element.value === 'string' ? element.value.trim() : '';
+                }
+
+                function readDeviceRow(row) {
+                    return {
+                        deviceId: textOf(deviceRowField(row, 'deviceId')),
+                        clientName: textOf(deviceRowField(row, 'clientName')),
+                        profileId: textOf(deviceRowField(row, 'profileId'))
+                    };
+                }
+
+                function addDeviceRow(container, entry) {
+                    var row = deviceRowTemplate();
+                    row.setAttribute('data-anaglyfin-device-row', '');
+
+                    fillProfileOptions(deviceRowField(row, 'profileId'));
+
+                    deviceRowField(row, 'deviceId').value = entry && typeof entry.deviceId === 'string' ? entry.deviceId : '';
+                    deviceRowField(row, 'clientName').value = entry && typeof entry.clientName === 'string' ? entry.clientName : '';
+                    deviceRowField(row, 'profileId').value = knownProfileId(entry ? entry.profileId : '', profileIds()[0]);
+
+                    var remove = row.querySelector('.anaglyfin-deviceDefault-remove');
+                    remove.addEventListener('click', function () {
+                        if (row.parentNode) {
+                            row.parentNode.removeChild(row);
+                        }
+                    });
+
+                    container.appendChild(row);
+                    return row;
+                }
+
+                function applyConfiguration(config) {
+                    var fields = fieldElements();
+
+                    for (var i = 0; i < fields.length; i++) {
+                        var handler = fieldKindHandler(fields[i]);
+                        if (handler) {
+                            handler.write(fields[i], readProperty(config, attributeName(fields[i], 'data-anaglyfin-field')));
+                        }
+                    }
+                }
+
+                function writeConfiguration(config) {
+                    var fields = fieldElements();
+
+                    for (var i = 0; i < fields.length; i++) {
+                        var handler = fieldKindHandler(fields[i]);
+                        var propertyName = attributeName(fields[i], 'data-anaglyfin-field');
+                        if (handler) {
+                            writeProperty(config, propertyName, handler.read(fields[i]));
+                        }
+                    }
+
+                    return config;
+                }
+
+                // Every kind knows how to display "nobody has saved anything yet", so the page
+                // starts out showing the shipped defaults: filled in, selectable and honest,
+                // whether or not the settings endpoint answers.
+                function applyShippedDefaults() {
+                    var fields = fieldElements();
+
+                    for (var i = 0; i < fields.length; i++) {
+                        var handler = fieldKindHandler(fields[i]);
+                        if (handler) {
+                            handler.write(fields[i], undefined);
+                        }
+                    }
+                }
+
+                // The settings endpoint spells properties in camelCase. Reading both spellings
+                // keeps the page honest whichever way the server writing the payload spells it.
+                function readProperty(config, propertyName) {
+                    if (!config || !propertyName) {
+                        return undefined;
+                    }
+
+                    var camelCase = propertyName.charAt(0).toLowerCase() + propertyName.substring(1);
+                    if (Object.prototype.hasOwnProperty.call(config, camelCase)) {
+                        return config[camelCase];
+                    }
+
+                    if (Object.prototype.hasOwnProperty.call(config, propertyName)) {
+                        return config[propertyName];
+                    }
+
+                    return undefined;
+                }
+
+                function writeProperty(config, propertyName, value) {
+                    var camelCase = propertyName.charAt(0).toLowerCase() + propertyName.substring(1);
+
+                    if (camelCase !== propertyName) {
+                        delete config[propertyName];
+                    }
+
+                    config[camelCase] = value;
+                }
+
+                function showMessage(text) {
+                    var message = document.querySelector('#AnaglyfinMessage');
+                    if (message) {
+                        message.textContent = text;
+                    }
+                }
+
+                function dashboardAvailable() {
+                    return typeof window.ApiClient !== 'undefined'
+                        && !!window.ApiClient
+                        && typeof window.ApiClient.getPluginConfiguration === 'function'
+                        && typeof window.Dashboard !== 'undefined'
+                        && !!window.Dashboard;
+                }
+
+                var configurationLoading = false;
+
+                function loadConfiguration() {
+                    // Several hosts can ask for the same page at once: the dashboard raises
+                    // pageshow, and a page injected into an already loaded document starts
+                    // itself. One read at a time is enough for all of them.
+                    if (configurationLoading) {
+                        return;
+                    }
+
+                    configurationLoading = true;
+
+                    if (!dashboardAvailable()) {
+                        configurationLoading = false;
+                        showMessage('Open this page from the Jellyfin dashboard to edit the settings.');
+                        return;
+                    }
+
+                    window.Dashboard.showLoadingMsg();
+
+                    function finished() {
+                        window.Dashboard.hideLoadingMsg();
+                        configurationLoading = false;
+                    }
+
+                    window.ApiClient.getPluginConfiguration(AnaglyfinConfigurationPage.pluginId).then(function (config) {
+                        applyConfiguration(config);
+                        finished();
+                    }, function () {
+                        finished();
+                        showMessage('Anaglyfin did not return its settings. Saving will start from the shipped defaults.');
+                    });
+                }
+
+                function saveConfiguration(event) {
+                    event.preventDefault();
+
+                    if (!dashboardAvailable()) {
+                        showMessage('Open this page from the Jellyfin dashboard to edit the settings.');
+                        return false;
+                    }
+
+                    window.Dashboard.showLoadingMsg();
+
+                    // Round-trip the stored settings instead of rebuilding them, so that a
+                    // setting this page does not show survives a save unchanged.
+                    window.ApiClient.getPluginConfiguration(AnaglyfinConfigurationPage.pluginId).then(function (config) {
+                        return window.ApiClient.updatePluginConfiguration(
+                            AnaglyfinConfigurationPage.pluginId,
+                            writeConfiguration(config || {}));
+                    }).then(function (result) {
+                        window.Dashboard.processPluginConfigurationUpdateResult(result);
+                    }, function () {
+                        window.Dashboard.hideLoadingMsg();
+                        showMessage('Jellyfin refused the settings; nothing was saved.');
+                    });
+
+                    return false;
+                }
+
+                var enabledProfiles = document.querySelector('#AnaglyfinEnabledProfiles');
+                if (enabledProfiles) {
+                    buildEnabledProfileList(enabledProfiles);
+                }
+
+                applyShippedDefaults();
+
+                var deviceDefaults = document.querySelector('#AnaglyfinDeviceDefaults');
+                var addDeviceDefault = document.querySelector('#AnaglyfinAddDeviceDefault');
+                if (deviceDefaults && addDeviceDefault) {
+                    addDeviceDefault.addEventListener('click', function () {
+                        addDeviceRow(deviceDefaults, null);
+                    });
+                }
+
+                var form = document.querySelector('#AnaglyfinConfigForm');
+                if (form) {
+                    form.addEventListener('submit', saveConfiguration);
+                }
+
+                var page = pageElement();
+                if (page) {
+                    // The dashboard raises pageshow every time it brings a plugin page
+                    // forward, which is how the page learns to re-read its settings when an
+                    // administrator comes back to it.
+                    page.addEventListener('pageshow', loadConfiguration);
+                }
+
+                // A page injected into a document that has already finished loading never
+                // sees a pageshow of its own, so it reads its settings once on its own.
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', loadConfiguration);
+                } else {
+                    loadConfiguration();
+                }
+            }());
+        </script>
+    </div>
+</body>
+</html>
