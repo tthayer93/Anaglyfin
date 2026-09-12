@@ -50,5 +50,25 @@ services:
         dotnet build Anaglyfin.sln --configuration Release --no-restore -warnaserror
         dotnet test tests/Anaglyfin.Tests/Anaglyfin.Tests.csproj --configuration Release --no-build --results-directory /tmp/anaglyfin-test/TestResults
         dotnet format whitespace Anaglyfin.sln --no-restore --verify-no-changes
+
+        # Packaging, after the gate every branch already has to pass. The wrapper
+        # is published before the archive is written so that the plugin zip holds
+        # the plain Release build the tests just ran, and nothing rebuilds under
+        # the packaging step. Both publish outputs land under bin/ (ignored), the
+        # installable artifacts under artifacts/ (ignored).
+        dotnet publish src/Anaglyfin.FFmpegWrapper/Anaglyfin.FFmpegWrapper.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishSingleFile=true
+        dotnet publish src/Anaglyfin.FFmpegWrapper/Anaglyfin.FFmpegWrapper.csproj --configuration Release
+        test -f src/Anaglyfin.FFmpegWrapper/bin/Release/net10.0/linux-x64/publish/Anaglyfin.FFmpegWrapper
+        test -f src/Anaglyfin.FFmpegWrapper/bin/Release/net10.0/publish/Anaglyfin.FFmpegWrapper.dll
+
+        # pack writes artifacts/<name>_<version>.zip with <name>.dll at the archive
+        # root, stages the wrapper as artifacts/anaglyfin-ffmpeg, emits meta.json
+        # from the manifest, and verifies what it wrote. verify then judges the
+        # directory knowing only the manifest: archive layout, every metadata field,
+        # the recorded size and checksum, and the wrapper's ELF header. A refusal is
+        # a non-zero exit here, not a note in the log.
+        dotnet run --project tools/Anaglyfin.Packager --configuration Release --no-build -- pack --plugin-dll src/Anaglyfin/bin/Release/net10.0/Anaglyfin.dll --manifest src/Anaglyfin/Plugin.manifest.xml --output artifacts --wrapper-input src/Anaglyfin.FFmpegWrapper/bin/Release/net10.0/linux-x64/publish/Anaglyfin.FFmpegWrapper
+        dotnet run --project tools/Anaglyfin.Packager --configuration Release --no-build -- verify --manifest src/Anaglyfin/Plugin.manifest.xml --artifacts artifacts --wrapper-file anaglyfin-ffmpeg
+
         set +x
-        echo "anaglyfin CI gate: restore + build(-warnaserror) + test + format check all passed"
+        echo "anaglyfin CI gate: restore + build(-warnaserror) + test + format + packaging all passed"
