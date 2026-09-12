@@ -97,6 +97,32 @@ public class ConfigurationPageTests
     }
 
     [Fact]
+    public void TheAdminPageCarriesItsStylesheetInsideThePageElement()
+    {
+        var html = ReadPageHtml();
+
+        // The dashboard fetches this document, parses it as a fragment and keeps only the
+        // element carrying data-role="page". Anything beside that element - a stylesheet in
+        // the head included - is parsed away before a browser is ever shown the page, so the
+        // page has to carry its own stylesheet inside itself.
+        var pageOpened = html.IndexOf("<div id=\"AnaglyfinConfigPage\"", StringComparison.Ordinal);
+        Assert.True(pageOpened >= 0, "The admin page no longer opens with its page element.");
+
+        var pageClosed = html.LastIndexOf("</div>", StringComparison.Ordinal);
+        Assert.True(pageClosed > pageOpened, "The admin page element is never closed.");
+
+        var stylesheet = html.IndexOf("<style>", StringComparison.Ordinal);
+        Assert.True(
+            stylesheet > pageOpened && stylesheet < pageClosed,
+            "The stylesheet sits outside the page element, which is the only half of this document the dashboard keeps.");
+
+        var headClosed = html.IndexOf("</head>", StringComparison.Ordinal);
+        Assert.True(
+            headClosed > 0 && stylesheet > headClosed,
+            "The page still styles itself from the head, which the dashboard parses away.");
+    }
+
+    [Fact]
     public void TheAdminPageNamesThePluginItConfigures()
     {
         var match = Regex.Match(ReadPageHtml(), @"pluginId:\s*'(?<id>[^']+)'");
@@ -335,6 +361,45 @@ public class ConfigurationPageTests
         // And the page paints the shipped defaults as it is built, rather than leaving an
         // administrator staring at a blank form until the settings endpoint answers.
         Assert.Contains("applyShippedDefaults();", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheEnabledProfileBoxesAreBuiltInTheDashboardCheckboxShape()
+    {
+        var html = ReadPageHtml();
+
+        // The dashboard upgrades a checkbox while the element is created and takes its
+        // caption from the span beside the input, so the boxes have to arrive as parsed
+        // markup of exactly this shape. An input assembled in code and given its is=
+        // attribute afterwards is never upgraded: it stays a bare browser checkbox, with
+        // no caption element for the upgrade to name.
+        Assert.Matches(
+            @"<label\s+class=""checkboxContainer checkboxContainer-withDescription""\s*>\s*"
+            + @"<input\s+type=""checkbox""\s+is=""emby-checkbox""\s*>\s*<span>",
+            html);
+
+        Assert.DoesNotContain("setAttribute('is'", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("setAttribute(\"is\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheAdminPageReadsItsFieldsFromItsOwnPageElement()
+    {
+        var html = ReadPageHtml();
+
+        // The dashboard keeps more than one plugin page in the same document, so a query
+        // against the document would read another plugin's fields as this page's own and
+        // save them back under Anaglyfin's settings.
+        Assert.DoesNotContain("document.querySelectorAll('[data-anaglyfin-field]')", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("document.querySelector('[data-anaglyfin-field]')", html, StringComparison.Ordinal);
+
+        // And the element the fields are queried from is this page's own: looked up by an
+        // id the markup carries, rather than assumed.
+        Assert.Matches(@"page\.querySelectorAll\('\[data-anaglyfin-field\]'\)", html);
+
+        var pageId = Regex.Match(html, "var pageId = '(?<id>[^']+)'");
+        Assert.True(pageId.Success, "The script no longer names the page element it reads its fields from.");
+        Assert.Contains("<div id=\"" + pageId.Groups["id"].Value + "\"", html, StringComparison.Ordinal);
     }
 
     [Fact]

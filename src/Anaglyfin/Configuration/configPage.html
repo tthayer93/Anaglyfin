@@ -3,81 +3,88 @@
 <head>
     <meta charset="utf-8">
     <title>Anaglyfin</title>
-    <style>
-        .anaglyfin-intro {
-            margin-bottom: 1.2em;
-        }
-
-        .anaglyfin-section {
-            margin-top: 1.8em;
-        }
-
-        .anaglyfin-deviceDefaults {
-            margin-bottom: 0.6em;
-        }
-
-        .anaglyfin-deviceDefault {
-            border-left: 0.2em solid rgba(255, 255, 255, 0.12);
-            padding-left: 0.8em;
-            margin-bottom: 0.8em;
-        }
-
-        .anaglyfin-deviceDefault-fields {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.6em;
-        }
-
-        .anaglyfin-deviceDefault-field {
-            flex: 1 1 12em;
-            min-width: 10em;
-        }
-
-        .anaglyfin-colorRow {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.6em;
-        }
-
-        .anaglyfin-colorField {
-            flex: 1 1 10em;
-            min-width: 9em;
-        }
-
-        .anaglyfin-colorInput {
-            width: 100%;
-            min-height: 2.2em;
-            padding: 0.2em;
-        }
-
-        .anaglyfin-envGuidance {
-            margin: 1em 0;
-            padding: 0.8em 1em;
-            border-left: 0.25em solid rgba(255, 255, 255, 0.2);
-            background: rgba(0, 0, 0, 0.18);
-        }
-
-        .anaglyfin-envGuidance dl {
-            margin: 0;
-        }
-
-        .anaglyfin-envGuidance dt {
-            font-family: monospace;
-            margin-top: 0.6em;
-        }
-
-        .anaglyfin-envGuidance dd {
-            margin: 0 0 0 1em;
-        }
-
-        .anaglyfin-message {
-            min-height: 1.2em;
-            margin-top: 0.6em;
-        }
-    </style>
 </head>
 <body>
     <div id="AnaglyfinConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+        <!--
+          The dashboard parses this document as a fragment and keeps only the element
+          carrying data-role="page": anything outside that element is parsed away and
+          never reaches the browser, a stylesheet in the head included. The page therefore
+          carries its own stylesheet inside itself.
+        -->
+        <style>
+            .anaglyfin-intro {
+                margin-bottom: 1.2em;
+            }
+
+            .anaglyfin-section {
+                margin-top: 1.8em;
+            }
+
+            .anaglyfin-deviceDefaults {
+                margin-bottom: 0.6em;
+            }
+
+            .anaglyfin-deviceDefault {
+                border-left: 0.2em solid rgba(255, 255, 255, 0.12);
+                padding-left: 0.8em;
+                margin-bottom: 0.8em;
+            }
+
+            .anaglyfin-deviceDefault-fields {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.6em;
+            }
+
+            .anaglyfin-deviceDefault-field {
+                flex: 1 1 12em;
+                min-width: 10em;
+            }
+
+            .anaglyfin-colorRow {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.6em;
+            }
+
+            .anaglyfin-colorField {
+                flex: 1 1 10em;
+                min-width: 9em;
+            }
+
+            .anaglyfin-colorInput {
+                width: 100%;
+                min-height: 2.2em;
+                padding: 0.2em;
+            }
+
+            .anaglyfin-envGuidance {
+                margin: 1em 0;
+                padding: 0.8em 1em;
+                border-left: 0.25em solid rgba(255, 255, 255, 0.2);
+                background: rgba(0, 0, 0, 0.18);
+            }
+
+            .anaglyfin-envGuidance dl {
+                margin: 0;
+            }
+
+            .anaglyfin-envGuidance dt {
+                font-family: monospace;
+                margin-top: 0.6em;
+            }
+
+            .anaglyfin-envGuidance dd {
+                margin: 0 0 0 1em;
+            }
+
+            .anaglyfin-message {
+                min-height: 1.2em;
+                margin-top: 0.6em;
+            }
+        </style>
+
         <div data-role="content">
             <div class="content-primary">
                 <h1 class="headerLogo">Anaglyfin</h1>
@@ -268,6 +275,7 @@
             (function () {
                 'use strict';
 
+                var pageId = 'AnaglyfinConfigPage';
                 var hexColorPattern = /^#?([0-9A-Fa-f]{6})$/;
                 var encoderPolicyNames = ['Automatic', 'HardwareOnly', 'SoftwareOnly'];
 
@@ -380,8 +388,20 @@
                     return attributeName(element, 'data-anaglyfin-default');
                 }
 
+                /*
+                 * The dashboard holds more than one plugin page in the same document, so a
+                 * query against the document would read another plugin's fields as this
+                 * page's own and write them back under Anaglyfin's settings. Everything the
+                 * page reads and writes is answered from the page's own element.
+                 */
+                function pageElement() {
+                    return document.getElementById(pageId);
+                }
+
                 function fieldElements() {
-                    return Array.prototype.slice.call(document.querySelectorAll('[data-anaglyfin-field]'));
+                    var page = pageElement();
+
+                    return page ? Array.prototype.slice.call(page.querySelectorAll('[data-anaglyfin-field]')) : [];
                 }
 
                 function fieldKindHandler(element) {
@@ -502,25 +522,31 @@
                     return !!checkbox && checkbox.checked === true;
                 }
 
+                /*
+                 * The dashboard checkbox, in the shape the dashboard's own emby-checkbox
+                 * expects: an input carrying is="emby-checkbox" inside a label that also
+                 * holds a span for its caption. Two things about that are load bearing. An
+                 * element is only ever upgraded to emby-checkbox while it is being created,
+                 * which is what a parser reading markup does and what setting the attribute
+                 * afterwards does not; and the upgrade adopts the first span of the label as
+                 * the caption, so a label that only holds a text node leaves it with nothing
+                 * to name. The box is therefore parsed rather than assembled, and only the
+                 * caption and the profile id - never markup - come from the profile list.
+                 */
+                function enabledProfileCheckbox(profile) {
+                    var parsed = document.createElement('div');
+                    parsed.innerHTML = '<label class="checkboxContainer checkboxContainer-withDescription"><input type="checkbox" is="emby-checkbox"><span></span></label>';
+
+                    var label = parsed.firstElementChild;
+                    label.querySelector('input').setAttribute('data-anaglyfin-profile', profile.id);
+                    label.querySelector('span').textContent = profile.name;
+
+                    return label;
+                }
+
                 function buildEnabledProfileList(container) {
                     for (var i = 0; i < AnaglyfinProfiles.length; i++) {
-                        var profile = AnaglyfinProfiles[i];
-
-                        var checkbox = document.createElement('input');
-                        checkbox.setAttribute('type', 'checkbox');
-                        checkbox.setAttribute('is', 'emby-checkbox');
-                        checkbox.setAttribute('data-anaglyfin-profile', profile.id);
-
-                        var label = document.createElement('label');
-                        label.className = 'emby-checkbox-label';
-                        label.appendChild(checkbox);
-                        label.appendChild(document.createTextNode(' ' + profile.name));
-
-                        var cell = document.createElement('div');
-                        cell.className = 'checkboxContainer checkboxContainer-withDescription';
-                        cell.appendChild(label);
-
-                        container.appendChild(cell);
+                        container.appendChild(enabledProfileCheckbox(AnaglyfinProfiles[i]));
                     }
                 }
 
@@ -734,7 +760,7 @@
                     form.addEventListener('submit', saveConfiguration);
                 }
 
-                var page = document.querySelector('#AnaglyfinConfigPage');
+                var page = pageElement();
                 if (page) {
                     // The dashboard raises pageshow every time it brings a plugin page
                     // forward, which is how the page learns to re-read its settings when an
