@@ -23,9 +23,15 @@ public static class Digest
     /// </summary>
     /// <param name="path">The file to measure.</param>
     /// <returns>The checksum, lowercase and unprefixed.</returns>
+    /// <exception cref="PackagingError">The file is not there.</exception>
     public static string Sha256OfFile(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        if (!File.Exists(path))
+        {
+            throw new PackagingError($"Expected the artifact '{path}' and found nothing there.");
+        }
 
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
 
