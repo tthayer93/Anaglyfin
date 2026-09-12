@@ -10,3 +10,7 @@
 .worktrees/
 .shared/
 .logs/
+
+# Local 3D test media, ignored by git and far too large for a build context.
+/movies/
+**/movies/

@@ -50,5 +50,24 @@ services:
         dotnet build Anaglyfin.sln --configuration Release --no-restore -warnaserror
         dotnet test tests/Anaglyfin.Tests/Anaglyfin.Tests.csproj --configuration Release --no-build --results-directory /tmp/anaglyfin-test/TestResults
         dotnet format whitespace Anaglyfin.sln --no-restore --verify-no-changes
+
+        # Packaging, after the gate every branch already has to pass. The wrapper
+        # publish runs before the archive is written: it re-evaluates the projects
+        # it needs and rewrites whatever is not up to date under bin/, so running
+        # it first means the zip is packed from the build the tests just ran
+        # rather than from output a later step touched. Publish output stays under
+        # bin/ and the installable artifacts under artifacts/, both ignored.
+        dotnet publish src/Anaglyfin.FFmpegWrapper/Anaglyfin.FFmpegWrapper.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishSingleFile=true
+        test -f src/Anaglyfin.FFmpegWrapper/bin/Release/net10.0/linux-x64/publish/Anaglyfin.FFmpegWrapper
+
+        # pack writes artifacts/<name>_<version>.zip with <name>.dll at the archive
+        # root, stages the wrapper as artifacts/anaglyfin-ffmpeg, emits meta.json
+        # from the manifest, and verifies what it wrote. verify then judges the
+        # directory knowing only the manifest: archive layout, every metadata field,
+        # the recorded size and checksum, and the wrapper's ELF header. A refusal is
+        # a non-zero exit here, not a note in the log.
+        dotnet run --project tools/Anaglyfin.Packager --configuration Release --no-build -- pack --plugin-dll src/Anaglyfin/bin/Release/net10.0/Anaglyfin.dll --manifest src/Anaglyfin/Plugin.manifest.xml --output artifacts --wrapper-input src/Anaglyfin.FFmpegWrapper/bin/Release/net10.0/linux-x64/publish/Anaglyfin.FFmpegWrapper
+        dotnet run --project tools/Anaglyfin.Packager --configuration Release --no-build -- verify --manifest src/Anaglyfin/Plugin.manifest.xml --artifacts artifacts --wrapper-file anaglyfin-ffmpeg
+
         set +x
-        echo "anaglyfin CI gate: restore + build(-warnaserror) + test + format check all passed"
+        echo "anaglyfin CI gate: restore + build(-warnaserror) + test + format + packaging all passed"

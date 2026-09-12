@@ -55,7 +55,7 @@ include:
   Expected result:
 
   ```text
-  anaglyfin CI gate: restore + build(-warnaserror) + test + format check all passed
+  anaglyfin CI gate: restore + build(-warnaserror) + test + format + packaging all passed
   ```
 
 - [ ] Plugin project builds to a loadable `Anaglyfin.dll`.
@@ -72,16 +72,18 @@ include:
 
 Notes:
 
-- This repository has no packaging job yet. Manual plugin installation is currently the
-  expected path.
+- The CI job packages the plugin archive, the install record, and the linux-x64 wrapper binary
+  into `artifacts/`, and verifies all three. Where they go on a server is `docs/install.md`;
+  manual installation from those artifacts is still the expected install path.
 - The wrapper is a normal .NET executable, not a Jellyfin plugin. It must be runnable by
   the Jellyfin server user.
 
 ## V1. Plugin installation and discovery
 
 Install the plugin by placing the built `Anaglyfin.dll` in the server's configured plugin
-directory, or by using your local plugin repository workflow. Restart or reload Jellyfin
-after installation.
+directory, or by using your local plugin repository workflow. `docs/install.md` gives the paths
+for a bare-metal server and for a container that mounts `./jellyfin/config` at `/config`.
+Restart or reload Jellyfin after installation.
 
 - [ ] Jellyfin lists the plugin with name `Anaglyfin`.
 - [ ] The plugin id shown by the server matches
@@ -621,13 +623,17 @@ Validation expectation:
 
 Current state:
 
-- There is no packaging job in this repository.
-- The plugin manifest is embedded, but a generated plugin repository `meta.json` workflow is
-  not yet present.
+- The CI job packs the plugin archive, generates `meta.json` from `Plugin.manifest.xml`, stages
+  the self-contained linux-x64 wrapper, and verifies the layout, every metadata field, the
+  recorded size and SHA-256, and the wrapper's ELF header.
+- Publishing as an official Jellyfin plugin repository package is still out of scope: there is no
+  release feed, and `meta.json` carries no download URL or timestamp.
 
 Validation expectation:
 
-- [ ] Manual plugin installation is recorded as the current install path.
+- [ ] Manual installation from the packaged artifacts is recorded as the current install path,
+  following `docs/install.md`.
+- [ ] The extracted plugin directory holds `Anaglyfin.dll` and nothing the archive should not ship.
 
 ## V11. Wrapper refusal behavior
 
