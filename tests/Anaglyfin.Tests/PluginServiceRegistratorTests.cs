@@ -1,5 +1,8 @@
 using System;
+using Anaglyfin.Profiles;
+using Anaglyfin.Tests.Stubs;
 using MediaBrowser.Controller.Plugins;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Anaglyfin.Tests;
@@ -32,5 +35,41 @@ public class PluginServiceRegistratorTests
         var registrator = new PluginServiceRegistrator();
 
         Assert.Throws<ArgumentNullException>(() => registrator.RegisterServices(null!, null!));
+    }
+
+    [Fact]
+    public void RegisterServicesRegistersTheProfileCatalogAsASingleton()
+    {
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        var descriptor = Assert.Single(services);
+        Assert.Equal(typeof(IProfileCatalog), descriptor.ServiceType);
+        Assert.Equal(typeof(ProfileCatalog), descriptor.ImplementationType);
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void RegisterServicesDoesNotRegisterAMediaSourceProviderYet()
+    {
+        // Media source providers are discovered by type scan; registering one here would
+        // make it invisible to that scan. Profiles and settings are all T1 may register.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType.Name.Contains("MediaSource", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheRegisteredCatalogCanBuildItselfWithoutDependencies()
+    {
+        // The container activates the implementation type directly, so a constructor the
+        // container cannot satisfy would fail plugin start-up rather than a single call.
+        var catalog = (IProfileCatalog)Activator.CreateInstance(typeof(ProfileCatalog))!;
+
+        Assert.NotEmpty(catalog.Profiles);
+        Assert.True(catalog.IsKnownProfileId(ProfileIds.TwoDBase));
     }
 }
