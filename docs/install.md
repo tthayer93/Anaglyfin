@@ -58,25 +58,40 @@ that works inside the official container.
 
 ## Bare-metal server
 
-The plugin goes into the server's plugin directory, which lives under its data directory:
+The plugin goes into the `plugins` subdirectory of the server's **data directory**: whatever
+`--datadir` points at, plus `plugins/Anaglyfin/`. That rule is the answer; the concrete directory
+depends on how the server is started:
 
-| Server | Plugin directory |
-| --- | --- |
-| Debian/Ubuntu package | `/var/lib/jellyfin/plugins/Anaglyfin/` |
-| Manual install, default paths | `~/.config/jellyfin/plugins/Anaglyfin/` |
-| Anything started with `--datadir <dir>` | `<dir>/plugins/Anaglyfin/` |
+| Server | Data directory | Plugin directory |
+| --- | --- | --- |
+| Debian/Ubuntu package, which runs as the `jellyfin` user | `/var/lib/jellyfin` | `/var/lib/jellyfin/plugins/Anaglyfin/` |
+| Started by your own login user, Linux defaults | `~/.local/share/jellyfin` | `~/.local/share/jellyfin/plugins/Anaglyfin/` |
+| Anything started with `--datadir <dir>` | `<dir>` | `<dir>/plugins/Anaglyfin/` |
+
+The package install's data directory belongs to the service user, so unpack it as root and hand
+the directory straight back: Jellyfin has to read the assembly and write its own per-plugin data
+next to it.
 
 ```sh
-install -d /var/lib/jellyfin/plugins/Anaglyfin
-unzip -o Anaglyfin_0.1.0.zip -d /var/lib/jellyfin/plugins/Anaglyfin
+sudo install -d /var/lib/jellyfin/plugins/Anaglyfin
+sudo unzip -o Anaglyfin_0.1.0.zip -d /var/lib/jellyfin/plugins/Anaglyfin
+sudo chown -R jellyfin:jellyfin /var/lib/jellyfin/plugins/Anaglyfin
+```
+
+A server you start as yourself needs no `sudo` and no `chown`:
+
+```sh
+install -d ~/.local/share/jellyfin/plugins/Anaglyfin
+unzip -o Anaglyfin_0.1.0.zip -d ~/.local/share/jellyfin/plugins/Anaglyfin
 ```
 
 The wrapper is a file the server starts as its own user, so it wants a stable path and the
-executable bit:
+executable bit. Nothing writes to it, so readable-and-executable by anyone is the whole
+requirement; giving the service user ownership of it is tidiness, not a necessity:
 
 ```sh
-install -d /opt/anaglyfin/ffmpeg
-install -m 0755 anaglyfin-ffmpeg /opt/anaglyfin/ffmpeg/
+sudo install -d -m 0755 /opt/anaglyfin/ffmpeg
+sudo install -m 0755 -o jellyfin -g jellyfin anaglyfin-ffmpeg /opt/anaglyfin/ffmpeg/
 ```
 
 Then point the server at it - `JELLYFIN_FFMPEG`, the `--ffmpeg` switch, or `<EncoderAppPath>` in
@@ -98,10 +113,11 @@ sudo systemctl daemon-reload
 sudo systemctl restart jellyfin
 ```
 
-Create `ANAGLYFIN_LOCK_DIR` with ownership the service user can write, and check the wrapper can
-reach the binary it names before anything else:
+`ANAGLYFIN_LOCK_DIR` is the one path here the service has to write, so create it for that user,
+and check the wrapper reaches the binary it names before anything else:
 
 ```sh
+sudo install -d -m 0755 -o jellyfin -g jellyfin /var/lib/jellyfin/anaglyfin/lock
 sudo -u jellyfin /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg -version
 ```
 
