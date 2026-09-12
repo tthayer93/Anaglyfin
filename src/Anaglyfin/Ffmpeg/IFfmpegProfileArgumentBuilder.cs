@@ -34,7 +34,8 @@ public interface IFfmpegProfileArgumentBuilder
     /// </param>
     /// <returns>The arguments to insert into the transcode command.</returns>
     /// <exception cref="System.ArgumentException">
-    /// The profile declares a stereo3d output code that is not on the allowlist.
+    /// The profile id is not on the profile id allowlist, or the profile declares a
+    /// stereo3d output code that is not on the allowlist.
     /// </exception>
     /// <exception cref="System.InvalidOperationException">
     /// The profile is malformed: an anaglyph without an output code, or a custom

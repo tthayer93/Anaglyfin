@@ -306,13 +306,13 @@ public class FfmpegProfileArgumentBuilderTests
                 "-map",
                 "0:v:view:all",
                 "-vf",
-                "scale=iw/2:ih:flags=bicubic,format=yuv420p,subtitles='" + MoviePath + "':si=1"
+                "scale=iw/2:ih:flags=bicubic,format=yuv420p,subtitles=filename='" + MoviePath + "':si=1"
             },
             rewrite.InsertArguments);
 
         // VideoFilter stays the conversion itself; the merge is visible in the args.
         Assert.Equal("scale=iw/2:ih:flags=bicubic,format=yuv420p", rewrite.VideoFilter);
-        Assert.Equal("subtitles='" + MoviePath + "':si=1", rewrite.SubtitleFilter);
+        Assert.Equal("subtitles=filename='" + MoviePath + "':si=1", rewrite.SubtitleFilter);
         Assert.True(rewrite.ShouldAppendSubtitlesToProfileFilter);
         Assert.True(rewrite.ShouldSuppressSubtitleStreams);
     }
@@ -323,7 +323,7 @@ public class FfmpegProfileArgumentBuilderTests
         var rewrite = _builder.BuildSideBySideFull(BurnIn);
 
         Assert.Equal(
-            new[] { "-map", "0:v:view:all", "-vf", "subtitles='" + MoviePath + "':si=0" },
+            new[] { "-map", "0:v:view:all", "-vf", "subtitles=filename='" + MoviePath + "':si=0" },
             rewrite.InsertArguments);
         Assert.Null(rewrite.VideoFilter);
         Assert.False(rewrite.ShouldAppendSubtitlesToProfileFilter);
@@ -337,7 +337,7 @@ public class FfmpegProfileArgumentBuilderTests
             new RgbColor(0, 255, 255),
             new SubtitleBurnIn(MoviePath, 3));
 
-        Assert.Equal("subtitles='" + MoviePath + "':si=3", rewrite.SubtitleFilter);
+        Assert.Equal("subtitles=filename='" + MoviePath + "':si=3", rewrite.SubtitleFilter);
         Assert.False(rewrite.ShouldAppendSubtitlesToProfileFilter);
         Assert.DoesNotContain("subtitles", rewrite.FilterComplex);
 
@@ -349,13 +349,18 @@ public class FfmpegProfileArgumentBuilderTests
     }
 
     [Theory]
-    [InlineData("/movies/Movie (2010)/Movie.2010.3D.mkv", "subtitles='/movies/Movie (2010)/Movie.2010.3D.mkv':si=0")]
-    [InlineData("/movies/It's Here (2010)/film.mkv", @"subtitles='/movies/It'\''s Here (2010)/film.mkv':si=0")]
-    [InlineData("/data/dirs:with[brackets];and,commas/film.mkv", "subtitles='/data/dirs:with[brackets];and,commas/film.mkv':si=0")]
-    public void BurnInQuotesThePluginProvidedPathWithoutChangingIt(string path, string expectedFilter)
+    [InlineData("/movies/Movie (2010)/Movie.2010.3D.mkv", @"subtitles=filename='/movies/Movie (2010)/Movie.2010.3D.mkv':si=0")]
+    [InlineData("/movies/a=b/film.mkv", @"subtitles=filename='/movies/a=b/film.mkv':si=0")]
+    [InlineData("/data/dirs:with colon/film.mkv", @"subtitles=filename='/data/dirs'\:'with colon/film.mkv':si=0")]
+    [InlineData("/movies/It's Here (2010)/film.mkv", @"subtitles=filename='/movies/It'\\\''s Here (2010)/film.mkv':si=0")]
+    [InlineData("/data/dirs:with[brackets];and,commas/film.mkv", @"subtitles=filename='/data/dirs'\:'with'\['brackets'\]'\;'and'\,'commas/film.mkv':si=0")]
+    public void BurnInEscapesThePluginProvidedPathWithoutChangingIt(string path, string expectedFilter)
     {
         var rewrite = _builder.BuildSideBySideFull(new SubtitleBurnIn(path, 0));
 
+        // What the emitted value means - that FFmpeg reads every one of these paths back
+        // unchanged, ordinal and all - is asserted by decoding them in
+        // SubtitleFilterEscapingTests against the parser of the pinned FFmpeg-mvc tree.
         Assert.Equal(expectedFilter, rewrite.SubtitleFilter);
     }
 
@@ -400,6 +405,112 @@ public class FfmpegProfileArgumentBuilderTests
 
         Assert.Null(rewrite.SubtitleFilter);
         Assert.DoesNotContain("subtitles", string.Join(" ", rewrite.InsertArguments));
+    }
+
+    // ----- Profile id allowlist ----------------------------------------------------------
+
+    [Theory]
+    [InlineData("not_a_profile")]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("sbs_full;scale=7680:ih")]
+    [InlineData("subtitles=/movies/film.mkv:si=0")]
+    [InlineData("anaglyph_zzzz")]
+    [InlineData("../../etc/passwd")]
+    public void UnknownProfileIdIsRejectedBeforeAnyArgumentIsBuilt(string profileId)
+    {
+        // A StereoProfile is a public shape: settings that survived a bad edit, or a
+        // hand-built profile, can carry any string as the id while still naming a kind
+        // this builder knows. The kind alone must never be enough to reach FFmpeg.
+        var stranger = new StereoProfile
+        {
+            Id = profileId,
+            DisplayName = "Handed in by a caller",
+            Kind = ProfileKind.SideBySideFull
+        };
+
+        var exception = Assert.Throws<ArgumentException>(() => _builder.Build(stranger));
+
+        Assert.Equal("profile", exception.ParamName);
+        Assert.Contains("allowlist", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UnknownProfileIdIsRejectedForEveryProfileKindIncludingOneFromTheFuture()
+    {
+        var kinds = new[]
+        {
+            ProfileKind.TwoDimensional,
+            ProfileKind.SideBySideFull,
+            ProfileKind.SideBySideHalf,
+            ProfileKind.Stereo3DAnaglyph,
+            ProfileKind.CustomGrayscaleAnaglyph,
+            (ProfileKind)99
+        };
+
+        foreach (var kind in kinds)
+        {
+            var nearMiss = new StereoProfile
+            {
+                Id = ProfileIds.CustomGrayscale + "_typo",
+                DisplayName = "Near miss",
+                Kind = kind,
+                Stereo3DOutputCode = kind == ProfileKind.Stereo3DAnaglyph ? "arcd" : null,
+                LeftEyeColor = kind == ProfileKind.CustomGrayscaleAnaglyph ? new RgbColor(255, 0, 0) : null,
+                RightEyeColor = kind == ProfileKind.CustomGrayscaleAnaglyph ? new RgbColor(0, 255, 255) : null
+            };
+
+            // The id is checked before the kind is dispatched on, so even a kind this
+            // build does not know is reported as the unknown id that it is.
+            Assert.Throws<ArgumentException>(() => _builder.Build(nearMiss));
+        }
+    }
+
+    [Fact]
+    public void KnownProfileIdIsCheckedTheWayTheAllowlistReadsIt()
+    {
+        var padded = new StereoProfile
+        {
+            Id = "  " + ProfileIds.SideBySideFull + "  ",
+            DisplayName = "Padded",
+            Kind = ProfileKind.SideBySideFull
+        };
+
+        Assert.Equal(ProfileIds.SideBySideFull, _builder.Build(padded).ProfileId);
+
+        // The allowlist ignores case, so a caller that mangled the casing still gets a
+        // command; the id comes back as handed over, only trimmed.
+        var recased = new StereoProfile
+        {
+            Id = "SBS_Full",
+            DisplayName = "Recased",
+            Kind = ProfileKind.SideBySideFull
+        };
+
+        var rewrite = _builder.Build(recased);
+
+        Assert.Equal("SBS_Full", rewrite.ProfileId);
+        Assert.Equal(new[] { "-map", "0:v:view:all" }, rewrite.InsertArguments);
+    }
+
+    [Fact]
+    public void EveryRewriteTheBuilderHandsOutCarriesAnAllowlistedProfileId()
+    {
+        var builtByHand = new[]
+        {
+            _builder.BuildTwoDimensionalBase(),
+            _builder.BuildSideBySideFull(),
+            _builder.BuildSideBySideHalf(),
+            _builder.BuildStereo3DAnaglyph(ProfileIds.BuiltInAnaglyphOutputCodes[0]),
+            _builder.BuildCustomGrayscaleAnaglyph(
+                ProfileCatalog.DefaultCustomLeftEyeColor,
+                ProfileCatalog.DefaultCustomRightEyeColor)
+        };
+
+        var fromCatalog = Catalog.Profiles.Select(profile => _builder.Build(profile, BurnIn));
+
+        Assert.All(builtByHand.Concat(fromCatalog).ToList(), rewrite =>
+            Assert.True(ProfileIds.IsAllowed(rewrite.ProfileId), rewrite.ProfileId));
     }
 
     // ----- Whole-catalog invariants ----------------------------------------------------

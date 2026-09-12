@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using Anaglyfin.Profiles;
 
 namespace Anaglyfin.Ffmpeg;
@@ -108,7 +109,7 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     {
         ArgumentNullException.ThrowIfNull(profile);
 
-        var profileId = ProfileIds.Normalize(profile.Id);
+        var profileId = RequireAllowedProfileId(profile);
         var burnIn = EligibleSubtitleBurnIn(profile, subtitleBurnIn);
 
         switch (profile.Kind)
@@ -333,25 +334,156 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     /// <summary>
     /// Builds the <c>subtitles</c> filter for a validated burn-in request.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The path goes in as an explicit <c>filename=</c> option rather than through the
+    /// filter's shorthand: the option parser reads a leading shorthand value by first
+    /// scanning for a key, and its key characters include <c>/</c> and <c>.</c>
+    /// (<c>libavutil/opt.c:get_key</c>), so a path carrying an <c>=</c> would be read as
+    /// a key/value pair instead of as the filename.
+    /// </para>
+    /// <para>
+    /// The ordinal then follows as a plain <c>:si=</c> pair. That is only unambiguous
+    /// because <see cref="EscapeFilterPath"/> leaves no unescaped <c>:</c> and no
+    /// unbalanced quote anywhere in the filename value - otherwise the option parser
+    /// either stops the filename at a directory containing a colon or swallows the
+    /// ordinal into the path.
+    /// </para>
+    /// </remarks>
     private static string BuildSubtitleFilter(SubtitleBurnIn subtitleBurnIn)
         => string.Concat(
-            "subtitles=",
+            "subtitles=filename=",
             EscapeFilterPath(subtitleBurnIn.SourcePath),
             ":si=",
             subtitleBurnIn.SubtitleStreamOrdinal.ToString(CultureInfo.InvariantCulture));
 
     /// <summary>
-    /// Quotes a path for use as a filtergraph argument value.
+    /// Renders a path as a filter option value that decodes back to exactly that path.
     /// </summary>
     /// <remarks>
-    /// FFmpeg's documented filter-quoting form: wrap the value in single quotes, so
-    /// colons, brackets, semicolons and spaces lose their filtergraph meaning (this
-    /// also keeps Windows drive letters intact), and spell any literal single quote
-    /// with the <c>'\''</c> idiom. Control characters are rejected by
-    /// <see cref="SubtitleBurnIn"/>, so nothing can break out of the value.
+    /// <para>
+    /// A filter option value is decoded <em>twice</em> before FFmpeg uses it: once by
+    /// the filtergraph parser, which reads a filter's option string with
+    /// <c>av_get_token(filter, "[],;")</c> (<c>libavfilter/graphparser.c:filter_parse</c>),
+    /// and once by the filter's own option parser, which reads each option value with
+    /// <c>':'</c> as the only separator (<c>libavfilter/avfilter.c:ff_filter_opt_parse</c>
+    /// through <c>libavutil/opt.c:av_opt_get_key_value</c>). Both passes run the same
+    /// routine (<c>libavutil/avstring.c:av_get_token</c>): a backslash consumes the
+    /// character after it, a <c>'...'</c> pair contributes its contents literally, and
+    /// leading plus trailing whitespace are dropped.
+    /// </para>
+    /// <para>
+    /// Escaping once is therefore not enough. <c>\:</c> alone is spent by the graph pass,
+    /// which hands the option pass a bare <c>:</c> - and <c>:</c> is exactly what the
+    /// option pass splits a value on, so <c>/data/dirs:with colon/film.mkv</c> would
+    /// arrive at libass as <c>/data/dirs</c>. Every character that either parser
+    /// consumes is consequently escaped twice: once for the option level, then again as
+    /// a whole for the graph level. That is also what makes the trailing <c>:si=</c>
+    /// survive - every path colon reaches the option parser still escaped, so the first
+    /// unescaped colon left in the value is the one naming the ordinal.
+    /// </para>
+    /// <para>
+    /// Runs of characters that need no escaping at either level are wrapped in
+    /// single quotes instead, the documented filter-quoting form, which is what keeps an
+    /// ordinary path readable in a command log. Quoting and escaping are deliberately
+    /// never mixed inside one segment: the quotes are consumed by the graph pass alone,
+    /// so anything between them has to be inert for the option pass as well. An
+    /// apostrophe can never sit between them at all - FFmpeg cannot quote its own quote
+    /// character - so it is escaped on both levels, which is also why the
+    /// <c>'\''</c> idiom is not used here: it spends the graph pass leaving a lone quote
+    /// in front of <c>:si=</c>, and that quote then eats the ordinal.
+    /// </para>
+    /// <para>
+    /// Worked example: the path <c>/movies/It's Here/film.mkv</c> is emitted as the
+    /// value <c>'/movies/It'\\\''s Here/film.mkv'</c>; the graph pass decodes that to
+    /// <c>/movies/It\'s Here/film.mkv</c> and the option pass decodes it to the path.
+    /// </para>
+    /// <para>
+    /// Neither parser gives <c>"</c> any meaning, so a double quote is quoted as literal
+    /// text and needs no escape; keeping a command line intact for a shell, if the caller
+    /// assembles one, is that caller's own layer of quoting.
+    /// </para>
     /// </remarks>
     private static string EscapeFilterPath(string path)
-        => "'" + path.Replace("'", @"'\''", StringComparison.Ordinal) + "'";
+    {
+        var escaped = new StringBuilder(path.Length + 16);
+        var runStart = 0;
+
+        for (var index = 0; index <= path.Length; index++)
+        {
+            var atEnd = index == path.Length;
+
+            if (!atEnd && IsFilterLiteral(path[index], index == 0 || index == path.Length - 1))
+            {
+                continue;
+            }
+
+            // Close the literal run collected so far, then spell the character that
+            // ended it in its doubly escaped form.
+            if (index > runStart)
+            {
+                escaped.Append('\'').Append(path, runStart, index - runStart).Append('\'');
+            }
+
+            if (!atEnd)
+            {
+                AppendFilterEscaped(escaped, path[index]);
+            }
+
+            runStart = index + 1;
+        }
+
+        return escaped.ToString();
+    }
+
+    /// <summary>
+    /// Whether a character may be written as literal text between graph-level quotes.
+    /// </summary>
+    /// <remarks>
+    /// Whitespace is literal only between other characters: both parsers trim a value,
+    /// so whitespace at either edge of the path has to go through the escaping route.
+    /// </remarks>
+    private static bool IsFilterLiteral(char value, bool atEdge)
+        => !IsOptionSpecial(value)
+           && !IsGraphSpecial(value)
+           && !(atEdge && char.IsWhiteSpace(value));
+
+    /// <summary>
+    /// The characters the filter-option parser consumes inside a value: its pair
+    /// separator plus its two quoting and escaping characters.
+    /// </summary>
+    private static bool IsOptionSpecial(char value) => value is ':' or '\\' or '\'';
+
+    /// <summary>
+    /// The characters the filtergraph parser consumes: the quoting and escaping
+    /// characters, plus the ones that would cut this filter's option string short - a
+    /// link label or the next filter in the chain.
+    /// </summary>
+    private static bool IsGraphSpecial(char value) => value is '\'' or '\\' or '[' or ']' or ',' or ';';
+
+    /// <summary>
+    /// Appends one character in the form that survives both decode passes: escaped for
+    /// the option level first, then that escape escaped for the graph level.
+    /// </summary>
+    /// <remarks>
+    /// Whitespace counts as option-level here because trimming it is the option pass's
+    /// doing, and it is graph-escaped for the same reason - the backslash that protects
+    /// it must itself survive the graph pass to be there when the option pass runs.
+    /// </remarks>
+    private static void AppendFilterEscaped(StringBuilder escaped, char value)
+    {
+        if (IsOptionSpecial(value) || char.IsWhiteSpace(value))
+        {
+            escaped.Append("\\\\");
+        }
+
+        if (IsGraphSpecial(value) || char.IsWhiteSpace(value))
+        {
+            escaped.Append('\\');
+        }
+
+        escaped.Append(value);
+    }
 
     /// <summary>
     /// The stereo3d anaglyph conversion chain for an official output code.
@@ -364,6 +496,38 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     /// </summary>
     private static SubtitleBurnIn? EligibleSubtitleBurnIn(StereoProfile profile, SubtitleBurnIn? subtitleBurnIn)
         => subtitleBurnIn is not null && profile.SupportsSubtitleBurnIn ? subtitleBurnIn : null;
+
+    /// <summary>
+    /// Reads the profile id off a profile, insisting on the allowlist.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The catalog validates its own ids while it is built, but a
+    /// <see cref="StereoProfile"/> is a public shape: settings that survived a bad edit
+    /// or a hand-built profile can carry any string in <c>Id</c>, and nothing about the
+    /// id is used to choose the command - the kind alone decides that, so an unknown id
+    /// would otherwise reach the assembled command line carrying a conversion it was
+    /// never defined as.
+    /// </para>
+    /// <para>
+    /// This is the last seam before FFmpeg, so the id is rejected rather than
+    /// interpreted here, the same way the stereo3d output code below is, and before any
+    /// argument is produced. The interface already promised this rejection; this is where
+    /// it is kept.
+    /// </para>
+    /// </remarks>
+    private static string RequireAllowedProfileId(StereoProfile profile)
+    {
+        var profileId = ProfileIds.Normalize(profile.Id);
+        if (ProfileIds.IsAllowed(profileId))
+        {
+            return profileId;
+        }
+
+        throw new ArgumentException(
+            $"'{profile.Id}' is not an allowlisted Anaglyfin profile id, so no command can be built for it. Allowed ids: {string.Join(", ", ProfileIds.AllProfileIds)}.",
+            nameof(profile));
+    }
 
     /// <summary>
     /// Reads the output code off an anaglyph profile, insisting on the allowlist.

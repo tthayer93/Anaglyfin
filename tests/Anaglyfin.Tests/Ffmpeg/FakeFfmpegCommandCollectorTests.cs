@@ -47,12 +47,12 @@ public class FakeFfmpegCommandCollectorTests
 
         var rendered = collector.Render();
 
-        Assert.Contains("-vf stereo3d=sbsl:arcd,format=yuv420p,subtitles='" + Input + "':si=1", rendered);
+        Assert.Contains("-vf stereo3d=sbsl:arcd,format=yuv420p,subtitles=filename='" + Input + "':si=1", rendered);
 
         // The profile filter chain ends with the burn-in, so text is rendered onto
         // the finished anaglyph - never onto the separated eyes.
         var videoFilter = collector.Arguments[collector.IndexOf("-vf") + 1];
-        Assert.EndsWith("subtitles='" + Input + "':si=1", videoFilter);
+        Assert.EndsWith("subtitles=filename='" + Input + "':si=1", videoFilter);
         Assert.StartsWith("stereo3d=sbsl:arcd,", videoFilter);
     }
 
@@ -70,7 +70,29 @@ public class FakeFfmpegCommandCollectorTests
 
         Assert.True(collector.IndexOf("-filter_complex") >= 0);
         Assert.True(collector.IndexOf("[anaglyfin_custom]") < collector.IndexOf("-vf"));
-        Assert.Equal("subtitles='" + Input + "':si=0", collector.Arguments[collector.IndexOf("-vf") + 1]);
+        Assert.Equal("subtitles=filename='" + Input + "':si=0", collector.Arguments[collector.IndexOf("-vf") + 1]);
+    }
+
+    [Theory]
+    [InlineData(
+        @"/data/dirs:with colon/Movie.2010.3D.mkv",
+        @"stereo3d=sbsl:arcd,format=yuv420p,subtitles=filename='/data/dirs'\:'with colon/Movie.2010.3D.mkv':si=2")]
+    [InlineData(
+        "/movies/It's Here (2010)/Movie.2010.3D.mkv",
+        @"stereo3d=sbsl:arcd,format=yuv420p,subtitles=filename='/movies/It'\\\''s Here (2010)/Movie.2010.3D.mkv':si=2")]
+    public void BurnInPathCarryingFilterSyntaxReachesTheCommandLineAsOneArgument(string sourcePath, string expectedFilterChain)
+    {
+        var rewrite = _builder.Build(CatalogProfile(ProfileIds.AnaglyphRedCyanDubois), new SubtitleBurnIn(sourcePath, 2));
+
+        var collector = new FakeFfmpegCommandCollector()
+            .WithJellyfinStyleBase(sourcePath, Output)
+            .Apply(rewrite);
+
+        Assert.Contains("-vf " + expectedFilterChain, collector.Render());
+
+        // The path stays inside the single -vf argument it was assembled as: nothing in
+        // it re-splits the command, and nothing is left for a shell to undo.
+        Assert.Equal(expectedFilterChain, collector.Arguments[collector.IndexOf("-vf") + 1]);
     }
 
     [Fact]
