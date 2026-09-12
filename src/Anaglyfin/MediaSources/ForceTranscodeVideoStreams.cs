@@ -178,18 +178,18 @@ public static class ForceTranscodeVideoStreams
     /// <para>
     /// A serialisation round-trip rather than a hand-written field list, because a field
     /// list fails quietly in one direction only: forget a field and the clone still builds,
-    /// still plays, and simply reports one thing less than the file does. Dropping
-    /// <c>VideoRange</c> or a colour transfer that way would change which encode the server
-    /// builds - and which HDR route the client takes - while the version claims to describe
-    /// the same picture. Writing the model's own JSON and reading it back into a fresh
-    /// instance copies whatever the model has today, including fields added by a server
-    /// upgrade this code was not written against.
+    /// still plays, and simply reports one thing less than the file does. Dropping a colour
+    /// transfer or a Dolby Vision flag that way takes <c>VideoRange</c> and
+    /// <c>VideoRangeType</c> down with it - they are computed out of those fields - and with
+    /// them the encode the server builds and the HDR route the client takes, all while the
+    /// version claims to describe the same picture. Writing the model's own JSON and reading
+    /// it back into a fresh instance copies whatever the model has today, including fields
+    /// added by a server upgrade this code was not written against.
     /// </para>
     /// <para>
-    /// The derived read-only members (<c>VideoRange</c>, <c>VideoRangeType</c>,
-    /// <c>VideoDoViTitle</c>) are computed from the fields this copies, so they answer on the
-    /// clone exactly as they do on the original; the codec is copied like everything else and
-    /// then replaced by the caller.
+    /// The read-only members computed from those fields answer on the clone as they do on the
+    /// original, with one honest exception: <c>DisplayTitle</c> contains the codec, so the
+    /// version's title names <see cref="VideoCodec"/> where the file's names its own.
     /// </para>
     /// </remarks>
     private static MediaStream Clone(MediaStream source)
