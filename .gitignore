@@ -1,0 +1,29 @@
+# Orchestrator / agent workspace state (never part of the product tree)
+.worktrees/
+.shared/
+.logs/
+
+# Local-only compose launch overrides (the CI job takes SRC_DIR from the caller)
+.env
+.env.local
+
+# .NET build output
+bin/
+obj/
+artifacts/
+TestResults/
+*.binlog
+*.trx
+*.coverage
+coverage*.xml
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# OS noise
+.DS_Store
+Thumbs.db

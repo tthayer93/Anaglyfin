@@ -1,0 +1,12 @@
+# The CI image installs the toolchain only: sources arrive through the bind
+# mount at run time, so nothing below ever needs to reach the build context.
+# Keeping the context small also stops large local trees (vendor checkouts,
+# sibling agent worktrees, build output) from being uploaded on `docker build`.
+**/bin/**
+**/obj/**
+**/artifacts/**
+**/TestResults/**
+.git/
+.worktrees/
+.shared/
+.logs/

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Plugin identity manifest (plugin template pattern).
+
+  Jellyfin 12 installs plugins from a generated `meta.json`, produced by the
+  packaging job; this file is the hand-maintained source of the identity fields
+  and is embedded in the assembly so the values can be asserted in tests.
+  `<guid>` MUST equal `Anaglyfin.Plugin.PluginId`.
+-->
+<AnaglyfinManifest>
+  <name>Anaglyfin</name>
+  <guid>c7f4a1d9-3b58-4e2a-9d6c-84f0b1e5a723</guid>
+  <version>0.1.0</version>
+  <description>Exposes 3D MVC sources to Jellyfin as selectable playback versions.</description>
+  <overview>Offers 3D anaglyph, side-by-side and 2D base versions for MVC videos.</overview>
+  <owner>Anaglyfin</owner>
+  <category>Media Processing</category>
+  <!-- ABI of the Jellyfin server line this build targets. -->
+  <targetAbi>12.0.0</targetAbi>
+  <framework>net10.0</framework>
+  <offline>false</offline>
+</AnaglyfinManifest>
