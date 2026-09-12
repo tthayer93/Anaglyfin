@@ -54,14 +54,15 @@ namespace Anaglyfin.FFmpegWrapper;
 /// <b>Which video maps are the profile's competition.</b> Two spellings, because the
 /// server has two reasons to write one. A specifier that names the video type -
 /// <c>0:v</c>, <c>0:v:0</c>, <c>0:v:view:all</c>, a filtergraph label - names video
-/// whatever else it says. A plain <c>-map 0:2</c> names nothing of the kind: it is a
-/// stream number, and FFmpeg's own grammar gives a number no type. That one is the shape
-/// Jellyfin's HLS commands actually carry, and the rewriter only knows which numbered
-/// stream is video because the marker says so - <c>video=&lt;index&gt;</c> is the provider
-/// naming the video stream of its own source, which is the same number the server's
-/// <c>-map 0:&lt;index&gt;</c> will spend on it. A numbered map for any other stream, and
-/// every audio, subtitle, whole-file and negative map, stays exactly where the server put
-/// it.
+/// whatever else it says, and so does the exclusion of that type, which would take the
+/// profile's own picture back out of the output. A plain <c>-map 0:2</c> names nothing of
+/// the kind: it is a stream number, and FFmpeg's own grammar gives a number no type. That
+/// one is the shape Jellyfin's HLS commands actually carry, and the rewriter only knows
+/// which numbered stream is video because the marker says so - <c>video=&lt;index&gt;</c>
+/// is the provider naming the video stream of its own source by its stream index, the same
+/// number the server's <c>-map 0:&lt;index&gt;</c> spends on it. A numbered map for any
+/// other stream, and every audio, subtitle, whole-file and exclusion map that does not
+/// name video, stays exactly where the server put it.
 /// </para>
 /// <para>
 /// <b>Where it refuses.</b> A profile that owns the output's video pipeline cannot share
@@ -581,6 +582,18 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// data streams, and whole-file maps, which name no type at all and would drop audio
     /// as easily as video if this removed them.
     /// </para>
+    /// <para>
+    /// A negative value of the video type - <c>-map -0:v</c> - counts as competition too,
+    /// which is the opposite of the rule
+    /// <see cref="IsSubtitleMap"/> follows for the subtitle type, and the difference is where
+    /// the arguments land: what this rewriter inserts goes immediately after the last input,
+    /// ahead of every map the server wrote, so a standing <c>-map -0:v</c> would subtract the
+    /// views the profile has just mapped and produce an output with no picture in it. A
+    /// subtitle exclusion cannot do that to a profile - its own suppression is the same
+    /// direction of travel - so those are left alone, and so is every exclusion the server
+    /// writes of a stream number, which this rewriter's numbered rule has no part in: that
+    /// rule names the stream the server chose to map, not the ones it chose to drop.
+    /// </para>
     /// </remarks>
     private static bool IsConflictingVideoMap(string? mapValue)
     {
@@ -595,8 +608,28 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// <summary>
     /// Whether a <c>-map</c> value selects a subtitle stream of an input file.
     /// </summary>
+    /// <remarks>
+    /// An exclusion is not a selection. <c>-map -0:s</c> takes subtitle streams <em>away</em>
+    /// from an output, which is the direction subtitle suppression is already going in: the
+    /// profile asks for with <c>-sn</c>. Removing that map would add subtitles back, so an
+    /// exclusion of the subtitle type is left where the server wrote it, exactly as an
+    /// exclusion of audio is. (A negative <em>video</em> map is not treated this way, and the
+    /// reason is order rather than type: this rewriter inserts its own video map immediately
+    /// after the last input, which is ahead of every map the server wrote, so a standing
+    /// <c>-map -0:v</c> would subtract the streams the profile had just mapped. See
+    /// <see cref="IsConflictingVideoMap"/>.)
+    /// </remarks>
     private static bool IsSubtitleMap(string? mapValue)
-        => !string.IsNullOrEmpty(mapValue) && StreamSpecifierType(mapValue) == 's';
+        => !string.IsNullOrEmpty(mapValue)
+           && !IsStreamExclusion(mapValue)
+           && StreamSpecifierType(mapValue) == 's';
+
+    /// <summary>
+    /// Whether a <c>-map</c> value is an exclusion - the <c>-map -0:s</c> spelling, which
+    /// removes streams already selected rather than naming one to add.
+    /// </summary>
+    private static bool IsStreamExclusion(string mapValue)
+        => mapValue.Length > 0 && mapValue[0] == '-';
 
     /// <summary>
     /// The lowercased stream type a map value names, or <c>\0</c> for a value that names
@@ -630,13 +663,17 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The server's own HLS commands name the stream they chose by position -
+    /// The server's own HLS commands name the stream they chose by number -
     /// <c>-map 0:&lt;index&gt;</c>, or <c>-map 0:&lt;index&gt;?</c> where it wants the map to
-    /// survive a file that turns out not to carry it - and a bare position carries no stream
+    /// survive a file that turns out not to carry it - and a bare number carries no stream
     /// type for <see cref="StreamSpecifierType"/> to read. This is therefore the one map
     /// question this rewriter cannot answer out of the argv alone, and the one the marker
-    /// contract answers: the provider counted the position in the source's own stream list,
-    /// which is the same list the server's map counts in.
+    /// contract answers: the provider names its video stream by its own stream index
+    /// (<c>MediaStream.Index</c>), which is the number of that stream inside the file and so
+    /// the number a <c>-map 0:&lt;number&gt;</c> of this input addresses. The position the
+    /// stream happens to hold in a reported stream list is not that number as soon as the
+    /// list leaves file order - a data stream the server does not report, an externally
+    /// sourced track - which is why the marker carries the index and not the position.
     /// </para>
     /// <para>
     /// Both the input and the number have to match. A map of another input file is not this

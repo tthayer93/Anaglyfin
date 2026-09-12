@@ -478,6 +478,61 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
+    public void AnExclusionMapIsNobodysSubtitleStreamAndSurvivesSubtitleSuppression()
+    {
+        // "-map -0:s" is the server taking subtitle streams out of the output, which is the
+        // same direction -sn travels: removing that map would answer "no subtitles" by putting
+        // them back. An exclusion names no stream for this rewriter to own, so it stays - as do
+        // an audio exclusion and the bare whole-file one. A positive subtitle map beside them
+        // is a stream the server did select, and still gives way.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "0:v", "-map", "0:a", "-map", "0:s:0",
+            "-map", "-0:s", "-map", "-0:a", "-map", "-0",
+            "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all", "-sn",
+                "-map", "0:a",
+                "-map", "-0:s", "-map", "-0:a", "-map", "-0",
+                "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void AnExclusionOfTheVideoTypeIsStillTheProfilesPictureBeingTakenAway()
+    {
+        // The one exclusion a profile-owned pipeline does remove. What this rewriter inserts
+        // lands immediately after the last input, ahead of the server's own maps, so a
+        // "-map -0:v" left standing would subtract the views the profile had just mapped and
+        // run FFmpeg against an output with no video in it.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "0:a", "-map", "-0:v", "-c:v", "libx264", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all", "-sn",
+                "-map", "0:a", "-c:v", "libx264", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
     public void AnSnAlreadyOnTheCommandIsNotDuplicated()
     {
         var arguments = new List<string>
