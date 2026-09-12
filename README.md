@@ -4,12 +4,30 @@ Jellyfin plugin that exposes 3D MVC sources as selectable playback versions
 (2D base, red-cyan anaglyph, full SBS, half SBS), played back through the normal
 Jellyfin HLS pipeline.
 
-Design and plan live in `PROJECT_CONTEXT.md`, `STATUS_SUMMARY.md` and `PLAN.md`.
+Runtime design and validation notes live in `docs/architecture.md` and
+`docs/validation.md`. Orchestrator planning notes are not tracked in this checkout.
 
 ## Current state
 
-Bootstrap scaffold only. The plugin builds against Jellyfin 12 and does nothing
-yet: no profiles, no media sources, no FFmpeg wrapper, no settings UI, no caching.
+The source tree now contains the working code path, not just the bootstrap scaffold:
+
+- fixed plugin identity, manifest, and service registration
+- profile catalog with the shipped 2D, SBS, anaglyph, and custom grayscale profiles
+- plugin configuration model and dashboard admin page
+- conservative MVC detection rules
+- alternate media source provider that adds profile-marked playback versions
+- profile marker and parser contract
+- exact FFmpeg profile argument builder
+- out-of-process `Anaglyfin.FFmpegWrapper` executable with marker rewrite,
+  concurrency guard, and real FFmpeg launcher
+- xUnit tests covering the pure seams and command contract
+
+This repository does not yet contain a packaging/release job, and real Jellyfin
+runtime validation is tracked separately in `docs/validation.md`.
+
+Current implementation follow-ups are documented there and include subtitle ordinal
+wiring through the provider, applying device/client defaults in the provider path,
+enforcing the stored encoder policy, wrapper signal forwarding, and packaging metadata.
 
 ## Requirements
 
@@ -18,14 +36,17 @@ yet: no profiles, no media sources, no FFmpeg wrapper, no settings UI, no cachin
 | .NET SDK | `10.0.x` (pinned by `global.json`, `rollForward: latestMinor`) |
 | Target framework | `net10.0` |
 | Jellyfin ABI | `Jellyfin.Controller` / `Jellyfin.Model` `12.0.0` |
+| FFmpeg runtime | FFmpeg-mvc `jellyfin-8.1` build, reached through the wrapper |
 
 ## Repository layout
 
 ```text
-.ci/                     CI container definition (toolchain only)
-src/Anaglyfin/           Plugin project (entry point, service registrator, manifest)
-tests/Anaglyfin.Tests/   xUnit unit tests
-Anaglyfin.sln            Solution: plugin + tests
+.ci/                           CI container definition (toolchain only)
+docs/                          Architecture and validation notes
+src/Anaglyfin/                 Plugin project
+src/Anaglyfin.FFmpegWrapper/   Out-of-process FFmpeg wrapper executable
+tests/Anaglyfin.Tests/         xUnit unit tests
+Anaglyfin.sln                  Solution: plugin + wrapper + tests
 ```
 
 * `Plugin` derives from `BasePlugin<PluginConfiguration>` and carries the fixed
@@ -33,15 +54,43 @@ Anaglyfin.sln            Solution: plugin + tests
   `src/Anaglyfin/Plugin.manifest.xml`, which is embedded in the assembly;
   `PluginManifestTests` fails if the two ever disagree.
 * `PluginServiceRegistrator` is the DI seam Jellyfin discovers by assembly scan.
-  It registers nothing yet and must keep a public parameterless constructor.
+  It registers the profile catalog, MVC detector, and settings source, and must
+  keep a public parameterless constructor.
+* `AnaglyfinMediaSourceProvider` is discovered by Jellyfin's media-source provider
+  scan. It must not be registered manually in DI.
+* `Anaglyfin.FFmpegWrapper` is a normal executable, not a plugin. In a wrapper-based
+  deployment, the server's FFmpeg path points at it and it resolves the real
+  FFmpeg-mvc binary through environment variables.
+
+## Wrapper environment
+
+The wrapper is started by Jellyfin, not by the plugin, so it reads its setup from
+the server environment:
+
+```text
+ANAGLYFIN_REAL_FFMPEG
+FFMPEG_MVC_PATH
+ANAGLYFIN_MAX_CONCURRENT_TRANSCODES
+ANAGLYFIN_LOCK_DIR
+```
+
+Real deployment details and expected validation results are in
+`docs/validation.md`.
 
 ## CI
 
-The whole gate runs in a container; the only parameter is `SRC_DIR`, which is used
-both as the Docker build context and as the source bind mount:
+The whole gate runs in a container; the only required parameter is `SRC_DIR`, which
+is used both as the Docker build context and as the source bind mount:
 
 ```sh
 SRC_DIR="$HOST_WORKSPACE/Anaglyfin" docker compose -f .ci/test.yml run --rm test
+```
+
+For worktrees where the compose CLI and the Docker daemon see different mount points,
+use an ignored `.env` file and pass it explicitly:
+
+```sh
+docker compose --env-file .env -f .ci/test.yml run --rm test
 ```
 
 Steps executed by the job: `dotnet restore` → `dotnet build -warnaserror` (Release)
