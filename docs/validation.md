@@ -44,6 +44,23 @@ include:
 - the real FFmpeg command visible in the process list, with paths redacted as needed
 - whether the failure was seen before playback, at transcode start, or during playback
 
+## Where to run it
+
+Two places, and they are not interchangeable.
+
+`dev/jellyfin-validation/` is a disposable Docker stack that runs these artifacts inside
+`jellyfin/jellyfin:latest` with the mount shape of the real target
+(`./jellyfin/config` -> `/config`, `./jellyfin/cache` -> `/cache`, media -> `/media`). It
+answers, on your own machine and repeatably: whether the packaged plugin is discovered by
+Jellyfin 12, whether the wrapper is accepted as the server's FFmpeg, whether the linux-x64
+artifact executes and decides correctly in that image, whether a misconfigured
+`ANAGLYFIN_REAL_FFMPEG` fails loudly, and - with an FFmpeg-mvc build mounted - what a real
+converted profile looks like. Its README states which steps it can and cannot answer.
+
+The real server answers the rest: what a client offers and picks, how a real playback's
+marker survives transport, and how the picture looks on a television. Run the harness first
+so that a `FAIL` on the real server is a finding about Anaglyfin and not about the install.
+
 ## V0. Code artifacts are current
 
 - [ ] CI passes from the intended branch:
@@ -164,11 +181,23 @@ Required deployment shape:
 
 ```text
 Jellyfin -> wrapper executable -> ANAGLYFIN_REAL_FFMPEG -> FFmpeg-mvc
-Jellyfin -> real ffprobe
+Jellyfin -> real ffprobe, in the wrapper's own directory
+```
+
+The second line is not decoration. The server resolves `ffprobe` from the directory of the
+FFmpeg path it was given, so putting the wrapper somewhere on its own moves the probe the
+library scan depends on. On a container that mounts `./jellyfin/config` at `/config`, the
+signature of getting this wrong is one line at startup and a library that never fills:
+
+```text
+[ERR] MediaEncoder: Running /config/anaglyfin/ffmpeg/ffprobe -loglevel quiet -f lavfi
+      -i nullsrc=s=1x1:d=1 -only_first_vframe failed with exception An error occurred
+      trying to start process '/config/anaglyfin/ffmpeg/ffprobe' ... No such file or directory
 ```
 
 - [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user.
-- [ ] FFprobe from the same FFmpeg-mvc build is installed and executable.
+- [ ] FFprobe from the same FFmpeg-mvc build is installed, executable, **in the same
+  directory as the wrapper**, because that is where the server will look for it.
 - [ ] The wrapper executable is deployed to a stable path and executable by the Jellyfin
   service user.
 - [ ] The server's FFmpeg path points at the wrapper, not directly at FFmpeg-mvc, if
@@ -234,7 +263,29 @@ The detector is intentionally conservative:
 - [ ] `.strm` items and disc-image-like items do not produce Anaglyfin versions.
 
 If detection is wrong, record the item path, `Video3DFormat`, tags, and whether Anaglyfin
-logged a no-source decision.
+logged a no-source decision. Those decisions are Debug lines from
+`Anaglyfin.MediaSources.AnaglyfinMediaSourceProvider` - on Jellyfin 12, which configures
+Serilog from JSON, they are switched on with a `logging.json` next to the other files in the
+server's config directory:
+
+```json
+{
+  "Serilog": {
+    "MinimumLevel": {
+      "Override": {
+        "Anaglyfin": "Debug"
+      }
+    }
+  }
+}
+```
+
+Then look for:
+
+```text
+Anaglyfin offers 4 versions for <item name>.
+Anaglyfin offers no versions for <item name>: <decision>.
+```
 
 ## V5. Alternate media source list
 
@@ -335,6 +386,23 @@ Useful capture command:
 
 ```sh
 ps -ww -eo pid,ppid,args | grep -E 'Anaglyfin.FFmpegWrapper|ffmpeg' | grep -v grep
+```
+
+Containers usually ship no `ps`; the same information is in `/proc`, from the host or from
+inside the container:
+
+```sh
+docker compose exec jellyfin sh -c \
+  'for p in /proc/[0-9]*; do tr "\0" " " < "$p/cmdline" 2>/dev/null | grep -q ffmpeg \
+     && tr "\0" " " < "$p/cmdline" && echo; done'
+```
+
+Both processes also live in the server's transcode log, which is the artifact to capture
+rather than a screenshot - `<log dir>/transcode_<n>.log`, and `/config/log` for a container
+that sets `JELLYFIN_LOG_DIR`:
+
+```sh
+ls -t /config/log/transcode_*.log | head -1 | xargs head -n 40
 ```
 
 Expected process relationship:
