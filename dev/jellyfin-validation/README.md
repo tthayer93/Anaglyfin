@@ -358,8 +358,8 @@ jellyfin
 - the child names an encoder for the video - `-codec:v libx264`, `-c:v libx265`, `-vcodec
   ...`, anything but `copy`. A profile that owns the video pipeline never runs over a copy:
   the copy form of a Jellyfin command carries no encoder stack to write into, so the wrapper
-  refuses it and says `anaglyfin-wrapper: refused ... (ServerChoseVideoCopy)` in the log
-  rather than passing a command through that would have played the raw MVC track;
+  refuses it and says `refused: the command was not started (ServerChoseVideoCopy)` in the
+  log rather than passing a command through that would have played the raw MVC track;
 - no numbered map names the marker's video index. `-map 0:0` (or `-map 0:0?`) in the command
   the wrapper received is removed from the child's, because argv alone cannot tell that
   `0` from an audio stream - the marker's `video=<index>` is what identifies it. Audio and
@@ -462,6 +462,7 @@ config.
 | `Running /config/anaglyfin/ffmpeg/ffprobe ... No such file or directory` | no ffprobe beside the wrapper: `sh harness.sh ffprobe`, then restart |
 | `anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running`, child exit `75` | the concurrency limit doing its job with `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1`; stop the first job or raise the limit |
 | `anaglyfin-wrapper: refused: the command was not started (RejectedMarker/...)` | a marker the parser rejected. The line never contains the marker or the path, so look at the playback-info response (step 7) to see what was offered |
+| `anaglyfin-wrapper: refused: the command was not started (ServerChoseVideoCopy)`, child exit `65` | the server asked for a video copy of an Anaglyfin version, so the profile had nothing to write into. Expected after a codec report the client can copy, which the step 7 `MediaStreams` check should have caught first; the reported `mvc` codec exists to make this line rare |
 | Anaglyfin versions never appear for a file you expect | the name has no MVC marker, or the provider is not eligible: step 6's Debug lines say which decision was made |
 | `No users, creating one with username root` during first start | the container is root and the wizard had not run yet; set a password in the wizard |
 | `harness: ... wrapper, not executable` | the checkout dropped the mode bit: `chmod 0755 <artifact>`, or let preflight do it |
