@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using Anaglyfin.FFmpegWrapper;
@@ -109,6 +110,62 @@ public sealed class FFmpegProcessLauncherTests
         {
             TryDelete(report);
         }
+    }
+
+    // ----- the child under stop signals ------------------------------------------------
+
+    [Fact]
+    public void TheLauncherProtectsTheChildExactlyAsLongAsThatChildRuns()
+    {
+        if (!File.Exists(PosixShell))
+        {
+            return;
+        }
+
+        var forwarders = new List<FakeChildSignalForwarder>();
+        var launcher = new FFmpegProcessLauncher(() =>
+        {
+            var forwarder = new FakeChildSignalForwarder();
+            forwarders.Add(forwarder);
+            return forwarder;
+        });
+
+        Assert.Equal(42, launcher.Launch(PosixShell, new[] { "-c", "exit 42" }));
+
+        // One forwarder per launch - its registrations are scoped to the encoder they
+        // speak for, never to the wrapper process that may outlive it by a thousand
+        // playbacks - and the etiquette around the child is attach, detach, dispose.
+        var forwarder = Assert.Single(forwarders);
+        Assert.Equal(new[] { "attach", "detach", "dispose" }, forwarder.Events);
+
+        // The id named is the running child's own: this is the number a forwarded stop
+        // signal will be sent to, so a wrong or stale one is an orphan or a stranger.
+        var attached = Assert.Single(forwarder.AttachedProcessIds);
+        Assert.True(attached > 0, "the launcher attached a process that has no positive id.");
+
+        Assert.True(forwarder.IsDisposed);
+    }
+
+    [Fact]
+    public void AChildThatNeverStartedIsNeverAttached()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "anaglyfin-not-a-binary-" + Guid.NewGuid().ToString("N"));
+
+        var forwarder = new FakeChildSignalForwarder();
+        var launcher = new FFmpegProcessLauncher(() => forwarder);
+
+        Assert.Throws<Win32Exception>(() => launcher.Launch(missing, new[] { "-version" }));
+
+        // The refusal the application already reports must not leave a half-taught
+        // forwarder behind: no child was ever named, and the listener is given back.
+        Assert.Empty(forwarder.AttachedProcessIds);
+        Assert.Equal(new[] { "dispose" }, forwarder.Events);
+    }
+
+    [Fact]
+    public void ANullForwarderFactoryIsAProgrammingErrorRatherThanAPlatform()
+    {
+        Assert.Throws<ArgumentNullException>(() => new FFmpegProcessLauncher(null!));
     }
 
     private static void TryDelete(string path)
