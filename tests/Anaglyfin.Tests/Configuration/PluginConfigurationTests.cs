@@ -195,10 +195,16 @@ public class PluginConfigurationTests
         Assert.Equal(4, reloaded.MaxConcurrentTranscodes);
         Assert.Equal(VideoEncoderPolicy.HardwareOnly, reloaded.EncoderPolicy);
         Assert.Equal("#112233", reloaded.CustomLeftEyeColor);
-        Assert.Single(reloaded.EnabledProfileIds);
-        Assert.Equal(ProfileIds.CustomGrayscale, Assert.Single(reloaded.EnabledProfileIds));
-        Assert.Equal(ProfileIds.SideBySideFull, Assert.Single(reloaded.DeviceDefaultProfiles).ProfileId);
+
+        // The settings endpoint hands these collections back on every save, so they have
+        // to travel in both directions, not just out.
+        Assert.Contains("\"EnabledProfileIds\":[\"custom_grayscale\"]", payload);
+        Assert.Contains("\"DeviceDefaultProfiles\":[", payload);
         Assert.Contains("\"HardwareOnly\"", payload);
+
+        Assert.Equal(ProfileIds.CustomGrayscale, Assert.Single(reloaded.EnabledProfileIds));
+        Assert.Equal("Web", Assert.Single(reloaded.DeviceDefaultProfiles).ClientName);
+        Assert.Equal(ProfileIds.SideBySideFull, Assert.Single(reloaded.DeviceDefaultProfiles).ProfileId);
     }
 
     private static PluginConfiguration RoundTripXml(PluginConfiguration configuration)

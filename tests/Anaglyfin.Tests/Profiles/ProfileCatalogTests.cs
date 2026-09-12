@@ -354,7 +354,7 @@ public class ProfileCatalogTests
         var offered = _catalog.GetOfferedProfiles(configuration, "any", "AndroidTV").Select(profile => profile.Id).ToArray();
 
         Assert.Equal(
-            new[] { ProfileIds.SideBySideHalf, ProfileIds.AnaglyphRedCyanDubois, ProfileIds.SideBySideFull, ProfileIds.CustomGrayscale },
+            new[] { ProfileIds.SideBySideHalf, ProfileIds.SideBySideFull, ProfileIds.AnaglyphRedCyanDubois, ProfileIds.CustomGrayscale },
             offered);
         Assert.Equal(offered.Length, offered.Distinct(StringComparer.OrdinalIgnoreCase).Count());
     }

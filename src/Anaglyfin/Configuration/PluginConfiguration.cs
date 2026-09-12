@@ -50,31 +50,39 @@ public class PluginConfiguration : BasePluginConfiguration
     public string FallbackProfileId { get; set; } = ProfileIds.TwoDBase;
 
     /// <summary>
-    /// Gets the per device and per client default profile overrides.
+    /// Gets or sets the per device and per client default profile overrides.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Empty by default: a fresh installation has one global default. Entries are
     /// evaluated by <see cref="DeviceProfileDefault.MatchStrength"/> and their profile
     /// ids are only honoured when enabled in <see cref="EnabledProfileIds"/>.
+    /// </para>
+    /// <para>
+    /// The setter exists because both settings serialisers the server uses replace the
+    /// collection when they load a value: the XML serialiser will only assign a property
+    /// it can set, and the admin UI endpoint deserialises JSON into a fresh instance.
+    /// </para>
     /// </remarks>
-    public List<DeviceProfileDefault> DeviceDefaultProfiles { get; } = new();
+    public List<DeviceProfileDefault> DeviceDefaultProfiles { get; set; } = new();
 
     /// <summary>
-    /// Gets the profile ids the administrator wants offered.
+    /// Gets or sets the profile ids the administrator wants offered.
     /// </summary>
     /// <remarks>
     /// <para>
     /// Empty means "no explicit selection", which the profile catalog answers with the
     /// shipped default set (red/cyan Dubois, full SBS, half SBS, 2D base). Keeping the
-    /// persisted default empty is also what makes XML reloading append the stored ids to
-    /// an empty list instead of duplicating a prefilled one.
+    /// persisted default empty is also what makes a settings file load cleanly: the XML
+    /// serialiser adds stored ids to the collection the constructor created, so a
+    /// prefilled default would come back duplicated after every restart.
     /// </para>
     /// <para>
     /// Unknown ids are ignored rather than rejected, so a settings file that mentions a
     /// profile from a newer build does not break playback.
     /// </para>
     /// </remarks>
-    public List<string> EnabledProfileIds { get; } = new();
+    public List<string> EnabledProfileIds { get; set; } = new();
 
     /// <summary>
     /// Gets or sets how many Anaglyfin transcodes may run at the same time across the
