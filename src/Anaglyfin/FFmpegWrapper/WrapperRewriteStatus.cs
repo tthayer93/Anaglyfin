@@ -59,8 +59,9 @@ public enum WrapperRewriteStatus
 
     /// <summary>
     /// The marker is present in a command shape whose profile arguments this rewriter
-    /// cannot place safely - today, a marker that is not the first input, while every
-    /// profile argument addresses input <c>0</c>.
+    /// cannot place safely: today, a marker that is not the first input (while every profile
+    /// argument addresses input <c>0</c>), and more than one input carrying a valid marker
+    /// (while only one of them can be resolved, leaving the rest for FFmpeg to open).
     /// </summary>
     UnsupportedCommandShape
 }

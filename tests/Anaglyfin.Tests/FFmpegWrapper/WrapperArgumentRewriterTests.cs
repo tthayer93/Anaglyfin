@@ -25,8 +25,10 @@ namespace Anaglyfin.Tests.FFmpegWrapper;
 /// <para>
 /// The fixture command is the shape Jellyfin builds for an HLS transcode: global flags, one
 /// input, one video and one audio map, encoder and muxer choices, and the playlist as the
-/// output. The executable token is not part of an argument vector - the launcher supplies
-/// the binary it execs - so the vectors below start at the first option.
+/// output. A second fixture drops the maps entirely, because that is the other shape a
+/// transcode arrives in and the one where an inserted video map quietly takes the audio
+/// away. The executable token is not part of an argument vector - the launcher supplies the
+/// binary it execs - so the vectors below start at the first option.
 /// </para>
 /// </remarks>
 public class WrapperArgumentRewriterTests
@@ -211,6 +213,34 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(WrapperRewriteStatus.RejectedMarker, result.Status);
         Assert.Equal(MarkerParseStatus.MalformedMarker, result.MarkerStatus);
         Assert.Empty(result.Arguments);
+    }
+
+    [Theory]
+    [InlineData(ProfileIds.SideBySideFull, ProfileIds.AnaglyphRedCyanDubois)]
+    [InlineData(ProfileIds.SideBySideHalf, ProfileIds.SideBySideHalf)]
+    public void TwoValidMarkersRefuseTheJobBecauseOnlyOneOfThemCanBeResolved(string firstProfileId, string secondProfileId)
+    {
+        // The provider writes one marker per alternate source, so a command carrying two of
+        // them was not assembled by the provider. Rewriting the first and running anyway
+        // would leave the second marker token in the vector for FFmpeg to open as a media
+        // file - the exact outcome the marker contract exists to prevent - and no profile
+        // choice can be read out of the pair either.
+        var arguments = new List<string>
+        {
+            "-i", Marker(firstProfileId),
+            "-i", Marker(secondProfileId),
+            "-map", "0:v", "-map", "0:a", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+        var error = result.Error ?? string.Empty;
+
+        Assert.Equal(WrapperRewriteStatus.UnsupportedCommandShape, result.Status);
+        Assert.False(result.IsSuccess);
+        Assert.Empty(result.Arguments);
+        Assert.DoesNotContain("127.0.0.1", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("source=", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("Movie.2010.3D.mkv", error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -534,6 +564,143 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(ForeignGraph, result.Arguments[3]);
     }
 
+    // ----- stream selection on a map-less command ------------------------------------------
+
+    [Fact]
+    public void AMapLessTranscodeGainsTheProfileVideoMapAndAnAudioMapBesideIt()
+    {
+        var result = _rewriter.Rewrite(MapLessTranscode(Marker(ProfileIds.SideBySideFull)));
+
+        // A -map is how FFmpeg is told which streams an output carries. With none on the
+        // command, FFmpeg picks a video *and* an audio by itself; the moment this rewriter
+        // names the profile's own video, that automatic pick is replaced by the single
+        // stream named. The audio has to be named too here, or the 3D version of a film
+        // plays silent and nothing reports it.
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+
+                // The profile's view map and the optional audio map: optional so that a
+                // source with no audio track at all is still a source this profile converts.
+                "-map", "0:v:view:all", "-map", "0:a?", "-sn",
+
+                // The server's encoder, muxer and output choices, untouched.
+                "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Theory]
+    [InlineData(ProfileIds.SideBySideFull)]
+    [InlineData(ProfileIds.SideBySideHalf)]
+    [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
+    [InlineData(ProfileIds.CustomGrayscale)]
+    public void EveryProfileThatOwnsTheVideoPipelineAlsoNamesTheAudioItWouldLeaveBehind(string profileId)
+    {
+        var result = _rewriter.Rewrite(MapLessTranscode(Marker(profileId)));
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+
+        var mapOptionIndexes = Enumerable.Range(0, result.Arguments.Count)
+            .Where(index => result.Arguments[index] == "-map")
+            .ToArray();
+
+        // Exactly two maps: the profile's own stream and the audio. The rewrite invents no
+        // third stream and no subtitle stream behind the burn-in.
+        Assert.Equal(2, mapOptionIndexes.Length);
+        Assert.Equal("0:a?", result.Arguments[mapOptionIndexes[1] + 1]);
+        Assert.Contains("-sn", result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void AMapLessCommandRewrittenThroughAFilterGraphNamesItsAudioToo()
+    {
+        var result = _rewriter.Rewrite(MapLessTranscode(Marker(ProfileIds.CustomGrayscale)));
+
+        // The graph profile maps a label instead of a view specifier, but the audio question
+        // is the same question: a named video stream leaves FFmpeg nothing else to put in
+        // the output.
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-filter_complex", CustomGraph,
+                "-map", "[anaglyfin_custom]", "-map", "0:a?", "-sn",
+                "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void PlainTwoDimensionalOnAMapLessCommandStillNamesNoStreamAtAll()
+    {
+        var result = _rewriter.Rewrite(MapLessTranscode(Marker(ProfileIds.TwoDBase)));
+
+        // Nothing is inserted, so nothing displaces FFmpeg's own selection and the audio
+        // that selection delivers is already in the output. An invented map here would be
+        // the rewrite deciding streams for a command it did not touch.
+        Assert.Equal(
+            new[] { "-i", SourcePath, "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8" },
+            result.Arguments);
+        Assert.DoesNotContain("-map", result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void ACommandThatAlreadyChoseItsAudioIsNotGivenASecondAudioMap()
+    {
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "0:v", "-map", "0:a",
+            "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        // Maps on the command are the server's own stream selection. The video map is
+        // replaced because the profile competes with it; the audio map stays exactly where
+        // and as it was written, and no optional audio map is invented next to it - the
+        // command already said what audio it wants.
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all", "-sn",
+                "-map", "0:a",
+                "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
+            },
+            result.Arguments);
+        Assert.DoesNotContain("0:a?", result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void ACommandThatMappedOnlyVideoKeepsMappingOnlyVideo()
+    {
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois),
+            "-map", "0:v", "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        // A map carrying no audio is a command that already chose a video-only output. The
+        // profile map still replaces the competing one; undoing that choice is not this
+        // rewriter's call, so inventing "-map 0:a?" here would change what the server asked
+        // to mux.
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-map", "0:v:view:all",
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
+            },
+            result.Arguments);
+        Assert.DoesNotContain("0:a?", result.Arguments, StringComparer.Ordinal);
+    }
+
     // ----- multi-input commands and argument placement -----------------------------------
 
     [Fact]
@@ -700,6 +867,25 @@ public class WrapperArgumentRewriterTests
 
     private static string Marker(string profileId, int? subtitleOrdinal = null)
         => ProfileMarker.Create(profileId, SourcePath, subtitleOrdinal).ToString();
+
+    /// <summary>
+    /// The Jellyfin HLS transcode shape that carries no <c>-map</c> at all. Nothing names a
+    /// stream here, so FFmpeg's automatic selection is what puts both the picture and the
+    /// audio into the playlist - the behaviour a profile video map has to leave intact.
+    /// </summary>
+    private static List<string> MapLessTranscode(string input)
+        => new()
+        {
+            "-i",
+            input,
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "copy",
+            "-f",
+            "hls",
+            "playlist.m3u8"
+        };
 
     private static string InputOf(IReadOnlyList<string> arguments)
         => arguments[arguments.ToList().IndexOf(WrapperArgumentRewriter.InputFileArgument) + 1];

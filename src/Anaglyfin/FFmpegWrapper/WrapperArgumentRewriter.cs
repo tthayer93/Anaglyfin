@@ -22,10 +22,12 @@ namespace Anaglyfin.FFmpegWrapper;
 /// <see cref="ProfileMarkerParser.Parse"/>, which leaves exactly three readings: no input
 /// is a marker, so the vector is returned unchanged and the server's own command - with
 /// its hardware decode choices - runs as written (see
-/// <see cref="WrapperRewriteStatus.PassedThrough"/>); one input is a valid marker, so the
-/// command is rewritten; or an input presents itself as a marker and fails to parse, which
-/// refuses the job outright - a token that wanted to be a marker is not an ordinary media
-/// path and must never reach FFmpeg (see <see cref="WrapperRewriteStatus.RejectedMarker"/>).
+/// <see cref="WrapperRewriteStatus.PassedThrough"/>); exactly one input is a valid marker,
+/// so the command is rewritten; or an input presents itself as a marker and fails to parse,
+/// which refuses the job outright - a token that wanted to be a marker is not an ordinary
+/// media path and must never reach FFmpeg (see <see cref="WrapperRewriteStatus.RejectedMarker"/>).
+/// Two valid markers are neither of these and are refused too, for the same reason as a
+/// broken one: only one of them can be the input being rewritten.
 /// </para>
 /// <para>
 /// <b>Where arguments go.</b> FFmpeg binds a per-file output option to the file it opens
@@ -40,9 +42,12 @@ namespace Anaglyfin.FFmpegWrapper;
 /// profile's own view selection and filter chain are inserted, video maps that would
 /// compete with them are removed, subtitle stream maps give way to <c>-sn</c> when the
 /// profile burns subtitles in, and a linear profile filter is appended to an existing
-/// <c>-vf</c> chain rather than replacing it. Audio maps, encoder, muxer and HLS arguments
-/// are never touched: they are Jellyfin's business, and the product requirement is that
-/// Anaglyfin playback differs from stock playback in picture and not in delivery.
+/// <c>-vf</c> chain rather than replacing it. An audio map that is already on the command,
+/// the encoder, the muxer and the HLS arguments are never touched: they are Jellyfin's
+/// business, and the product requirement is that Anaglyfin playback differs from stock
+/// playback in picture and not in delivery. The one audio argument this rewriter does
+/// write is the optional audio map beside its own video map, and only for a command that
+/// carried no map at all - see <see cref="OptionalAudioMapValue"/>.
 /// </para>
 /// <para>
 /// <b>Where it refuses.</b> A profile that owns the output's video pipeline cannot share
@@ -50,8 +55,11 @@ namespace Anaglyfin.FFmpegWrapper;
 /// does not parse or graft foreign filter text (which is also a security requirement -
 /// nothing in a received command line is ever treated as filter syntax), so an existing
 /// <c>-filter_complex</c> in the output segment refuses the job. So does a marker that is
-/// not the first input, because every argument the builder emits addresses input <c>0</c>.
-/// Both refusals say which rule the command broke, and both return no vector at all.
+/// not the first input, because every argument the builder emits addresses input <c>0</c>,
+/// and so does a second valid marker anywhere in the vector: a rewrite resolves exactly
+/// one marker, and the one left behind would reach FFmpeg as a file to open. Every one of
+/// these refusals says which rule the command broke, and every one returns no vector at
+/// all.
 /// </para>
 /// </remarks>
 public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
@@ -77,6 +85,26 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
 
     /// <summary>The <c>-sn</c> option token: the output carries no subtitle stream.</summary>
     public const string DisableSubtitlesArgument = "-sn";
+
+    /// <summary>
+    /// The <c>-map</c> value that adds an input's audio to an output this rewriter has
+    /// already given a video map of its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A command carrying no <c>-map</c> at all asks FFmpeg to choose the output's streams,
+    /// and that choice is one video <em>and</em> one audio. Naming a video stream - which is
+    /// exactly what a profile map does - replaces that choice with the one stream named, so
+    /// without this the rewritten command would export a silent picture and nothing would
+    /// report it.
+    /// </para>
+    /// <para>
+    /// The trailing <c>?</c> is what keeps the map optional: FFmpeg then exports the audio
+    /// that is there and stays silent about a file that has none, instead of refusing a
+    /// source that simply carries no audio track.
+    /// </para>
+    /// </remarks>
+    public const string OptionalAudioMapValue = "0:a?";
 
     private readonly IProfileCatalog _catalog;
     private readonly IFfmpegProfileArgumentBuilder _builder;
@@ -122,6 +150,7 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         var firstInputIndex = -1;
         var lastInputIndex = -1;
         var markerIndex = -1;
+        var markerCount = 0;
         MarkerParseResult? marker = null;
         MarkerParseResult? rejected = null;
 
@@ -149,6 +178,11 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
             var parsed = ProfileMarkerParser.Parse(arguments[valueIndex]);
             if (parsed.IsSuccess)
             {
+                // Only the first marker is kept as the one to resolve; the count is what
+                // notices a second one, which is a command shape rather than a profile
+                // question and is refused below.
+                markerCount++;
+
                 if (marker is null)
                 {
                     marker = parsed;
@@ -176,6 +210,19 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         if (marker is null)
         {
             return WrapperRewriteResult.PassedThrough(arguments);
+        }
+
+        // A second valid marker is not a second job and not part of the first one either.
+        // Exactly one input can be the file this rewrite is about, so the others would keep
+        // their marker text and FFmpeg would open that marker as a media file - the one
+        // outcome the whole marker contract exists to prevent. A vector carrying two of them
+        // was not assembled by the media source provider, and is refused rather than guessed
+        // at.
+        if (markerCount > 1)
+        {
+            return WrapperRewriteResult.Failure(
+                WrapperRewriteStatus.UnsupportedCommandShape,
+                "More than one input of the command carries an Anaglyfin marker, and a rewrite resolves exactly one of them; the marker left behind would reach FFmpeg as an input file.");
         }
 
         return RewriteMarker(arguments, marker.Marker!, markerIndex, firstInputIndex, lastInputIndex);
@@ -251,6 +298,15 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         // output without video at all.
         var ownsVideoPipeline = rewrite.VideoMap is not null;
 
+        // Whether the received output segment named any stream of its own. A command that
+        // named none - the map-less HLS shape this rewriter has to survive as well as the one
+        // carrying the server's own maps - is asking FFmpeg to pick the output's streams, and
+        // that pick delivers a video *and* an audio. The moment this rewriter inserts the
+        // profile's own video map, the naming is explicit and the pick is gone. A command
+        // that did carry maps had already decided its own streams, audio included, and that
+        // decision is Jellyfin's to keep.
+        var mapsReceived = false;
+
         // The received vector is never mutated: removals and replacements are recorded by
         // index and applied while the new vector is built, so one pass over the output
         // segment is enough and no index can shift under another decision.
@@ -267,6 +323,10 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
 
             if (IsMapOption(token) && index + 1 < arguments.Count)
             {
+                // Recorded before the conflict test below: a map this rewriter removes is
+                // still proof that the command chose its own streams.
+                mapsReceived = true;
+
                 var mapValue = arguments[index + 1];
                 if ((ownsVideoPipeline && IsConflictingVideoMap(mapValue))
                     || (rewrite.ShouldSuppressSubtitleStreams && IsSubtitleMap(mapValue)))
@@ -310,6 +370,18 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         {
             insertions.Add(MapArgument);
             insertions.Add(videoMap);
+
+            // Naming the profile's video is what turns an un-named output into a named one,
+            // and a named output exports exactly what is named. On a command that carried no
+            // map of its own, the audio the automatic selection used to deliver therefore
+            // needs a name of its own here - otherwise the 3D version of a film plays silent
+            // and no layer reports it. On a command that did carry maps, whatever audio it
+            // chose (including none) is already in the segment and stays untouched.
+            if (!mapsReceived)
+            {
+                insertions.Add(MapArgument);
+                insertions.Add(OptionalAudioMapValue);
+            }
         }
 
         // The builder already merged the profile conversion and the subtitle burn-in into
