@@ -1,0 +1,52 @@
+# Anaglyfin CI test job.
+#
+# Usage (from any checkout of this repository):
+#   SRC_DIR="$HOST_WORKSPACE/Anaglyfin/.worktrees/agent-T0" docker compose -f .ci/test.yml run --rm test
+#
+# SRC_DIR is the only parameter: it is used both as the Docker build context and
+# as the bind mount the job builds and tests. No container-side path of the
+# caller's repository is hardcoded here (the container always sees /src).
+name: anaglyfin-ci
+
+services:
+  test:
+    build:
+      # Build context is read by the compose CLI, the bind mount by the daemon.
+      # Those are the same path on a normal host, so SRC_DIR alone is enough.
+      # BUILD_CONTEXT only exists for setups where the CLI and the daemon see the
+      # workspace under different mount points (agent containers vs. host); leave
+      # it unset everywhere else.
+      context: ${BUILD_CONTEXT:-${SRC_DIR:?SRC_DIR must point at the checkout to test}}
+      dockerfile: .ci/Dockerfile
+      tags:
+        - anaglyfin-ci:${ANAGLYFIN_CI_TAG:-local}
+    image: anaglyfin-ci:${ANAGLYFIN_CI_TAG:-local}
+    # Build, restore and test are pure host-network-free work: the job never
+    # listens on a port and never talks to another container. Using the host
+    # network namespace keeps the gate independent of the daemon's bridge
+    # address pools (this host currently refuses new custom networks).
+    network_mode: host
+    working_dir: /src
+    volumes:
+      - ${SRC_DIR:?SRC_DIR must point at the checkout to test}:/src
+    environment:
+      # Scratch space for this job (test results, transient fixtures).
+      ANAGLYFIN_TEST_TMPDIR: /tmp/anaglyfin-test
+      # Port reserved for the future Jellyfin integration job. Nothing in the
+      # scaffold listens on it, so it is exported as metadata only and is not
+      # published. No database is used by this job.
+      ANAGLYFIN_TEST_PORT: "8098"
+      ANAGLYFIN_TEST_DB: none
+    command:
+      - /bin/sh
+      - -e
+      - -c
+      - |
+        set -x
+        mkdir -p /tmp/anaglyfin-test
+        dotnet restore Anaglyfin.sln
+        dotnet build Anaglyfin.sln --configuration Release --no-restore -warnaserror
+        dotnet test tests/Anaglyfin.Tests/Anaglyfin.Tests.csproj --configuration Release --no-build --results-directory /tmp/anaglyfin-test/TestResults
+        dotnet format whitespace Anaglyfin.sln --no-restore --verify-no-changes
+        set +x
+        echo "anaglyfin CI gate: restore + build(-warnaserror) + test + format check all passed"
