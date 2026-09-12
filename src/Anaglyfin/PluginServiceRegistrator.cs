@@ -1,4 +1,5 @@
 using System;
+using Anaglyfin.Profiles;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,10 +19,14 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
         ArgumentNullException.ThrowIfNull(serviceCollection);
-        ArgumentNullException.ThrowIfNull(applicationHost);
 
-        // Scaffold only. Profile catalog, settings and detection services will
-        // register here as they land. Media source providers are discovered by
-        // type scan and must not be registered manually.
+        // applicationHost is not consumed yet: settings live on the plugin instance and
+        // are handed to the catalog per call, so no service here needs the host to start.
+
+        // The profile catalog is stateless and built once for the process.
+        serviceCollection.Add(new ServiceDescriptor(typeof(IProfileCatalog), typeof(ProfileCatalog), ServiceLifetime.Singleton));
+
+        // Media source providers are discovered by type scan and must not be registered
+        // manually.
     }
 }
