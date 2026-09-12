@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The packaging tool: it turns a built plugin DLL and the hand-maintained identity
+    manifest into the artifacts a Jellyfin 12 server is installed from - a plugin zip,
+    a meta.json describing that zip, and (when one is supplied) the published FFmpeg
+    wrapper binary.
+
+    It is a build-time tool and nothing else. Neither the plugin nor the wrapper
+    references it, it references no package outside the shared framework, and it is
+    deliberately not part of the plugin's own build: the CI gate builds the solution,
+    then runs this tool against the build output so that what gets packaged is exactly
+    what was compiled and tested.
+
+    Its Main is private and Program internal, so the test project can reference this
+    assembly as a library the same way it references the wrapper executable.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Anaglyfin.Packager</RootNamespace>
+    <AssemblyName>Anaglyfin.Packager</AssemblyName>
+    <Version>0.1.0</Version>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <!-- Same NuGet-feed exemptions the plugin and wrapper projects document. -->
+    <WarningsNotAsErrors>NU1603;NU1900;NU1901;NU1902;NU1903</WarningsNotAsErrors>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>

@@ -6,6 +6,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Anaglyfin", "src\Anaglyfin\
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Anaglyfin.FFmpegWrapper", "src\Anaglyfin.FFmpegWrapper\Anaglyfin.FFmpegWrapper.csproj", "{2C7A5D91-6B4E-4A1F-8D3C-9E5B0A7F1C62}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Anaglyfin.Packager", "tools\Anaglyfin.Packager\Anaglyfin.Packager.csproj", "{5C1B7E9A-3D4F-4A26-B8E1-7F0C3A6D9B42}"
+EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Anaglyfin.Tests", "tests\Anaglyfin.Tests\Anaglyfin.Tests.csproj", "{3B6C0D5E-8A2B-4E4F-9C1A-7D0F2B5E8C44}"
 EndProject
 Global
@@ -22,6 +24,10 @@ Global
 		{2C7A5D91-6B4E-4A1F-8D3C-9E5B0A7F1C62}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2C7A5D91-6B4E-4A1F-8D3C-9E5B0A7F1C62}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{2C7A5D91-6B4E-4A1F-8D3C-9E5B0A7F1C62}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5C1B7E9A-3D4F-4A26-B8E1-7F0C3A6D9B42}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5C1B7E9A-3D4F-4A26-B8E1-7F0C3A6D9B42}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5C1B7E9A-3D4F-4A26-B8E1-7F0C3A6D9B42}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5C1B7E9A-3D4F-4A26-B8E1-7F0C3A6D9B42}.Release|Any CPU.Build.0 = Release|Any CPU
 		{3B6C0D5E-8A2B-4E4F-9C1A-7D0F2B5E8C44}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{3B6C0D5E-8A2B-4E4F-9C1A-7D0F2B5E8C44}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{3B6C0D5E-8A2B-4E4F-9C1A-7D0F2B5E8C44}.Release|Any CPU.ActiveCfg = Release|Any CPU
