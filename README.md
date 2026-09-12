@@ -27,6 +27,8 @@ The source tree now contains the working code path, not just the bootstrap scaff
 
 Real Jellyfin runtime validation is tracked separately in `docs/validation.md`, and the install
 shapes for a bare-metal server and for `jellyfin/jellyfin:latest` are in `docs/install.md`.
+Before either is visited for real, `dev/jellyfin-validation/` runs the packaged plugin and
+wrapper against a disposable `jellyfin/jellyfin:latest` mounted the way the target server is.
 
 Current implementation follow-ups are documented there and include subtitle ordinal
 wiring through the provider, applying device/client defaults in the provider path, and
@@ -45,6 +47,7 @@ enforcing the stored encoder policy.
 
 ```text
 .ci/                           CI container definition (toolchain only)
+dev/jellyfin-validation/       Disposable Jellyfin 12 stack for runtime validation
 docs/                          Architecture, install, and validation notes
 src/Anaglyfin/                 Plugin project
 src/Anaglyfin.FFmpegWrapper/   Out-of-process FFmpeg wrapper executable
@@ -54,6 +57,8 @@ Anaglyfin.sln                  Solution: plugin + wrapper + packager + tests
 ```
 
 Packaging output goes to `artifacts/` and publish output under `bin/`; both are ignored.
+Runtime-validation state - a throwaway Jellyfin config, cache, and media mount - goes under
+`dev/jellyfin-validation/`, and is ignored too.
 
 * `Plugin` derives from `BasePlugin<PluginConfiguration>` and carries the fixed
   plugin GUID (`Plugin.PluginId`). The same GUID is declared in
@@ -102,6 +107,10 @@ docker compose --env-file .env -f .ci/test.yml run --rm test
 Steps executed by the job: `dotnet restore` → `dotnet build -warnaserror` (Release)
 → `dotnet test` → `dotnet format whitespace --verify-no-changes` → publish the linux-x64
 wrapper → `Anaglyfin.Packager pack` → `Anaglyfin.Packager verify`.
+
+The runtime-validation stack in `dev/jellyfin-validation/` is deliberately **not** wired into
+this job. It pulls the Jellyfin image, it needs a library and a client, and its results are
+observations rather than a gate; the job above stays fast, deterministic, and network-free.
 
 Job conventions: scratch space `/tmp/anaglyfin-test`, test port `8098` reserved
 for a future integration job (nothing listens yet, so it is not published), and

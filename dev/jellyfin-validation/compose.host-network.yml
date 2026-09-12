@@ -1,0 +1,20 @@
+# Optional overlay: run the validation container on the host network.
+#
+# For daemons that will not create another bridge network - a CI host whose bridge
+# address pool is exhausted behaves exactly this way, which is also why .ci/test.yml
+# itself runs on `network_mode: host`. Symptoms in compose are
+# "Pool overlaps with other one on this address space" or "no default pool has been set".
+#
+#   docker compose -f compose.jellyfin.yml -f compose.host-network.yml up -d
+#
+# The trade: with the host network namespace there is nothing to publish, so the port
+# mapping in the base file is ignored by Docker and Jellyfin answers directly on
+# http://localhost:8096. Everything else - the mounts, the environment, the wrapper -
+# is identical, so a validation result still transfers.
+services:
+  jellyfin:
+    network_mode: host
+  # The one-shot check needs it too: creating a project network is exactly what a
+  # daemon out of address pools cannot do, even for a container that never networks.
+  wrapper-check:
+    network_mode: host

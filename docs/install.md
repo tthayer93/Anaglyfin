@@ -94,6 +94,14 @@ sudo install -d -m 0755 /opt/anaglyfin/ffmpeg
 sudo install -m 0755 -o jellyfin -g jellyfin anaglyfin-ffmpeg /opt/anaglyfin/ffmpeg/
 ```
 
+The server looks for `ffprobe` **next to the FFmpeg path it was given**, not on `PATH`, so
+the wrapper's directory needs one too - from the same FFmpeg-mvc build the wrapper is going
+to hand commands to, so that probing and decoding agree:
+
+```sh
+sudo install -m 0755 -o jellyfin -g jellyfin /path/to/ffprobe /opt/anaglyfin/ffmpeg/ffprobe
+```
+
 Then point the server at it - `JELLYFIN_FFMPEG`, the `--ffmpeg` switch, or `<EncoderAppPath>` in
 `encoding.xml` - and give the wrapper the real FFmpeg-mvc build it is standing in for. On a
 system-package install, where Jellyfin runs as a systemd service, a drop-in is the place the
@@ -150,8 +158,25 @@ cp artifacts/anaglyfin-ffmpeg ./jellyfin/config/anaglyfin/ffmpeg/anaglyfin-ffmpe
 chmod 0755 ./jellyfin/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 ```
 
-The FFmpeg-mvc build the wrapper runs is mounted the same way - it is not in the official image -
-and `ffprobe` stays the one the image ships, because the wrapper only replaces FFmpeg:
+`ffprobe` goes in that same directory. The server looks for it **beside the FFmpeg path it
+was given**, not on `PATH`, so a wrapper standing alone is a server that starts and cannot
+probe anything. Use the `ffprobe` from the same build the wrapper will hand commands to, so
+probing and decoding agree:
+
+```sh
+cp /path/to/ffprobe ./jellyfin/config/anaglyfin/ffmpeg/ffprobe
+chmod 0755 ./jellyfin/config/anaglyfin/ffmpeg/ffprobe
+```
+
+Inside a disposable container the image's own copy can be written there instead - same
+directory, same reason:
+
+```sh
+docker compose exec jellyfin sh -c 'cp /usr/lib/jellyfin-ffmpeg/ffprobe /config/anaglyfin/ffmpeg/ffprobe'
+```
+
+The FFmpeg-mvc build the wrapper runs is mounted the same way - it is not in the official
+image:
 
 ```sh
 mkdir -p ./jellyfin/config/anaglyfin/ffmpeg-mvc
@@ -196,8 +221,11 @@ final test target, and it is not rebuilt by this repository. So:
   references - and the wrapper is self-contained, which is why it is published that way.
 - Do not install the .NET runtime into the container for the wrapper. The framework-dependent
   build is offered for hosts that already have the runtime, not for this image.
-- Do not replace the image's `ffmpeg` or `ffprobe`. The wrapper is added alongside them and only
-  the server's FFmpeg path is repointed; probing stays with the image's own `ffprobe`.
+- Do not replace the image's `ffmpeg` or `ffprobe`. Nothing under `/usr` is touched: the
+  wrapper and the `ffprobe` beside it are added to the mounted `/config` directory, and only
+  the server's FFmpeg path is repointed. That is also why the `ffprobe` next to the wrapper is
+  a copy rather than a symlink to `/usr/lib/jellyfin-ffmpeg`: the server asks for a file in
+  the wrapper's own directory, and a copy travels with the deployment.
 
 ## After installing
 
@@ -205,3 +233,26 @@ Dashboard -> Plugins should list `Anaglyfin` with the description recorded in `m
 Anaglyfin settings page should open. Both, and everything downstream of them - alternate versions
 on an MVC item, marker transport, the rewritten FFmpeg command - are checked by the checklist in
 `docs/validation.md`.
+
+In the server log, an install that worked says so before the dashboard is opened:
+
+```text
+Emby.Server.Implementations.Plugins.PluginManager: Loaded plugin: Anaglyfin 0.1.0.0
+MediaBrowser.MediaEncoding.Encoder.MediaEncoder: Found ffmpeg version 8.1.2
+MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
+```
+
+The second and third lines together are the deployment contract: the server believes its FFmpeg
+is the wrapper, and the wrapper let the server's version and capability probes through to the real
+binary. A server whose `ANAGLYFIN_REAL_FFMPEG` names a path that is not there does not start at
+all, and the complaint is filed against the wrapper:
+
+```text
+MediaEncoder: FFmpeg validation: The process returned no result
+MediaEncoder: FFmpeg: Failed version check: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
+MediaEncoder: FFmpeg: Path set by command line or environment variable is invalid
+```
+
+Both were observed on `jellyfin/jellyfin:latest` (12.0.0) in the disposable stack under
+`dev/jellyfin-validation/`, which runs this document's Docker install and is described in
+`dev/jellyfin-validation/README.md`.

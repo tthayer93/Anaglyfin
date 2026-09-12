@@ -14,3 +14,10 @@
 # Local 3D test media, ignored by git and far too large for a build context.
 /movies/
 **/movies/
+
+# The runtime-validation harness keeps a disposable Jellyfin server, its library mount,
+# and captured evidence bundles here. The compose file and scripts belong to the image
+# build only as text; everything a run writes stays out of the context.
+/dev/jellyfin-validation/jellyfin/
+/dev/jellyfin-validation/media/
+/dev/jellyfin-validation/collect/
