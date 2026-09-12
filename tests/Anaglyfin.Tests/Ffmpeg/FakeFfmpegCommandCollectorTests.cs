@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using Anaglyfin.Ffmpeg;
 using Anaglyfin.Profiles;
 using Xunit;
@@ -33,7 +32,7 @@ public class FakeFfmpegCommandCollectorTests
         Assert.DoesNotContain("0:s:0", rendered);
 
         // ...and nothing else grew a second input: still one -i, one output.
-        Assert.Single(collector.Arguments.Where(argument => argument == "-i"));
+        Assert.Single(collector.Arguments, argument => argument == "-i");
         Assert.EndsWith(Output, rendered);
     }
 

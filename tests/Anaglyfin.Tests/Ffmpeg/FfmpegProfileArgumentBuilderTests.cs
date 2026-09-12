@@ -228,7 +228,9 @@ public class FfmpegProfileArgumentBuilderTests
 
         // One all-view input label means one decode: the eyes are cropped out of the
         // shared native SBS frames, not decoded separately.
-        var allViewInputs = rewrite.FilterComplex
+        Assert.NotNull(rewrite.FilterComplex);
+        var graph = rewrite.FilterComplex!;
+        var allViewInputs = graph
             .Split("0:v:view:all", StringSplitOptions.None)
             .Length - 1;
 
@@ -241,8 +243,10 @@ public class FfmpegProfileArgumentBuilderTests
     {
         var rewrite = _builder.BuildCustomGrayscaleAnaglyph(new RgbColor(17, 34, 51), new RgbColor(128, 64, 255));
 
-        var grayscaleStages = rewrite.FilterComplex.Split("format=gray,", StringSplitOptions.None).Length - 1;
-        var eyeCrops = rewrite.FilterComplex
+        Assert.NotNull(rewrite.FilterComplex);
+        var graph = rewrite.FilterComplex!;
+        var grayscaleStages = graph.Split("format=gray,", StringSplitOptions.None).Length - 1;
+        var eyeCrops = graph
             .Split("crop=iw/2:ih:", StringSplitOptions.None)
             .Length - 1;
 
