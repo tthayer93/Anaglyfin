@@ -1,4 +1,6 @@
 using System;
+using Anaglyfin.Detection;
+using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
 using Anaglyfin.Tests.Stubs;
 using MediaBrowser.Controller.Plugins;
@@ -38,28 +40,67 @@ public class PluginServiceRegistratorTests
     }
 
     [Fact]
+    public void RegisterServicesRegistersThePluginOwnedSingletons()
+    {
+        // The deliberate set of registrations: the catalog, the detector the media
+        // source provider runs on, and the settings seam. A new service must be added
+        // here on purpose - this count is the review gate against silent registrations.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        Assert.Equal(3, services.Count);
+    }
+
+    [Fact]
     public void RegisterServicesRegistersTheProfileCatalogAsASingleton()
     {
         var services = new FakeServiceCollection();
 
         new PluginServiceRegistrator().RegisterServices(services, null!);
 
-        var descriptor = Assert.Single(services);
-        Assert.Equal(typeof(IProfileCatalog), descriptor.ServiceType);
+        var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IProfileCatalog));
         Assert.Equal(typeof(ProfileCatalog), descriptor.ImplementationType);
         Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
     }
 
     [Fact]
-    public void RegisterServicesDoesNotRegisterAMediaSourceProviderYet()
+    public void RegisterServicesRegistersTheMvcSourceDetectorAsASingleton()
     {
-        // Media source providers are discovered by type scan; registering one here would
-        // make it invisible to that scan. Profiles and settings are all T1 may register.
+        // The media source provider is activated by the server's ActivatorUtilities,
+        // so its constructor dependency must resolve from the container.
         var services = new FakeServiceCollection();
 
         new PluginServiceRegistrator().RegisterServices(services, null!);
 
-        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType.Name.Contains("MediaSource", StringComparison.Ordinal));
+        var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IMvcSourceDetector));
+        Assert.Equal(typeof(MvcSourceDetector), descriptor.ImplementationType);
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void RegisterServicesRegistersTheConfigurationSourceAsASingleton()
+    {
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IAnaglyfinConfigurationSource));
+        Assert.Equal(typeof(PluginConfigurationSource), descriptor.ImplementationType);
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void RegisterServicesDoesNotRegisterAMediaSourceProvider()
+    {
+        // Media source providers are discovered by type scan; registering one here would
+        // make it invisible to that scan. The provider's dependencies are registered;
+        // the provider itself never is.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType.Name.Contains("MediaSourceProvider", StringComparison.Ordinal));
     }
 
     [Fact]
