@@ -304,8 +304,14 @@ The image has no `ps`, so inside the container read `/proc` instead:
 
 ```sh
 docker compose -f compose.jellyfin.yml exec jellyfin sh -c \
-  'for p in /proc/[0-9]*; do tr "\0" " " < "$p/cmdline" 2>/dev/null | grep -q ffmpeg && echo && cat "$p/cmdline" | tr "\0" " " && echo; done'
+  'me=$$; for p in /proc/[0-9]*; do pid=${p##*/}; [ "$pid" = "$me" ] && continue
+     c=$(tr "\0" " " < "$p/cmdline" 2>/dev/null)
+     case "$c" in */proc/*) continue ;; *ffmpeg*) printf "%s  %s\n" "$pid" "$c" ;; esac
+   done'
 ```
+
+Both loops skip their own command line, which otherwise matches everything they are
+looking for. The appendix at the bottom is a set of captures from this harness.
 
 Expected shape, and this is the pass condition:
 
@@ -441,3 +447,91 @@ visit is short: run steps 4, 8 and 9 there exactly as here, and paste back
 
 Everything else in `docs/validation.md` is a checkbox; those eight items are what makes a
 `FAIL` there debuggable from the other side of a screen.
+
+## Appendix - captures from this run
+
+These captures were made by driving the wrapper inside the harness container with the
+image's stock FFmpeg and `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1`. A real playback produces
+the same two-process shape with the Jellyfin server as the parent and the server's HLS
+arguments instead of the segment arguments used here.
+
+### Pass-through
+
+The command below is an ordinary FFmpeg command with no Anaglyfin marker:
+
+```sh
+/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg \
+  -hide_banner -re -f lavfi -i nullsrc=r=25:d=90 \
+  -c:v libx264 -preset ultrafast \
+  -f segment -segment_time 4 -reset_timestamps 1 /tmp/slowtest%03d.ts
+```
+
+The process capture while it was running:
+
+```text
+770  /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg -hide_banner -re -f lavfi -i nullsrc=r=25:d=90 -c:v libx264 -preset ultrafast -f segment -segment_time 4 -reset_timestamps 1 /tmp/slowtest%03d.ts
+783  /usr/lib/jellyfin-ffmpeg/ffmpeg -hide_banner -re -f lavfi -i nullsrc=r=25:d=90 -c:v libx264 -preset ultrafast -f segment -segment_time 4 -reset_timestamps 1 /tmp/slowtest%03d.ts
+```
+
+The wrapper and its child received the same arguments. No
+`anaglyfin-transcode-*.lock` file existed for that job.
+
+### Marker transport
+
+The command below carries an Anaglyfin marker for the `two_d_base` profile:
+
+```sh
+/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg \
+  -hide_banner -re \
+  -i "http://127.0.0.1/anaglyfin/profile/two_d_base?source=%2Ftmp%2Fclip.mp4" \
+  -c:v libx264 -preset ultrafast \
+  -f segment -segment_time 4 -reset_timestamps 1 /tmp/markertest%03d.ts
+```
+
+The process capture while it was running:
+
+```text
+969  /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg -hide_banner -re -i http://127.0.0.1/anaglyfin/profile/two_d_base?source=%2Ftmp%2Fclip.mp4 -c:v libx264 -preset ultrafast -f segment -segment_time 4 -reset_timestamps 1 /tmp/markertest%03d.ts
+977  /usr/lib/jellyfin-ffmpeg/ffmpeg -hide_banner -re -i /tmp/clip.mp4 -c:v libx264 -preset ultrafast -f segment -segment_time 4 -reset_timestamps 1 /tmp/markertest%03d.ts
+```
+
+The wrapper received the marker as one input argument. The child received the decoded real
+path and no marker text.
+
+The lock directory while the marker job was running:
+
+```text
+total 4
+-rw-r--r-- 1 root root 50 Sep 12 18:48 anaglyfin-transcode-0.lock
+pid=969
+claimed=2026-09-12T18:48:37.9226122+00:00
+```
+
+The lock file is under `/tmp/anaglyfin/ffmpeg-wrapper`. Its `pid` matches the wrapper PID
+above, and the file is removed when the job finishes.
+
+### Concurrency refusal
+
+With the first marker job still running, a second marker job produces:
+
+```text
+anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running, which is the configured maximum, so FFmpeg was not started. Raise ANAGLYFIN_MAX_CONCURRENT_TRANSCODES to allow more, or remove slot files left in the directory ANAGLYFIN_LOCK_DIR names if a wrapper was killed without exiting.
+exit=75
+```
+
+### Stock FFmpeg on a converted profile
+
+A converted profile reaches the image's stock FFmpeg with multiview decoding requested:
+
+```text
+[vist#0:0/h264 @ 0x7f293fcb9180] [dec:h264 @ 0x7f293fc0e500] Multiview decoding requested, but decoder 'h264' does not support it
+[vist#0:0/h264 @ 0x7f293fcb9180] [dec:h264 @ 0x7f293fc0e500] Error setting up multiview decoding: Function not implemented
+[out#0/mp4 @ 0x7f293fc76d40] Output file is empty, nothing was encoded(check -ss / -t / -frames parameters if used)
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:01:29.47
+Conversion failed!
+exit=69
+```
+
+This is the expected stock-FFmpeg symptom for a converted profile. It is not proof that the
+plugin failed to deliver the profile: the child received the converted command line and
+then could not decode MVC.
