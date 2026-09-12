@@ -33,14 +33,39 @@ public sealed class WrapperApplicationTests : IDisposable
     /// <summary>The real file a marker stands in for.</summary>
     private const string SourcePath = "/movies/Movie (2010)/Movie.2010.3D.mkv";
 
-    /// <summary>The binary every test configures the wrapper to hand its commands to.</summary>
-    private const string RealFFmpeg = "/usr/local/bin/ffmpeg-mvc";
-
     private readonly TemporarySlotDirectory _slots = new();
     private readonly StringWriter _diagnostics = new();
 
-    /// <summary>Removes the slot directory this test used.</summary>
-    public void Dispose() => _slots.Dispose();
+    /// <summary>The directory holding this test's stand-in for the real FFmpeg binary.</summary>
+    private readonly string _binaryDirectory;
+
+    /// <summary>The binary the wrapper is configured to hand commands to.</summary>
+    private readonly string _realFFmpeg;
+
+    /// <summary>
+    /// Lays out the two things on the filesystem a wrapper invocation needs: a slot
+    /// directory, and an existing file it can be told is the real FFmpeg.
+    /// </summary>
+    /// <remarks>
+    /// The stand-in binary is never executed - the launcher records instead of starting -
+    /// but it does have to exist: the wrapper refuses a configured absolute path that is
+    /// not a file, and that check is the wrapper's own behaviour rather than the launcher's.
+    /// </remarks>
+    public WrapperApplicationTests()
+    {
+        _binaryDirectory = Path.Combine(Path.GetTempPath(), "anaglyfin-wrapper-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_binaryDirectory);
+        _realFFmpeg = Path.Combine(_binaryDirectory, "ffmpeg-mvc");
+
+        File.WriteAllText(_realFFmpeg, "#!/bin/sh\nexit 0\n");
+    }
+
+    /// <summary>Removes the slot directory and the stand-in binary this test used.</summary>
+    public void Dispose()
+    {
+        _slots.Dispose();
+        TryDelete(_binaryDirectory);
+    }
 
     // ----- pass-through: ordinary playback ------------------------------------------
 
@@ -58,7 +83,7 @@ public sealed class WrapperApplicationTests : IDisposable
         Assert.Equal(WrapperApplication.ExitCodeSuccess, exitCode);
 
         var launch = Assert.Single(launcher.Launches);
-        Assert.Equal(RealFFmpeg, launch.ExecutablePath);
+        Assert.Equal(_realFFmpeg, launch.ExecutablePath);
         Assert.Equal(arguments.ToArray(), launch.Arguments);
 
         // The limit governs MVC encoding, not the server's traffic: an ordinary transcode
@@ -311,7 +336,7 @@ public sealed class WrapperApplicationTests : IDisposable
     {
         var (application, launcher) = CreateApplication();
 
-        application.Run(JellyfinLikeCommand("http://127.0.0.1/anaglyfin/profile/sbs_full?source=%2Fmovies%2FSecret%20Title.mkv"));
+        application.Run(JellyfinLikeCommand("http://127.0.0.1/anaglyfin/profile/side_by_side_too?source=%2Fmovies%2FSecret%20Title.mkv"));
 
         Assert.Empty(launcher.Launches);
 
@@ -422,15 +447,20 @@ public sealed class WrapperApplicationTests : IDisposable
     /// Builds one wrapper invocation over this test's slot directory, with a launcher that
     /// records instead of executing.
     /// </summary>
+    /// <param name="maxConcurrentTranscodes">The Anaglyfin limit this invocation enforces.</param>
+    /// <param name="realFFmpegPath">
+    /// A configured binary other than this test's stand-in, when the test is about a
+    /// configuration that is wrong.
+    /// </param>
     private (WrapperApplication Application, FakeFFmpegProcessLauncher Launcher) CreateApplication(
         int maxConcurrentTranscodes = FFmpegWrapperOptions.DefaultMaxConcurrentTranscodes,
-        string realFFmpegPath = RealFFmpeg)
+        string? realFFmpegPath = null)
     {
         var options = new FFmpegWrapperOptions
         {
             MaxConcurrentTranscodes = maxConcurrentTranscodes,
             LockDirectory = _slots.Location,
-            RealFFmpegPath = realFFmpegPath,
+            RealFFmpegPath = realFFmpegPath ?? _realFFmpeg,
             RealFFmpegPathSource = FFmpegWrapperOptions.RealFFmpegEnvironmentVariable
         };
 
@@ -439,5 +469,23 @@ public sealed class WrapperApplicationTests : IDisposable
         return (
             new WrapperApplication(options, launcher, new WrapperConcurrencyGuard(options), diagnostics: _diagnostics),
             launcher);
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // A file a test left open is not a failure to report.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 }

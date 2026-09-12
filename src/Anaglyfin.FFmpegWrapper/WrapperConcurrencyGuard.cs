@@ -229,9 +229,12 @@ public sealed class WrapperConcurrencyGuard : IDisposable
                 path,
                 FileMode.CreateNew,
                 FileAccess.Write,
-                // Exclusive: a second wrapper cannot open a held slot even on a
-                // filesystem where the atomic create is the weaker of the two guards.
-                FileShare.None,
+                // The existence of this file is the claim, and an exclusive create is what
+                // makes it atomic. Readers are allowed so that the owner mark below can be
+                // looked at while a job runs; nobody else can claim or rewrite the file, and
+                // the exclusive open the abandon check performs is exactly what a live holder
+                // here refuses.
+                FileShare.Read,
                 bufferSize: 4096,
                 options: FileOptions.DeleteOnClose);
 
@@ -327,8 +330,8 @@ public sealed class WrapperConcurrencyGuard : IDisposable
     /// </returns>
     private bool IsAbandoned(string path)
     {
-        // Evidence one: a wrapper holding the slot has it open exclusively, so an
-        // exclusive open here fails while it runs.
+        // Evidence one: a wrapper holding the slot keeps a handle open on it, so an
+        // exclusive open here fails while that handle lives.
         DateTime lastWriteUtc;
         try
         {
