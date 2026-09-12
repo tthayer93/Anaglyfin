@@ -48,6 +48,72 @@ public class ProfileMarkerTests
     }
 
     [Fact]
+    public void AVersionThatNamesNoVideoStreamCarriesNoVideoParameter()
+    {
+        var marker = ProfileMarker.Create(ProfileIds.SideBySideFull, "/movies/Film.mkv");
+
+        Assert.Equal(
+            "http://127.0.0.1/anaglyfin/profile/sbs_full?source=%2Fmovies%2FFilm.mkv",
+            marker.ToString());
+        Assert.Null(marker.VideoStreamIndex);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3)]
+    [InlineData(int.MaxValue)]
+    public void TheVideoStreamIndexTravelsBetweenTheSourceAndTheSubtitle(int videoStreamIndex)
+    {
+        // The position the server's own "-map 0:<index>" will spend on this video stream,
+        // which is the number the wrapper needs to recognize that map and cannot read off
+        // the command line - a bare number names no stream type.
+        var marker = ProfileMarker.Create(ProfileIds.SideBySideFull, "/movies/Film.mkv", videoStreamIndex: videoStreamIndex);
+
+        Assert.Equal(
+            $"http://127.0.0.1/anaglyfin/profile/sbs_full?source=%2Fmovies%2FFilm.mkv&video={videoStreamIndex}",
+            marker.ToString());
+        Assert.Equal(videoStreamIndex, marker.VideoStreamIndex);
+    }
+
+    [Fact]
+    public void VideoStreamIndexZeroIsAValueAndNotAnAbsence()
+    {
+        var named = ProfileMarker.Create(ProfileIds.AnaglyphRedCyanDubois, "/movies/Film.mkv", videoStreamIndex: 0);
+        var unnamed = ProfileMarker.Create(ProfileIds.AnaglyphRedCyanDubois, "/movies/Film.mkv");
+
+        Assert.Contains("&video=0", named.ToString(), StringComparison.Ordinal);
+        Assert.NotEqual(named.ToString(), unnamed.ToString());
+        Assert.NotEqual(named, unnamed);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(int.MinValue)]
+    public void NegativeVideoStreamIndexesAreRefused(int videoStreamIndex)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => ProfileMarker.Create(ProfileIds.TwoDBase, "/movies/Film.mkv", videoStreamIndex: videoStreamIndex));
+    }
+
+    [Fact]
+    public void AMarkerCarryingEveryParameterIsStillOneUnforgeableToken()
+    {
+        var marker = ProfileMarker.Create(ProfileIds.AnaglyphRedCyanDubois, "/movies/Movie (2010)/Movie.2010.3D.mkv", 2, 1);
+        var text = marker.ToString();
+
+        // The video parameter joins the query without joining its structure: one '?', the
+        // separators of exactly the three known parameters, and no whitespace for a shell or
+        // an argv splitter to trip over.
+        Assert.Equal(1, text.Count(c => c == '?'));
+        Assert.Equal(2, text.Count(c => c == '&'));
+        Assert.DoesNotContain(" ", text);
+        Assert.Equal(
+            "http://127.0.0.1/anaglyfin/profile/anaglyph_arcd"
+            + "?source=%2Fmovies%2FMovie%20%282010%29%2FMovie.2010.3D.mkv&video=1&subtitle=2",
+            text);
+    }
+
+    [Fact]
     public void ProfileIdsAreCanonicalizedToTrimmedLowercase()
     {
         var marker = ProfileMarker.Create("  ANAGLYPH_ARCD  ", "/movies/Film.mkv", 0);
@@ -167,13 +233,20 @@ public class ProfileMarkerTests
     }
 
     [Fact]
-    public void MarkersCompareByTheirThreeValues()
+    public void MarkersCompareByTheirValues()
     {
         var marker = ProfileMarker.Create(ProfileIds.AnaglyphRedCyanDubois, "/movies/Film.mkv", 0);
 
         Assert.Equal(marker, ProfileMarker.Create(ProfileIds.AnaglyphRedCyanDubois, "/movies/Film.mkv", 0));
         Assert.NotEqual(marker, ProfileMarker.Create(ProfileIds.AnaglyphRedCyanDubois, "/movies/Film.mkv", 1));
         Assert.NotEqual(marker, ProfileMarker.Create(ProfileIds.AnaglyphRedCyanDubois, "/movies/Film.mkv"));
+
+        // A named video stream is a different version instruction, not a decoration: two
+        // markers that differ only there address different streams of the same file.
+        Assert.NotEqual(marker, ProfileMarker.Create(ProfileIds.AnaglyphRedCyanDubois, "/movies/Film.mkv", 0, 0));
+        Assert.NotEqual(
+            ProfileMarker.Create(ProfileIds.AnaglyphRedCyanDubois, "/movies/Film.mkv", videoStreamIndex: 0),
+            ProfileMarker.Create(ProfileIds.AnaglyphRedCyanDubois, "/movies/Film.mkv", videoStreamIndex: 1));
     }
 
     [Fact]

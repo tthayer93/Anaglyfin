@@ -17,7 +17,7 @@ namespace Anaglyfin.Markers;
 /// allowed to add view and filter arguments) what to do. It is deliberately a plain
 /// URL on a reserved local address:
 /// </para>
-/// <c>http://127.0.0.1/anaglyfin/profile/&lt;profileId&gt;?source=&lt;encoded source path&gt;&amp;subtitle=&lt;optional ordinal&gt;</c>
+/// <c>http://127.0.0.1/anaglyfin/profile/&lt;profileId&gt;?source=&lt;encoded source path&gt;&amp;video=&lt;optional stream index&gt;&amp;subtitle=&lt;optional ordinal&gt;</c>
 /// <para>
 /// A URL-shaped marker survives every transport between provider and wrapper intact:
 /// it is one whitespace-free token, so <c>MediaSourceInfo.Path</c>, the encoder command
@@ -29,10 +29,12 @@ namespace Anaglyfin.Markers;
 /// <para>
 /// Security invariants, enforced at construction: the profile id must be on the
 /// <see cref="ProfileIds"/> allowlist, the source path must be rooted and free of
-/// control characters, and the subtitle ordinal must be non-negative when present. The
-/// source path travels percent-encoded, so the marker's own <c>?</c> and <c>&amp;</c>
+/// control characters, and the video stream index and the subtitle ordinal must be
+/// non-negative when present. The source path travels percent-encoded, so the marker's
+/// own <c>?</c> and <c>&amp;</c>
 /// structure cannot be forged from inside a filename, and no marker can carry FFmpeg
-/// filter syntax: a profile id is not filter syntax (see <see cref="ProfileIds"/>).
+/// filter syntax: a profile id is not filter syntax (see <see cref="ProfileIds"/>) and a
+/// stream index is a number.
 /// </para>
 /// <para>
 /// The type is inert data, usable from the plugin process and from an out-of-process
@@ -58,6 +60,16 @@ public sealed record ProfileMarker
     /// <summary>Name of the query parameter carrying the percent-encoded real source path.</summary>
     public const string SourceQueryParameter = "source";
 
+    /// <summary>
+    /// Name of the optional query parameter carrying the index of the source's video stream.
+    /// </summary>
+    /// <remarks>
+    /// The index is the position of the video stream inside the media source's own stream
+    /// list, which is exactly what Jellyfin's <c>-map 0:&lt;index&gt;</c> names, so the
+    /// wrapper can tell the server's numeric video map apart from somebody else's map.
+    /// </remarks>
+    public const string VideoQueryParameter = "video";
+
     /// <summary>Name of the optional query parameter carrying the subtitle burn-in ordinal.</summary>
     public const string SubtitleQueryParameter = "subtitle";
 
@@ -77,6 +89,12 @@ public sealed record ProfileMarker
     /// <param name="subtitleOrdinal">
     /// The zero-based subtitle track ordinal to burn in, or null for a subtitle-free version.
     /// </param>
+    /// <param name="videoStreamIndex">
+    /// The zero-based index of the source's video stream inside the media source's own
+    /// stream list, or null when the version reports no video stream to name. The provider
+    /// owns this value, exactly like the source path: it is read off the streams the item
+    /// itself was probed with, never supplied by a client.
+    /// </param>
     /// <exception cref="ArgumentException">
     /// <paramref name="profileId"/> is empty or not an allowlisted profile id, or
     /// <paramref name="sourcePath"/> is blank, contains a control character, or is not a
@@ -84,9 +102,9 @@ public sealed record ProfileMarker
     /// directory, which the plugin does not control.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// <paramref name="subtitleOrdinal"/> is negative.
+    /// <paramref name="subtitleOrdinal"/> or <paramref name="videoStreamIndex"/> is negative.
     /// </exception>
-    public ProfileMarker(string profileId, string sourcePath, int? subtitleOrdinal)
+    public ProfileMarker(string profileId, string sourcePath, int? subtitleOrdinal, int? videoStreamIndex = null)
     {
         var normalizedProfileId = ProfileIds.Normalize(profileId);
         if (normalizedProfileId.Length == 0 || !ProfileIds.IsAllowed(normalizedProfileId))
@@ -116,12 +134,14 @@ public sealed record ProfileMarker
         }
 
         ArgumentOutOfRangeException.ThrowIfNegative(subtitleOrdinal.GetValueOrDefault());
+        ArgumentOutOfRangeException.ThrowIfNegative(videoStreamIndex.GetValueOrDefault());
 
         // Every allowlisted id is lowercase ASCII, so canonicalizing to lowercase is
         // lossless and gives a marker exactly one textual form.
         ProfileId = normalizedProfileId.ToLowerInvariant();
         SourcePath = sourcePath;
         SubtitleOrdinal = subtitleOrdinal;
+        VideoStreamIndex = videoStreamIndex;
     }
 
     /// <summary>
@@ -133,6 +153,19 @@ public sealed record ProfileMarker
     /// Gets the real, rooted filesystem path the marker stands in for.
     /// </summary>
     public string SourcePath { get; init; }
+
+    /// <summary>
+    /// Gets the index of the source's video stream inside the media source's own stream
+    /// list, or null when the version names none.
+    /// </summary>
+    /// <remarks>
+    /// Zero is a value, not an absence, exactly as for the subtitle ordinal: it names the
+    /// first stream of the file, which is where a single-video file puts its video. It is
+    /// the number Jellyfin's own <c>-map 0:&lt;index&gt;</c> will carry for that stream, so
+    /// the wrapper can recognize the server's video map and take it out of the way of the
+    /// profile's own.
+    /// </remarks>
+    public int? VideoStreamIndex { get; init; }
 
     /// <summary>
     /// Gets the subtitle track ordinal to burn in, or null when the version is subtitle-free.
@@ -149,15 +182,22 @@ public sealed record ProfileMarker
     /// <param name="profileId">An allowlisted Anaglyfin profile id.</param>
     /// <param name="sourcePath">The rooted path of the media file the version is made from.</param>
     /// <param name="subtitleOrdinal">The subtitle ordinal to burn in, or null for no subtitles.</param>
+    /// <param name="videoStreamIndex">
+    /// The index of the video stream the version reports, or null to name none.
+    /// </param>
     /// <returns>The validated marker.</returns>
     /// <exception cref="ArgumentException">
     /// The profile id or source path fails a marker security invariant; see the constructor.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// <paramref name="subtitleOrdinal"/> is negative.
+    /// <paramref name="subtitleOrdinal"/> or <paramref name="videoStreamIndex"/> is negative.
     /// </exception>
-    public static ProfileMarker Create(string profileId, string sourcePath, int? subtitleOrdinal = null)
-        => new(profileId, sourcePath, subtitleOrdinal);
+    public static ProfileMarker Create(
+        string profileId,
+        string sourcePath,
+        int? subtitleOrdinal = null,
+        int? videoStreamIndex = null)
+        => new(profileId, sourcePath, subtitleOrdinal, videoStreamIndex);
 
     /// <summary>
     /// Gets the marker text to put into <c>MediaSourceInfo.Path</c> of the alternate
@@ -177,8 +217,8 @@ public sealed record ProfileMarker
     /// <remarks>
     /// The canonical form: <see cref="MarkerPrefix"/>, the lowercase profile id, and a
     /// query whose parameters appear in builder order (<c>source</c>, then
-    /// <c>subtitle</c>) with the source path percent-encoded. Parsing this text returns
-    /// an equal marker.
+    /// <c>video</c>, then <c>subtitle</c>) with the source path percent-encoded. Parsing
+    /// this text returns an equal marker.
     /// </remarks>
     public override string ToString()
     {
@@ -188,6 +228,15 @@ public sealed record ProfileMarker
             .Append(SourceQueryParameter)
             .Append('=')
             .Append(Uri.EscapeDataString(SourcePath));
+
+        if (VideoStreamIndex is int videoIndex)
+        {
+            builder
+                .Append('&')
+                .Append(VideoQueryParameter)
+                .Append('=')
+                .Append(videoIndex.ToString(CultureInfo.InvariantCulture));
+        }
 
         if (SubtitleOrdinal is int ordinal)
         {
