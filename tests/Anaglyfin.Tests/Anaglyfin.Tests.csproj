@@ -33,6 +33,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Anaglyfin\Anaglyfin.csproj" />
+    <!--
+      The wrapper executable is referenced as a library: the tests drive
+      WrapperApplication and the concurrency guard directly, and the process launcher is
+      exercised against /bin/sh rather than against a real FFmpeg.
+    -->
+    <ProjectReference Include="..\..\src\Anaglyfin.FFmpegWrapper\Anaglyfin.FFmpegWrapper.csproj" />
   </ItemGroup>
 
 </Project>

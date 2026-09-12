@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Anaglyfin FFmpeg wrapper: the executable a Jellyfin server is pointed at in
+    place of FFmpeg itself, through the server's own FFmpeg path setting (the
+    JELLYFIN_FFMPEG variable, the command line switch, or encoding.xml). It is a
+    separate assembly because it runs outside the plugin process and outside the
+    plugin's container, and it is an Exe because the server starts it once per
+    playback and reads the real FFmpeg's exit code back out of it.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Anaglyfin.FFmpegWrapper</RootNamespace>
+    <AssemblyName>Anaglyfin.FFmpegWrapper</AssemblyName>
+    <Version>0.1.0</Version>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <!-- Same NuGet-feed exemptions the plugin project documents. -->
+    <WarningsNotAsErrors>NU1603;NU1900;NU1901;NU1902;NU1903</WarningsNotAsErrors>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      The decision itself - which command to run - belongs to the plugin's
+      Anaglyfin.FFmpegWrapper namespace (T5a) and is reused rather than duplicated, so
+      that the plugin and the wrapper can never disagree about what a marker means.
+      Everything reachable from WrapperArgumentRewriter.Shared is plain .NET: the
+      marker parser, the profile allowlist and catalog, and the command builder. The
+      Jellyfin assemblies the plugin project references are never loaded by this
+      process, because no type it touches needs them.
+    -->
+    <ProjectReference Include="..\Anaglyfin\Anaglyfin.csproj" />
+  </ItemGroup>
+
+</Project>
