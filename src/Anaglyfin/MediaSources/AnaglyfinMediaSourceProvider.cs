@@ -13,7 +13,6 @@ using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
-using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
 
@@ -62,17 +61,21 @@ namespace Anaglyfin.MediaSources;
 /// far as the server is concerned, so the versions are declared transcode-only
 /// (<see cref="MediaSourceInfo.SupportsDirectPlay"/> and
 /// <see cref="MediaSourceInfo.SupportsDirectStream"/> off, transcoding on), which is
-/// also the only path where the wrapper gets to rewrite the command.
+/// also the only path where the wrapper gets to rewrite the command. Those flags are
+/// this provider's intention rather than the server's decision - the server replaces them
+/// with the user's permissions and its transcode path never consults them - so the
+/// reported video codec is what actually keeps a version on the encoding path, through
+/// <see cref="ForceTranscodeVideoStreams"/>.
 /// Probing is switched off and the streams are instead copied from the item's original
 /// source, so clients see the same audio and subtitle tracks they know from the
-/// original, with the same indices and duration.
+/// original, with the same indices and duration. Only the video stream is changed - a
+/// clone reporting the <c>mvc</c> codec - and the item's own source keeps the objects it
+/// was probed with.
 /// </para>
 /// </remarks>
 public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
 {
     private const string StrmExtension = ".strm";
-
-    private static readonly IReadOnlyList<MediaStream> NoStreams = Array.Empty<MediaStream>();
 
     private static readonly MediaSourceInfo[] NoSources = Array.Empty<MediaSourceInfo>();
 
@@ -394,12 +397,28 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
         string sourcePath,
         StereoProfile profile)
     {
+        // The version's video has to arrive as an encode, and the codec it reports is the
+        // only thing in its report the server's copy decision actually reads, so the
+        // stream list is built through ForceTranscodeVideoStreams: the video stream cloned
+        // and re-labelled, the item's own report left as it was. See that type.
+        var reportedStreams = ForceTranscodeVideoStreams.WithForcedVideoCodec(
+            original?.MediaStreams,
+            out int videoStreamIndex);
+
         // MVP: markers carry no subtitle ordinal, so every version plays without
         // burned-in subtitles (the stock pipeline's subtitle selection is not applied
         // to marker sources either). The marker contract - and ProfileMarker.Create -
         // already carry the optional field; wiring a per-playback subtitle choice to
         // it, mapped through SubtitleStreamOrdinals, is the follow-up task's job.
-        var marker = ProfileMarker.Create(profile.Id, sourcePath, subtitleOrdinal: null);
+        //
+        // The video index travels with it because the server maps the video stream by
+        // number (-map 0:<index>), and a number only the provider can name: the wrapper
+        // has no way to tell a numeric video map from a numeric audio map out of argv.
+        var marker = ProfileMarker.Create(
+            profile.Id,
+            sourcePath,
+            subtitleOrdinal: null,
+            videoStreamIndex: videoStreamIndex < 0 ? null : videoStreamIndex);
 
         var mediaSource = new MediaSourceInfo
         {
@@ -454,10 +473,12 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
             Size = original?.Size,
             Bitrate = original?.Bitrate,
 
-            // Never null: the property's own constructor default is an empty array,
-            // and an explicit null here would break consumers that enumerate it.
+            // Never null: ForceTranscodeVideoStreams answers a missing or empty report
+            // with an empty list, and an explicit null here would break consumers that
+            // enumerate it. This is the version's own list - the video stream in it is a
+            // clone, so the item's original source keeps the objects it was probed with.
             Formats = original?.Formats ?? Array.Empty<string>(),
-            MediaStreams = original?.MediaStreams ?? NoStreams,
+            MediaStreams = reportedStreams,
         };
 
         return mediaSource;
