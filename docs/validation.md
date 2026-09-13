@@ -131,8 +131,8 @@ Dashboard -> settings menu -> Anaglyfin
 Dashboard -> Plugins -> Anaglyfin
 ```
 
-The first is the entry the page exists in the dashboard for; the second is the same page
-through the plugin list. Record which one was used.
+The settings menu entry is where a plugin page like this one is meant to be
+edited from; the plugin list opens the same page. Record which one was used.
 
 Check the rendered page against the shipped defaults:
 
