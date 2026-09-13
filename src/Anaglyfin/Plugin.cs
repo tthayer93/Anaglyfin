@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Anaglyfin.Configuration;
+using Anaglyfin.VersionItems;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
@@ -24,14 +25,25 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// </remarks>
     public static readonly Guid PluginId = Guid.Parse("c7f4a1d9-3b58-4e2a-9d6c-84f0b1e5a723");
 
+    private readonly IProfileVersionReconcileTrigger? _versionReconcileTrigger;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="Plugin"/> class.
     /// </summary>
     /// <param name="applicationPaths">Instance of the <see cref="IApplicationPaths"/> interface.</param>
     /// <param name="xmlSerializer">Instance of the <see cref="IXmlSerializer"/> interface.</param>
-    public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer)
+    /// <param name="versionReconcileTrigger">
+    /// The seam the settings-save path uses to ask for a version-item pass. Optional by contract: a
+    /// plugin that cannot reach its own queue is still a plugin that loads, and a version pass that
+    /// never starts costs a user nothing but a version list filled in at playback time instead.
+    /// </param>
+    public Plugin(
+        IApplicationPaths applicationPaths,
+        IXmlSerializer xmlSerializer,
+        IProfileVersionReconcileTrigger? versionReconcileTrigger = null)
         : base(applicationPaths, xmlSerializer)
     {
+        _versionReconcileTrigger = versionReconcileTrigger;
     }
 
     /// <inheritdoc />
@@ -53,4 +65,26 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// </remarks>
     public IEnumerable<PluginPageInfo> GetPages()
         => new[] { ConfigurationPage.CreatePageInfo() };
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// The hook that makes the settings take effect on the library and not only on the next
+    /// playback request. Which profiles are enabled decides which version items a library should
+    /// hold: an administrator who enables "3D Half Side-by-Side" expects it in the versions
+    /// selector of every MVC title, and one who disables it expects the stale item to be gone.
+    /// </para>
+    /// <para>
+    /// Saving asks for one pass over the library rather than running one, whatever changed. The
+    /// settings are what the pass reads when it gets there, so the save path carries no version
+    /// decision of its own and cannot disagree with it - and an administrator who saves the page
+    /// six times in a row costs one pass, because the requests coalesce.
+    /// </para>
+    /// </remarks>
+    public override void SaveConfiguration(PluginConfiguration config)
+    {
+        base.SaveConfiguration(config);
+
+        _versionReconcileTrigger?.RequestFullPass();
+    }
 }

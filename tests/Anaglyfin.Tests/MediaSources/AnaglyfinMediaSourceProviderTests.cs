@@ -1498,6 +1498,55 @@ public class AnaglyfinMediaSourceProviderTests
         Assert.NotSame(first[0], second[0]);
     }
 
+    [Fact]
+    public async Task AVersionThatAlreadyExistsAsAnItemOfItsOwnIsNotOfferedAgain()
+    {
+        // The version-item manager materialises an enabled profile as a linked alternate-version
+        // item, which the server then publishes itself as a static source keyed by that item's id -
+        // on this very request. It does not deduplicate static sources against a provider's, so an
+        // offer that repeats one is the same version in the picker twice, and only one of the two is
+        // the answer the streaming route can resolve.
+        var item = CreateMvcItem();
+        var versionItemId = AnaglyfinMediaSourceProvider.BuildVersionItemIdFromSource(ItemKey, MvcMoviePath, ProfileIds.SideBySideFull);
+        var versionItem = CreateVersionSource(
+            versionItemId,
+            "3D Full Side-by-Side",
+            ProfileMarker.MarkerPrefix + "sbs_full?source=" + Uri.EscapeDataString(MvcMoviePath));
+
+        item.StaticSources = new[] { item.StaticSources[0], versionItem };
+
+        var sources = (await CreateRealProvider().GetMediaSources(item, CancellationToken.None)).ToList();
+
+        // The four default profiles, one of which the library already carries: withheld by id, and no
+        // substitute offered in its place.
+        Assert.Equal(3, sources.Count);
+        Assert.DoesNotContain(sources, source => string.Equals(source.Id, versionItemId.ToString("N", CultureInfo.InvariantCulture), StringComparison.Ordinal));
+        Assert.Contains(sources, source => source.Id == IdOf(ProfileIds.SideBySideHalf));
+    }
+
+    [Fact]
+    public async Task AVersionItemOfAnotherProfileDoesNotWithholdAnything()
+    {
+        // Withholding reads the item's own source list and nothing else, so it has to be exact: a
+        // version of one profile that silenced the others would remove versions no item exists for.
+        var item = CreateMvcItem();
+        var versionItemId = AnaglyfinMediaSourceProvider.BuildVersionItemIdFromSource(ItemKey, MvcMoviePath, ProfileIds.AnaglyphRedCyanDubois);
+        var versionItem = CreateVersionSource(
+            versionItemId,
+            "3D Anaglyph Red/Cyan (Dubois)",
+            ProfileMarker.MarkerPrefix + "arcd?source=" + Uri.EscapeDataString(MvcMoviePath));
+
+        item.StaticSources = new[] { item.StaticSources[0], versionItem };
+
+        var sources = (await CreateRealProvider().GetMediaSources(item, CancellationToken.None)).ToList();
+
+        Assert.Equal(3, sources.Count);
+        Assert.DoesNotContain(sources, source => source.Id == IdOf(ProfileIds.AnaglyphRedCyanDubois));
+        Assert.Contains(sources, source => source.Id == IdOf(ProfileIds.SideBySideFull));
+        Assert.Contains(sources, source => source.Id == IdOf(ProfileIds.SideBySideHalf));
+        Assert.Contains(sources, source => source.Id == IdOf(ProfileIds.TwoDBase));
+    }
+
     // --- construction helpers -----------------------------------------------------------
 
     private static AnaglyfinMediaSourceProvider CreateProvider(

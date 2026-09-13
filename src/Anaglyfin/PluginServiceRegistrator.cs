@@ -2,9 +2,11 @@ using System;
 using Anaglyfin.Detection;
 using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
+using Anaglyfin.VersionItems;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Anaglyfin;
 
@@ -37,6 +39,34 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         // manager, so it can serve the live configuration to container-constructed
         // consumers without a plugin static.
         serviceCollection.Add(new ServiceDescriptor(typeof(IAnaglyfinConfigurationSource), typeof(PluginConfigurationSource), ServiceLifetime.Singleton));
+
+        // ---- profile version items -------------------------------------------------
+        //
+        // A version item is a library item, so it is created through the server's own
+        // public library and persistence APIs, behind one seam small enough to test.
+
+        serviceCollection.Add(new ServiceDescriptor(typeof(IProfileVersionItemStore), typeof(LibraryProfileVersionItemStore), ServiceLifetime.Singleton));
+
+        // The library's item events, narrowed to the three Anaglyfin listens to.
+        serviceCollection.Add(new ServiceDescriptor(typeof(ILibraryEventSource), typeof(LibraryEventSource), ServiceLifetime.Singleton));
+
+        // The reconciliation itself. One instance for the process: it holds the gate that
+        // keeps two passes from each seeing the same version item as missing.
+        serviceCollection.Add(new ServiceDescriptor(typeof(IProfileVersionReconciler), typeof(ProfileVersionItemManager), ServiceLifetime.Singleton));
+
+        // The requests, and the coalescing state behind them. One instance, handed to its
+        // two kinds of caller as itself (the worker, which drains it) and as the narrow
+        // request interface (the plugin, which may only ask).
+        serviceCollection.Add(new ServiceDescriptor(typeof(ProfileVersionReconcileQueue), typeof(ProfileVersionReconcileQueue), ServiceLifetime.Singleton));
+        serviceCollection.Add(new ServiceDescriptor(
+            typeof(IProfileVersionReconcileTrigger),
+            provider => provider.GetRequiredService<ProfileVersionReconcileQueue>(),
+            ServiceLifetime.Singleton));
+
+        // The plugin's background worker. The host starts it after the library is up and
+        // stops it on shutdown, which is the only honest lifetime for something that
+        // writes to the library on the library's own events.
+        serviceCollection.Add(new ServiceDescriptor(typeof(IHostedService), typeof(ProfileVersionItemService), ServiceLifetime.Singleton));
 
         // Media source providers are discovered by type scan and must not be registered
         // manually; an IFfmpegProfileArgumentBuilder registration would be dead weight

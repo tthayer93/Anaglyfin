@@ -1,10 +1,14 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using Anaglyfin.Detection;
 using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
 using Anaglyfin.Tests.Stubs;
+using Anaglyfin.VersionItems;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Xunit;
 
 namespace Anaglyfin.Tests;
@@ -42,14 +46,16 @@ public class PluginServiceRegistratorTests
     [Fact]
     public void RegisterServicesRegistersThePluginOwnedSingletons()
     {
-        // The deliberate set of registrations: the catalog, the detector the media
-        // source provider runs on, and the settings seam. A new service must be added
-        // here on purpose - this count is the review gate against silent registrations.
+        // The deliberate set of registrations: the catalog, the detector the media source provider
+        // runs on, the settings seam, and the seven members of the version-item subsystem (its store,
+        // its event source, its reconciler, the queue, the narrow request interface over it, and the
+        // hosted service that drains it). A new service must be added here on purpose - this count is
+        // the review gate against silent registrations.
         var services = new FakeServiceCollection();
 
         new PluginServiceRegistrator().RegisterServices(services, null!);
 
-        Assert.Equal(3, services.Count);
+        Assert.Equal(9, services.Count);
     }
 
     [Fact]
@@ -112,5 +118,61 @@ public class PluginServiceRegistratorTests
 
         Assert.NotEmpty(catalog.Profiles);
         Assert.True(catalog.IsKnownProfileId(ProfileIds.TwoDBase));
+    }
+
+    [Theory]
+    [InlineData(typeof(IProfileVersionItemStore), typeof(LibraryProfileVersionItemStore))]
+    [InlineData(typeof(ILibraryEventSource), typeof(LibraryEventSource))]
+    [InlineData(typeof(IProfileVersionReconciler), typeof(ProfileVersionItemManager))]
+    [InlineData(typeof(ProfileVersionReconcileQueue), typeof(ProfileVersionReconcileQueue))]
+    [InlineData(typeof(IHostedService), typeof(ProfileVersionItemService))]
+    public void RegisterServicesRegistersTheVersionItemSubsystemAsSingletons(Type serviceType, Type implementationType)
+    {
+        // Every one of these holds state the library depends on: the reconciler owns the gate that
+        // keeps two passes from creating the same version twice, and the queue is the requests
+        // themselves. A second instance of either is a reconcile that does not see the other's work.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        var descriptor = Assert.Single(services, d => d.ServiceType == serviceType);
+        Assert.Equal(implementationType, descriptor.ImplementationType);
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void RegisterServicesHandsThePluginTheQueueAsItsOwnRequestInterface()
+    {
+        // The plugin may ask for work and nothing else, and the worker drains the same object. Two
+        // queues - one to ask, one to answer - would mean a settings save that reconciles nothing.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IProfileVersionReconcileTrigger));
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+        Assert.Null(descriptor.ImplementationType);
+        Assert.NotNull(descriptor.ImplementationFactory);
+
+        var queue = new ProfileVersionReconcileQueue();
+        var resolved = descriptor.ImplementationFactory!(new FakeServiceProvider((typeof(ProfileVersionReconcileQueue), queue)));
+
+        Assert.Same(queue, resolved);
+        Assert.IsAssignableFrom<IProfileVersionReconcileTrigger>(resolved);
+    }
+
+    /// <summary>
+    /// A container that knows exactly the services a test hands it, so a registration's factory can
+    /// be run without the container implementation the plugin deliberately does not reference.
+    /// </summary>
+    private sealed class FakeServiceProvider : IServiceProvider
+    {
+        private readonly Dictionary<Type, object> _services;
+
+        public FakeServiceProvider(params (Type ServiceType, object Instance)[] services)
+            => _services = services.ToDictionary(service => service.ServiceType, service => service.Instance);
+
+        public object? GetService(Type serviceType)
+            => _services.TryGetValue(serviceType, out var service) ? service : null;
     }
 }

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -9,12 +8,9 @@ using System.Threading.Tasks;
 using Anaglyfin.Detection;
 using Anaglyfin.Markers;
 using Anaglyfin.Profiles;
-using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
-using MediaBrowser.Model.Entities;
-using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
 
 namespace Anaglyfin.MediaSources;
@@ -35,18 +31,16 @@ namespace Anaglyfin.MediaSources;
 /// untouched.
 /// </para>
 /// <para>
-/// <b>What is asked about is not always one file.</b> A movie assembled as a stack, or
-/// carrying linked alternate versions, answers a playback-info request with one static
-/// media source per version while remaining a single item whose own <c>Path</c>, <c>Name</c>
-/// and <c>Video3DFormat</c> describe only the primary file. Asking the detector about the
-/// item alone therefore judges every version of that movie by the primary: a folder holding
-/// a plain 1080p file beside an MVC one would answer "no 3D here" and lose the MVC versions
-/// nobody else offers, because the MVC child is not a listable item a client can open on its
-/// own. So the provider asks about <em>each</em> file-backed static source of the item and
-/// builds the versions of every eligible one from that source's own path, streams and
-/// duration. The item is asked only when its sources cannot answer at all, and the item's own
-/// signals are applied only to the source that is the item's own file: a source that is the
-/// item is the item, and asking both would double the offer of one file.
+/// <b>What is asked about is not always one file, and what is offered is not always this
+/// provider's to offer.</b> Those two rules belong to
+/// <see cref="MvcEligibleSourceScanner"/> and are stated there in full: this type asks the scanner
+/// which of an item's files a profile could convert - so that a stacked movie whose primary file is
+/// plain 1080p still offers the versions of its hidden MVC file - and it drops any version the item
+/// already reports as a static source of its own, which is the case the moment a profile exists as
+/// a linked alternate-version item (see <c>Anaglyfin.VersionItems.ProfileVersionItemManager</c>).
+/// The server does not deduplicate static against dynamic sources, so an offer that repeats one is
+/// the same version in the list twice; and the provider stays in place as the fallback for the
+/// sources and items whose version items cannot be materialised.
 /// </para>
 /// <para>
 /// <b>Discovery.</b> The server finds this type by assembly scan and activates it
@@ -67,44 +61,22 @@ namespace Anaglyfin.MediaSources;
 /// <para>
 /// <b>Fail closed.</b> A provider exception is invisible to users (the server swallows
 /// it) and costs all of Anaglyfin's sources for the item, so the decision to offer
-/// nothing is made here, explicitly: non-video items, sources that could not be a real
-/// FFmpeg input (blank, relative, <c>.strm</c> pointers, disc images, placeholder or
-/// non-file sources), and sources the detector does not accept all answer with an empty
-/// list. Any unexpected failure is logged and answered the same way - the user always keeps
-/// the original source.
+/// nothing is made here, explicitly: an item the scanner will not accept (see
+/// <see cref="MvcEligibleSourceScanner.IsOfferableVideo"/>), a catalog that offers no profile, and
+/// sources the detector does not accept all answer with an empty list. Any unexpected failure is
+/// logged and answered the same way - the user always keeps the original source.
 /// </para>
 /// <para>
-/// <b>Transcoding only.</b> The marker is an Anaglyfin namespace, not playable media as
-/// far as the server is concerned, so the versions are declared transcode-only
-/// (<see cref="MediaSourceInfo.SupportsDirectPlay"/> and
-/// <see cref="MediaSourceInfo.SupportsDirectStream"/> off, transcoding on), which is
-/// also the only path where the wrapper gets to rewrite the command. Those flags are
-/// this provider's intention rather than the server's decision - the server replaces them
-/// with the user's permissions and its transcode path never consults them - so the
-/// reported video codec is what actually keeps a version on the encoding path, through
-/// <see cref="ForceTranscodeVideoStreams"/>.
-/// Probing is switched off and the streams are instead copied from the source the version
-/// is built from, so clients see the same audio and subtitle tracks they know from the
-/// original, with the same indices and duration. Only the video stream is changed - a
-/// clone reporting the <c>mvc</c> codec through <see cref="ForceTranscodeVideoStreams"/> and
-/// the frame size its profile encodes through <see cref="ProfileVideoGeometry"/> - and the
-/// original source keeps the objects it was probed with. What a version does <em>not</em>
-/// change is the source's stereo declaration: <see cref="MediaSourceInfo.Video3DFormat"/> is
-/// left unset, because the server reads that field as an instruction to convert a
-/// side-by-side source to 2D itself, which is the opposite of what a version that has already
-/// converted the picture needs.
+/// <b>Transcoding only.</b> A version is a conversion, so it is declared transcode-only and
+/// reports its streams through <see cref="ForceTranscodeVideoStreams"/> and
+/// <see cref="ProfileVideoGeometry"/>; the whole reasoning for those flags, for the copied stream
+/// list and for the deliberately unset <see cref="MediaSourceInfo.Video3DFormat"/> belongs to
+/// <see cref="ProfileVersionSource"/>, which builds a version for this provider and for the
+/// version-item manager alike.
 /// </para>
 /// </remarks>
 public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
 {
-    private const string StrmExtension = ".strm";
-
-    /// <summary>
-    /// The separator between a version's own file label and the profile it converts it with,
-    /// used only when an item has more than one file to choose between.
-    /// </summary>
-    private const string SourceNameSeparator = " / ";
-
     private static readonly MediaSourceInfo[] NoSources = Array.Empty<MediaSourceInfo>();
 
     private readonly IMvcSourceDetector _detector;
@@ -241,7 +213,7 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
         }
         else
         {
-            itemKey = PathDigestKey(sourcePath);
+            itemKey = MvcEligibleSourceScanner.PathDigestKey(sourcePath);
         }
 
         return FoldVersionId(itemKey, profileId);
@@ -278,65 +250,35 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentException">
-    /// <paramref name="profileId"/> is empty, or <paramref name="mediaSourceId"/> is not a
-    /// GUID and <paramref name="sourcePath"/> cannot identify the source either.
+    /// <paramref name="mediaSourceId"/> is not a GUID and <paramref name="sourcePath"/> cannot identify the source either.
     /// </exception>
     public static string BuildMediaSourceIdFromSource(string? mediaSourceId, string? sourcePath, string profileId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
 
-        return FoldVersionId(SourceIdentityKey(mediaSourceId, sourcePath), profileId);
+        return FoldVersionId(MvcEligibleSourceScanner.SourceIdentityKey(mediaSourceId, sourcePath), profileId);
     }
 
     /// <summary>
-    /// The identity one media source is being treated as: its own id when that id is a GUID, and
-    /// a digest of its path when it is not.
+    /// Builds the library-item id of one profile version of one <em>media source</em>.
     /// </summary>
+    /// <param name="mediaSourceId">The id the source is addressed by; see <see cref="BuildMediaSourceIdFromSource"/>.</param>
+    /// <param name="sourcePath">The source's media path, the fallback identity.</param>
+    /// <param name="profileId">The profile id of the version.</param>
+    /// <returns>The GUID a profile version of this source is addressed by, in both spellings.</returns>
     /// <remarks>
-    /// This is both the seed of a version's id and the key the provider deduplicates sources by,
-    /// and it is deliberately one function for both questions: the answer to "is this the same
-    /// file again?" has to be the answer to "would this be the same version id?", or the two
-    /// listings this catches would be dropped as duplicates or shipped as distinct by whichever
-    /// of the two happened to look first.
+    /// A static media source is keyed by the id of the item behind it, so a version that exists as
+    /// a linked alternate-version item is addressed by exactly this GUID - which is the whole
+    /// reason the item manager derives its keys here instead of choosing its own: the version a
+    /// client picks and the item that version exists as must be one identity, or the same profile
+    /// reaches a user twice under two different answers.
     /// </remarks>
     /// <exception cref="ArgumentException">
-    /// <paramref name="mediaSourceId"/> is not a GUID and <paramref name="sourcePath"/> is empty.
+    /// <paramref name="profileId"/> is empty, or <paramref name="mediaSourceId"/> is not a GUID and
+    /// <paramref name="sourcePath"/> cannot identify the source either.
     /// </exception>
-    private static string SourceIdentityKey(string? mediaSourceId, string? sourcePath)
-        => TryParseSourceKey(mediaSourceId, out var parsed) ? parsed : PathDigestKey(sourcePath);
-
-    /// <summary>
-    /// Reads the id seed a source contributes, when its id is one.
-    /// </summary>
-    /// <param name="mediaSourceId">The id the source is addressed by.</param>
-    /// <param name="sourceKey">The lower-case "N"-format key, when the id parsed.</param>
-    /// <returns>Whether the source id can serve as the identity of a version.</returns>
-    private static bool TryParseSourceKey(string? mediaSourceId, out string sourceKey)
-    {
-        if (Guid.TryParse(mediaSourceId, CultureInfo.InvariantCulture, out var parsed) && parsed != Guid.Empty)
-        {
-            sourceKey = parsed.ToString("N", CultureInfo.InvariantCulture);
-            return true;
-        }
-
-        sourceKey = string.Empty;
-        return false;
-    }
-
-    /// <summary>
-    /// The identity of last resort: a digest of the path the version converts.
-    /// </summary>
-    /// <remarks>
-    /// Lower-cased like every other seed part: the digest itself is case-insensitive
-    /// hex, but the seed is one string and gets exactly one textual form.
-    /// </remarks>
-    /// <exception cref="ArgumentException"><paramref name="sourcePath"/> is empty.</exception>
-    private static string PathDigestKey(string? sourcePath)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
-
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sourcePath))).ToLowerInvariant();
-    }
+    public static Guid BuildVersionItemIdFromSource(string? mediaSourceId, string? sourcePath, string profileId)
+        => Guid.Parse(BuildMediaSourceIdFromSource(mediaSourceId, sourcePath, profileId));
 
     /// <summary>
     /// Folds one source identity and one profile id into the version's id.
@@ -384,17 +326,18 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (item is null || !IsOfferableVideo(item))
+        if (item is null || !MvcEligibleSourceScanner.IsOfferableVideo(item))
         {
             return NoSources;
         }
 
         // Every file the item can be played from, asked about as itself, and accepted or not
-        // on its own signals. Nothing is read from settings until one of them qualifies: an
+        // on its own signals - and, alongside them, the ids the item already reports as its
+        // own versions. Nothing is read from settings until one of those files qualifies: an
         // item with no 3D in it - the overwhelming majority of a library - must not even pay
         // for a settings read.
-        var candidates = CollectMvcSources(item);
-        if (candidates.Count == 0)
+        var scan = MvcEligibleSourceScanner.Scan(item, _detector, _logger);
+        if (scan.Candidates.Count == 0)
         {
             _logger.LogDebug("Anaglyfin offers no versions for {ItemName}: no media source of it is 3D MVC.", item.Name);
             return NoSources;
@@ -418,16 +361,33 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
         // More than one eligible file means the user is choosing a file as well as a
         // conversion, so each version says which file it converts. With one file there is
         // nothing to disambiguate and the profile's own name is the whole label.
-        var labelSources = candidates.Count > 1;
+        var labelSources = scan.Candidates.Count > 1;
 
-        var sources = new List<MediaSourceInfo>(candidates.Count * offered.Count);
+        var sources = new List<MediaSourceInfo>(scan.Candidates.Count * offered.Count);
         var takenIds = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var candidate in candidates)
+        foreach (var candidate in scan.Candidates)
         {
             foreach (var profile in offered)
             {
-                var version = CreateVersion(candidate, profile, labelSources);
+                var version = ProfileVersionSource.Build(item, candidate, profile, labelSources);
+
+                // A profile the library already carries as an item of its own is a source the
+                // server publishes by itself, on this very request: the item manager materialises
+                // versions under this same id, and the server does not deduplicate static against
+                // dynamic sources. Offering it again would put one version in the picker twice,
+                // with two entries the user cannot tell apart and only one answer the server can
+                // resolve. Staying quiet here is what keeps the provider a fallback rather than a
+                // duplicate - and it stays correct without a cache or a database read, because the
+                // item's own source list is already in hand.
+                if (scan.ReportedSourceIds.Contains(version.Id))
+                {
+                    _logger.LogDebug(
+                        "Anaglyfin withheld the {Profile} version of {ItemName}: it already exists as a version item.",
+                        profile.Id,
+                        item.Name);
+                    continue;
+                }
 
                 // Two sources of one item naming one version is one version the server can
                 // resolve and one the client cannot reach, so the id decides: the second
@@ -448,435 +408,5 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
 
         _logger.LogDebug("Anaglyfin offers {Count} versions for {ItemName}.", sources.Count, item.Name);
         return sources;
-    }
-
-    /// <summary>
-    /// Checks the preconditions a real alternate version needs, before any work.
-    /// </summary>
-    /// <remarks>
-    /// Each rejection is a case in which a marker could not name a playable input for
-    /// the wrapper, so the item keeps its original source alone. The checks are static
-    /// property reads on purpose: this runs for every item in every playback-info
-    /// request, including the overwhelming majority that are not 3D at all.
-    /// </remarks>
-    private static bool IsOfferableVideo(BaseItem item)
-    {
-        // Only video has a 3D question to answer; the check runs before detection so a
-        // music library never pays for it.
-        if (item.MediaType != MediaType.Video)
-        {
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(item.Path))
-        {
-            return false;
-        }
-
-        // A relative path would resolve against whichever working directory FFmpeg
-        // starts in; a .strm is a text pointer, not a decodable file; and disc images
-        // (ISO/DVD/BluRay) reach FFmpeg through mount or bluray arguments the marker
-        // contract does not cover. All would produce a version that cannot transcode.
-        if (!Path.IsPathRooted(item.Path)
-            || item.Path.EndsWith(StrmExtension, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (item is Video video && video.VideoType != VideoType.VideoFile)
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// Asks the item and each of its own media sources whether it is 3D MVC, and keeps the
-    /// ones that answer yes.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <b>The item is asked only when its sources cannot answer.</b> A stacked movie is one item
-    /// over several files and the request is addressed to that item, so the item and its sources
-    /// describe the same playability - but not the same file, and the sources know which is
-    /// which. Asking the item alongside them would answer a plain single-file MVC movie twice
-    /// with the same four versions, which the server would present as eight versions of one file.
-    /// Asking it only when not one transcodable source came back keeps the behaviour a single
-    /// file has always had for a source implementation that names none: versions are still built,
-    /// from the item's own duration and without stream lists - fidelity drops, nothing else
-    /// changes.
-    /// </para>
-    /// <para>
-    /// <b>The item is the witness for its own file, and only for that one.</b> A source is a
-    /// report about a file, so the item's tags and display name - the signals a user or a
-    /// metadata provider gave the file, which no media source repeats - travel with the source
-    /// that is the item and with no other. A sibling version is judged by the file it names, the
-    /// label the server read off that file, and the stereo format recorded for it: nothing that
-    /// belongs to a neighbour.
-    /// </para>
-    /// <para>
-    /// Sources are read through the item's own media-source API with path substitution off,
-    /// because the wrapper needs server-side paths, and are kept in the order the server
-    /// gave them (its own source first). The item's linked alternate versions arrive through
-    /// that same API, which is why the provider never has to enumerate a folder or open a
-    /// file to see them - and why the hidden MVC child of a stack, which no client can list
-    /// as an item, is still asked.
-    /// </para>
-    /// </remarks>
-    private List<VersionCandidate> CollectMvcSources(BaseItem item)
-    {
-        var staticSources = ReadStaticMediaSources(item);
-
-        var candidates = new List<VersionCandidate>();
-        var askedFiles = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var source in staticSources)
-        {
-            if (!IsTranscodableSource(source))
-            {
-                continue;
-            }
-
-            // The same file listed twice - which a server is entitled to do, e.g. a version that
-            // is both a local alternate version and a linked one - is one file. Asked twice it
-            // would be answered twice, and the offer would carry the same conversion of the same
-            // file under the same id.
-            if (!askedFiles.Add(SourceIdentityKey(source.Id, source.Path)))
-            {
-                continue;
-            }
-
-            // A source keyed by the item's own id (or path) is the item's own file, and the item
-            // is the richer witness for it: it carries the tags and the display name a user or
-            // metadata manager gave that file, which no media source repeats. Any other source is
-            // a different file and may not be credited with those signals - which is the whole
-            // reason the enumeration exists.
-            var namesTheItemSelf = NamesTheItem(item, source);
-
-            var candidate = namesTheItemSelf
-                ? MvcSourceCandidate.FromItem(item)
-                : MvcSourceCandidate.FromMediaSource(source);
-
-            var decision = _detector.Detect(candidate);
-            if (decision.IsEligible)
-            {
-                candidates.Add(new VersionCandidate(item, source));
-            }
-            else
-            {
-                _logger.LogDebug(
-                    "Anaglyfin offers no versions for the media source {SourceName} of {ItemName}: {Decision}.",
-                    source.Name,
-                    item.Name,
-                    decision);
-            }
-        }
-
-        if (askedFiles.Count == 0)
-        {
-            // Not one source of this item could be asked about - no list, an empty list, or a
-            // list of nothing the server has a file for yet. The item is then the only witness
-            // it has, and the same one a single-file movie has always had: versions are still
-            // built, from the item's own duration and without stream lists. Fidelity drops,
-            // nothing else changes.
-            if (_detector.Detect(MvcSourceCandidate.FromItem(item)).IsEligible)
-            {
-                candidates.Add(new VersionCandidate(item, original: null));
-            }
-        }
-
-        return candidates;
-    }
-
-    /// <summary>
-    /// Reads the item's static media sources, or nothing when they cannot be enumerated.
-    /// </summary>
-    /// <remarks>
-    /// Never throws: an item that cannot answer for its own sources (a source implementation
-    /// that fails, an item mid-refresh) is answered by the item alone rather than costing the
-    /// item its versions - the same degradation an empty list produces.
-    /// </remarks>
-    private IReadOnlyList<MediaSourceInfo> ReadStaticMediaSources(BaseItem item)
-    {
-        try
-        {
-            return ((IHasMediaSources)item).GetMediaSources(enablePathSubstitution: false)
-                   ?? Array.Empty<MediaSourceInfo>();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Anaglyfin could not enumerate the static media sources of {ItemName}; asking the item itself.", item.Name);
-            return Array.Empty<MediaSourceInfo>();
-        }
-    }
-
-    /// <summary>
-    /// Checks that a media source is a file the marker could name and FFmpeg could open.
-    /// </summary>
-    /// <remarks>
-    /// The same refusals as <see cref="IsOfferableVideo"/>, applied per file: a placeholder
-    /// (a source the server lists but has no path for yet), a source served over a protocol
-    /// the marker contract does not cover, a relative path, a <c>.strm</c> pointer, or a disc
-    /// image. Each would produce a version that reaches the transcode pipeline and fails
-    /// there.
-    /// <para>
-    /// A <see cref="MediaSourceType.Grouping"/> source passes, deliberately: grouping says the
-    /// version was merged onto this item by hand rather than discovered beside it, and a
-    /// hand-merged MVC file is exactly as convertible as a discovered one. A
-    /// <see cref="MediaSourceType.Placeholder"/> source is the opposite case - the server knows
-    /// the version exists and has nothing playable about it yet - so that one is refused.
-    /// </para>
-    /// </remarks>
-    private static bool IsTranscodableSource(MediaSourceInfo? source)
-    {
-        if (source is null || source.Type == MediaSourceType.Placeholder)
-        {
-            return false;
-        }
-
-        if (source.Protocol != MediaProtocol.File || source.IsRemote)
-        {
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(source.Path)
-            || !Path.IsPathRooted(source.Path)
-            || source.Path.EndsWith(StrmExtension, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        // A source that names no video type is a hand-built or older report rather than a
-        // disc: only a declared non-file video type is a refusal this provider can act on.
-        if (source.VideoType is not null && source.VideoType != VideoType.VideoFile)
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// Decides whether a source is the item's own file rather than one of its other versions.
-    /// </summary>
-    /// <remarks>
-    /// Id first, because that is how the server keys and sorts a static source (its own
-    /// source is the one carrying the item's id in "N" format). The path is the fallback for a
-    /// source implementation that keys itself otherwise, because a file is what the question
-    /// "is this the same file?" is actually about. The comparison against the item's path is
-    /// ordinal-ignore-case to match the server's own case-insensitive id comparison: paths on
-    /// the server's own filesystems are the case they were stored in.
-    /// </remarks>
-    private static bool NamesTheItem(BaseItem item, MediaSourceInfo source)
-    {
-        if (!string.IsNullOrEmpty(source.Id)
-            && string.Equals(source.Id, item.Id.ToString("N", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return string.Equals(source.Path, item.Path, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Builds one profile version of one media source.
-    /// </summary>
-    private static MediaSourceInfo CreateVersion(VersionCandidate candidate, StereoProfile profile, bool labelSource)
-    {
-        var item = candidate.Item;
-        var original = candidate.Original;
-        var sourcePath = candidate.SourcePath;
-
-        // The version's video has to arrive as an encode, and the codec it reports is the
-        // only thing in its report the server's copy decision actually reads, so the
-        // stream list is built through ForceTranscodeVideoStreams: the video stream cloned
-        // and re-labelled, the source's own report left as it was. See that type.
-        var reportedStreams = ForceTranscodeVideoStreams.WithForcedVideoCodec(
-            original?.MediaStreams,
-            out int videoStreamIndex);
-
-        // A version also converts the picture, so the frame it encodes is its own and not the
-        // file's. The size the clone reports is what that frame is, because the server sizes
-        // its own scale from the numbers on this stream and the scale it writes is clamped
-        // against the frame that reaches it at run time - report the source's 1920x1080 for a
-        // full-SBS version whose encoder produces 3840x1080 and the server shrinks the
-        // converted picture into the source's box on the way out. See ProfileVideoGeometry.
-        reportedStreams = ProfileVideoGeometry.WithEncodedFrameSize(reportedStreams, profile);
-
-        // MVP: markers carry no subtitle ordinal, so every version plays without
-        // burned-in subtitles (the stock pipeline's subtitle selection is not applied
-        // to marker sources either). The marker contract - and ProfileMarker.Create -
-        // already carry the optional field; wiring a per-playback subtitle choice to
-        // it, mapped through SubtitleStreamOrdinals, is the follow-up task's job.
-        //
-        // The video index travels with it because the server maps the video stream by number
-        // (-map 0:<index>, the stream's own MediaStream.Index) and that number is something
-        // only the provider can name: the wrapper has no way to tell a numeric video map from
-        // a numeric audio map out of argv, and no way to know that the list it was handed
-        // skips a stream the file has.
-        var marker = ProfileMarker.Create(
-            profile.Id,
-            sourcePath,
-            subtitleOrdinal: null,
-            videoStreamIndex: videoStreamIndex < 0 ? null : videoStreamIndex);
-
-        var mediaSource = new MediaSourceInfo
-        {
-            // Request plumbing and nothing else: the DynamicHLS routes parse this one as a
-            // GUID (see BuildMediaSourceId), while which conversion a version asks for
-            // travels in the marker below - the wrapper reads that, never this. Folded from
-            // the source's own identity, so two files of one item never share a version id.
-            Id = BuildMediaSourceIdFromSource(candidate.SourceId, sourcePath, profile.Id),
-
-            // The version label clients show verbatim in their version pickers.
-            Name = VersionName(candidate, profile, labelSource),
-
-            // The marker stands in for the path: it is what FFmpeg-mvc (via the
-            // wrapper) is handed as input, and the only field of this object the
-            // wrapper is allowed to read.
-            Path = marker.ToMediaSourcePath(),
-
-            // The marker is URL-shaped, and every consumer between provider and
-            // wrapper treats URL-shaped inputs as HTTP; declaring anything else would
-            // make the server second-guess the path's protocol.
-            Protocol = MediaProtocol.Http,
-
-            // Transcoding is where the wrapper can rewrite the command, so it is the
-            // only transport these versions support. The server may still revoke the
-            // transcoding flag by user permission afterwards; that is permissions
-            // working, not this provider lying.
-            SupportsDirectPlay = false,
-            SupportsDirectStream = false,
-            SupportsTranscoding = true,
-
-            // ffprobe cannot read a marker URL, so the stream list copied from the
-            // source this version is built from is authoritative.
-            SupportsProbing = false,
-
-            // The media sits on the server's own filesystem; only its marker looks
-            // like a URL, and nothing is ever fetched from it.
-            IsRemote = false,
-
-            // No open token, no live stream: the source is inert until the transcode
-            // pipeline reads its marker.
-            RequiresOpening = false,
-            RequiresClosing = false,
-            LiveStreamId = null,
-            OpenToken = null,
-            IsInfiniteStream = false,
-            Type = MediaSourceType.Default,
-
-            // Duration and container fidelity to the source this version converts: the same
-            // film frame for frame, only re-rendered, so resume, seeking and the details page
-            // behave across versions exactly as within one version.
-            RunTimeTicks = original?.RunTimeTicks ?? item.RunTimeTicks,
-            Container = original?.Container,
-            Size = original?.Size,
-            Bitrate = original?.Bitrate,
-
-            // Written as unset rather than simply left out, because this one is a decision and
-            // not an oversight. The server reads a source's stereo format as an instruction to
-            // convert that format to 2D itself: a request carrying fixed dimensions gets a
-            // crop-and-setsar chain for HalfSideBySide/FullSideBySide/TopAndBottom straight
-            // from GetFixedSwScaleFilter. A version has already produced the picture it is
-            // selling, so wearing the source's own MVC marker (or worse, SideBySide) would have
-            // the server undo part of the conversion the profile just paid for. Fidelity to the
-            // source stops at the fields that describe the media, and this one describes a
-            // conversion.
-            Video3DFormat = null,
-
-            // Never null: ForceTranscodeVideoStreams answers a missing or empty report
-            // with an empty list, and an explicit null here would break consumers that
-            // enumerate it. This is the version's own list - the video stream in it is a
-            // clone, so the source this version converts keeps the objects it was probed
-            // with.
-            Formats = original?.Formats ?? Array.Empty<string>(),
-            MediaStreams = reportedStreams,
-        };
-
-        return mediaSource;
-    }
-
-    /// <summary>
-    /// Labels one version for a client's version picker.
-    /// </summary>
-    /// <remarks>
-    /// With one eligible file the profile's display name is the whole label, exactly as it
-    /// has always been: "3D Full Side-by-Side" says everything there is to say when there is
-    /// one thing to convert. With several, the label names the file first ("3D mvc / 3D Full
-    /// Side-by-Side"), because two identical labels over two different originals are a
-    /// version picker the user cannot choose from - and the answer they choose is what gets
-    /// encoded.
-    /// </remarks>
-    private static string VersionName(VersionCandidate candidate, StereoProfile profile, bool labelSource)
-    {
-        if (!labelSource)
-        {
-            return profile.DisplayName;
-        }
-
-        var sourceName = candidate.SourceName;
-        if (string.IsNullOrWhiteSpace(sourceName))
-        {
-            // A source with no name of its own still has a file, and the file name is the
-            // label a user recognises from their own library.
-            sourceName = Path.GetFileNameWithoutExtension(candidate.SourcePath);
-        }
-
-        if (string.IsNullOrWhiteSpace(sourceName))
-        {
-            return profile.DisplayName;
-        }
-
-        return string.Concat(sourceName.Trim(), SourceNameSeparator, profile.DisplayName);
-    }
-
-    /// <summary>
-    /// One accepted media source of one item, with what a version built from it needs.
-    /// </summary>
-    /// <remarks>
-    /// A private carrier, not a public contract: it exists so the eligibility decision, the
-    /// fidelity template and the identity of one file travel together to
-    /// <see cref="CreateVersion"/> without any of them being re-derived - and so a version
-    /// cannot be built from the path of one source and the streams of another, which is the
-    /// mistake a stacked movie makes easy.
-    /// </remarks>
-    private sealed class VersionCandidate
-    {
-        /// <summary>
-        /// Initializes a new instance of the <see cref="VersionCandidate"/> class.
-        /// </summary>
-        /// <param name="item">The item the request was addressed to.</param>
-        /// <param name="original">
-        /// The source this version is built from, or <c>null</c> when only the item could be
-        /// asked about it and there is no source report to copy.
-        /// </param>
-        public VersionCandidate(BaseItem item, MediaSourceInfo? original)
-        {
-            Item = item;
-            Original = original;
-
-            // Path and identity come from the source when there is one and from the item when
-            // there is not; never from both at once.
-            SourcePath = original?.Path ?? item.Path;
-            SourceId = original?.Id ?? item.Id.ToString("N", CultureInfo.InvariantCulture);
-            SourceName = original?.Name ?? item.Name;
-        }
-
-        /// <summary>Gets the item the playback request was addressed to.</summary>
-        public BaseItem Item { get; }
-
-        /// <summary>Gets the source this version converts, or <c>null</c> for the item alone.</summary>
-        public MediaSourceInfo? Original { get; }
-
-        /// <summary>Gets the file the version's marker will name.</summary>
-        public string SourcePath { get; }
-
-        /// <summary>Gets the id the source is addressed by, the seed of the version's id.</summary>
-        public string SourceId { get; }
-
-        /// <summary>Gets the label the source (or the item, alone) carries.</summary>
-        public string? SourceName { get; }
     }
 }
