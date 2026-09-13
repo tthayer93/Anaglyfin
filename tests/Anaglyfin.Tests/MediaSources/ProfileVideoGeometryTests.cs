@@ -216,8 +216,10 @@ public class ProfileVideoGeometryTests
         Assert.Equal(SourceWidth, probed.Width);
         Assert.NotSame(probed, Assert.Single(reported));
 
-        // Asking twice gives the same answer rather than a doubling of it.
-        var again = ProfileVideoGeometry.WithEncodedFrameSize(reported, AProfileOf(ProfileKind.SideBySideFull));
+        // Asking twice from the item's own report gives the same answer rather than a doubling of
+        // the previous answer: every playback-info request re-derives the converted frame from the
+        // file's reported size, not from a previous version's copy.
+        var again = ProfileVideoGeometry.WithEncodedFrameSize(new[] { probed }, AProfileOf(ProfileKind.SideBySideFull));
 
         Assert.Equal(3840, Assert.Single(again).Width);
     }

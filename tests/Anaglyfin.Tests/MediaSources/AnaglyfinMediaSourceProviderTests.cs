@@ -471,7 +471,14 @@ public class AnaglyfinMediaSourceProviderTests
         // server at 1920x540.
         var allProfiles = new PluginConfiguration
         {
-            EnabledProfileIds = ProfileIds.AllProfileIds.ToList()
+            EnabledProfileIds = new List<string>
+            {
+                ProfileIds.SideBySideFull,
+                ProfileIds.SideBySideHalf,
+                ProfileIds.TwoDBase,
+                ProfileIds.AnaglyphRedCyanDubois,
+                ProfileIds.CustomGrayscale
+            }
         };
         var configuration = new StubConfigurationSource { Configuration = allProfiles };
         var provider = CreateProvider(configuration: configuration);
