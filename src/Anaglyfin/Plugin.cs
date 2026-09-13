@@ -33,9 +33,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// <param name="applicationPaths">Instance of the <see cref="IApplicationPaths"/> interface.</param>
     /// <param name="xmlSerializer">Instance of the <see cref="IXmlSerializer"/> interface.</param>
     /// <param name="versionReconcileTrigger">
-    /// The seam the settings-save path uses to ask for a version-item pass. Optional by contract:
-    /// the base constructor saves the settings file (it writes a default one when there is none)
-    /// before this field can be assigned, and a plugin whose first save crashed would never load.
+    /// The seam the settings-save path uses to ask for a version-item pass. Optional by contract: a
+    /// plugin that cannot reach its own queue is still a plugin that loads, and a version pass that
+    /// never starts costs a user nothing but a version list filled in at playback time instead.
     /// </param>
     public Plugin(
         IApplicationPaths applicationPaths,

@@ -57,9 +57,14 @@ public sealed class LibraryProfileVersionItemStore : IProfileVersionItemStore
     /// <inheritdoc />
     public IReadOnlyList<Video> GetVersionRootCandidates()
     {
-        // One query, one pass: the server's general queries already drop anything that names a
-        // primary version, so what comes back is the set of items that could own versions -
-        // never one of Anaglyfin's own version items, and never a stack part a client cannot open.
+        // One query for one pass. What makes this list the right list is the general-query rule the
+        // server applies to it: an item that names a primary version is not in a general query at
+        // all, which is both why a profile version never shows up in browse or search and why a pass
+        // over this list never mistakes one of Anaglyfin's own items for a library movie. SourceTypes
+        // states the intent the server's own query builder does not implement (it ignores that field),
+        // so the eligibility scan remains the real gate on what a pass attempts; it is declared here
+        // because a background pass has no business editing channel or remote content, and a server
+        // that honours the field will find Anaglyfin already asking correctly.
         var query = new InternalItemsQuery
         {
             MediaTypes = new[] { MediaType.Video },
