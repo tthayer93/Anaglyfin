@@ -1316,9 +1316,11 @@ public class AnaglyfinMediaSourceProviderTests
     [Fact]
     public async Task OneSourceListedTwiceIsOfferedOnce()
     {
-        // Duplicate control is by id, which is what the server resolves a playback request by:
-        // two entries under one id are one playable version and one the client can never reach,
-        // so the second answer is dropped rather than added beside the first.
+        // A server is free to list one file twice - a version that is both a local alternate
+        // version and a linked one, say. Duplicate control is by the identity a version's id is
+        // folded from, which is the same question as "is this the same file again?", so the two
+        // cannot disagree about the answer: the second listing is not a second question, and the
+        // offer is not a second copy of the answer.
         var provider = CreateRealProvider();
         var item = CreateStackedMovie();
         var mvc = item.StaticSources[1];
@@ -1328,6 +1330,11 @@ public class AnaglyfinMediaSourceProviderTests
 
         Assert.Equal(4, sources.Count);
         Assert.Equal(4, sources.Select(source => source.Id).Distinct(StringComparer.Ordinal).Count());
+
+        // And it was never asked twice: one question per file, in the order the server gave them.
+        var asked = new ScriptedDetector();
+        await CreateProvider(detector: asked).GetMediaSources(item, CancellationToken.None);
+        Assert.Equal(new string?[] { PrimaryVersionPath, MvcVersionPath }, asked.Candidates.Select(candidate => candidate.Path));
     }
 
     [Fact]
