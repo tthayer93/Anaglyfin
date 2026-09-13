@@ -44,8 +44,9 @@ namespace Anaglyfin.MediaSources;
 /// nobody else offers, because the MVC child is not a listable item a client can open on its
 /// own. So the provider asks about <em>each</em> file-backed static source of the item and
 /// builds the versions of every eligible one from that source's own path, streams and
-/// duration. The item itself is asked only when it is not already one of the sources named -
-/// a source that is the item is the item, and asking twice would double the offer.
+/// duration. The item is asked only when its sources cannot answer at all, and the item's own
+/// signals are applied only to the source that is the item's own file: a source that is the
+/// item is the item, and asking both would double the offer of one file.
 /// </para>
 /// <para>
 /// <b>Discovery.</b> The server finds this type by assembly scan and activates it
@@ -284,12 +285,25 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
 
-        var sourceKey = TryParseSourceKey(mediaSourceId, out var parsed)
-            ? parsed
-            : PathDigestKey(sourcePath);
-
-        return FoldVersionId(sourceKey, profileId);
+        return FoldVersionId(SourceIdentityKey(mediaSourceId, sourcePath), profileId);
     }
+
+    /// <summary>
+    /// The identity one media source is being treated as: its own id when that id is a GUID, and
+    /// a digest of its path when it is not.
+    /// </summary>
+    /// <remarks>
+    /// This is both the seed of a version's id and the key the provider deduplicates sources by,
+    /// and it is deliberately one function for both questions: the answer to "is this the same
+    /// file again?" has to be the answer to "would this be the same version id?", or the two
+    /// listings this catches would be dropped as duplicates or shipped as distinct by whichever
+    /// of the two happened to look first.
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="mediaSourceId"/> is not a GUID and <paramref name="sourcePath"/> is empty.
+    /// </exception>
+    private static string SourceIdentityKey(string? mediaSourceId, string? sourcePath)
+        => TryParseSourceKey(mediaSourceId, out var parsed) ? parsed : PathDigestKey(sourcePath);
 
     /// <summary>
     /// Reads the id seed a source contributes, when its id is one.
@@ -483,14 +497,15 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The item is asked only when none of its sources is the item's own file. A stacked
-    /// movie is one item over several files and the request is addressed to that item, so
-    /// both the item and its sources describe the same playability - but not the same file.
-    /// Asking both whenever a list happens to be available would answer a plain single-file
-    /// MVC movie twice with the same four versions, which the server would present as eight
-    /// versions of one file; asking it never would strand a source implementation that names
-    /// no static sources at all. Asking it exactly when its own file is absent from the list
-    /// is what covers both without ever answering twice.
+    /// <b>The item is asked only when its sources cannot answer.</b> A stacked movie is one item
+    /// over several files and the request is addressed to that item, so the item and its sources
+    /// describe the same playability - but not the same file, and the sources know which is
+    /// which. Asking the item alongside them would answer a plain single-file MVC movie twice
+    /// with the same four versions, which the server would present as eight versions of one file.
+    /// Asking it only when not one transcodable source came back keeps the behaviour a single
+    /// file has always had for a source implementation that names none: versions are still built,
+    /// from the item's own duration and without stream lists - fidelity drops, nothing else
+    /// changes.
     /// </para>
     /// <para>
     /// <b>The item is the witness for its own file, and only for that one.</b> A source is a
@@ -514,11 +529,20 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
         var staticSources = ReadStaticMediaSources(item);
 
         var candidates = new List<VersionCandidate>();
-        var namesTheItem = false;
+        var askedFiles = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var source in staticSources)
         {
             if (!IsTranscodableSource(source))
+            {
+                continue;
+            }
+
+            // The same file listed twice - which a server is entitled to do, e.g. a version that
+            // is both a local alternate version and a linked one - is one file. Asked twice it
+            // would be answered twice, and the offer would carry the same conversion of the same
+            // file under the same id.
+            if (!askedFiles.Add(SourceIdentityKey(source.Id, source.Path)))
             {
                 continue;
             }
@@ -529,7 +553,6 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
             // a different file and may not be credited with those signals - which is the whole
             // reason the enumeration exists.
             var namesTheItemSelf = NamesTheItem(item, source);
-            namesTheItem |= namesTheItemSelf;
 
             var candidate = namesTheItemSelf
                 ? MvcSourceCandidate.FromItem(item)
@@ -550,12 +573,13 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
             }
         }
 
-        if (!namesTheItem)
+        if (askedFiles.Count == 0)
         {
-            // The item's own file was not among the sources, so the item itself is the only
-            // witness it has. This is also the whole answer for an item that reports no static
-            // sources at all: versions are still built, from the item's own duration and
-            // without stream lists - fidelity drops, nothing else changes.
+            // Not one source of this item could be asked about - no list, an empty list, or a
+            // list of nothing the server has a file for yet. The item is then the only witness
+            // it has, and the same one a single-file movie has always had: versions are still
+            // built, from the item's own duration and without stream lists. Fidelity drops,
+            // nothing else changes.
             if (_detector.Detect(MvcSourceCandidate.FromItem(item)).IsEligible)
             {
                 candidates.Add(new VersionCandidate(item, original: null));
