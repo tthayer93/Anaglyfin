@@ -70,8 +70,13 @@ namespace Anaglyfin.MediaSources;
 /// Probing is switched off and the streams are instead copied from the item's original
 /// source, so clients see the same audio and subtitle tracks they know from the
 /// original, with the same indices and duration. Only the video stream is changed - a
-/// clone reporting the <c>mvc</c> codec - and the item's own source keeps the objects it
-/// was probed with.
+/// clone reporting the <c>mvc</c> codec through <see cref="ForceTranscodeVideoStreams"/> and
+/// the frame size its profile encodes through <see cref="ProfileVideoGeometry"/> - and the
+/// item's own source keeps the objects it was probed with. What a version does <em>not</em>
+/// change is the source's stereo declaration: <see cref="MediaSourceInfo.Video3DFormat"/> is
+/// left unset, because the server reads that field as an instruction to convert a
+/// side-by-side source to 2D itself, which is the opposite of what a version that has already
+/// converted the picture needs.
 /// </para>
 /// </remarks>
 public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
@@ -406,6 +411,14 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
             original?.MediaStreams,
             out int videoStreamIndex);
 
+        // A version also converts the picture, so the frame it encodes is its own and not the
+        // file's. The size the clone reports is what that frame is, because the server sizes
+        // its own scale from the numbers on this stream and the scale it writes is clamped
+        // against the frame that reaches it at run time - report the source's 1920x1080 for a
+        // full-SBS version whose encoder produces 3840x1080 and the server shrinks the
+        // converted picture into the source's box on the way out. See ProfileVideoGeometry.
+        reportedStreams = ProfileVideoGeometry.WithEncodedFrameSize(reportedStreams, profile);
+
         // MVP: markers carry no subtitle ordinal, so every version plays without
         // burned-in subtitles (the stock pipeline's subtitle selection is not applied
         // to marker sources either). The marker contract - and ProfileMarker.Create -
@@ -475,6 +488,17 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
             Container = original?.Container,
             Size = original?.Size,
             Bitrate = original?.Bitrate,
+
+            // Written as unset rather than simply left out, because this one is a decision and
+            // not an oversight. The server reads a source's stereo format as an instruction to
+            // convert that format to 2D itself: a request carrying fixed dimensions gets a
+            // crop-and-setsar chain for HalfSideBySide/FullSideBySide/TopAndBottom straight
+            // from GetFixedSwScaleFilter. A version has already produced the picture it is
+            // selling, so wearing the item's own MVC marker (or worse, SideBySide) would have
+            // the server undo part of the conversion the profile just paid for. Fidelity to the
+            // original stops at the fields that describe the media, and this one describes a
+            // conversion.
+            Video3DFormat = null,
 
             // Never null: ForceTranscodeVideoStreams answers a missing or empty report
             // with an empty list, and an explicit null here would break consumers that

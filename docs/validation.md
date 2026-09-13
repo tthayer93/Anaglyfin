@@ -336,17 +336,44 @@ For each alternate source, check:
 | `SupportsProbing` | `false` |
 | `RequiresOpening` | `false` |
 | `Type` | `Default` |
-| `MediaStreams` | the original source's streams, with one exception: the video stream's `Codec` |
+| `MediaStreams` | the original source's streams, with one exception: the video stream's `Codec` and its `Width`/`Height` |
+| `Video3DFormat` | `null` on every Anaglyfin source, whatever the item's own source declares |
 
 - [ ] The Anaglyfin source ids are lower-case `N`-format GUIDs, unique per profile and different from the item id.
       DynamicHLS parses `MediaSourceId` as a `Guid`, so a descriptive id fails playback before FFmpeg starts.
 - [ ] The source id changes when the profile id changes.
 - [ ] The video stream of an Anaglyfin source reports `Codec` = `mvc`, while the original library
       source on the same item still reports its real codec (`hevc`, `h264`, ...).
-- [ ] Every other field of that stream - resolution, bit depth, frame rate, colour transfer, the
-      Dolby Vision flags - matches the original source's video stream. The version re-labels one
-      field; a client that shows a stream title built from the codec will show `MVC` where the
-      original shows `HEVC`, and that is the only visible difference.
+- [ ] The video stream of an Anaglyfin source reports the frame **its profile encodes**, not the
+      frame the file was probed at. For a 1920x1080 MVC source:
+
+  | Profile | Reported `Width` x `Height` |
+  | --- | --- |
+  | `sbs_full` | `3840 x 1080` (both eyes, side by side, full height) |
+  | `sbs_half` | `1920 x 1080` (the doubled frame is halved inside the profile chain) |
+  | any `anaglyph_*` | `1920 x 1080` |
+  | `custom_grayscale` | `1920 x 1080` |
+  | `two_d_base` | `1920 x 1080` (the base view is the source's own frame) |
+
+  This is not cosmetics. When the client asks for no resolution and brings at least the bitrate
+  this stream reports, the server defaults its `MaxWidth`/`MaxHeight` to exactly these numbers
+  and writes a `scale` from them into `-vf`; the scale is evaluated at run time against the frame
+  that reaches it. Report the source's size for a profile that encodes a bigger frame and the
+  server shrinks the converted picture into the source's box on the way out - which is precisely
+  the 3840x1080-into-1920x540 failure these rows exist to prevent. See V7.8 for the segment
+  measurement that proves the whole chain.
+- [ ] `Video3DFormat` is absent on every Anaglyfin source even when the item's own source declares
+      `MVC`. The server reads that field as an instruction to convert a stereo source to 2D itself;
+      a version has already produced the picture it sells, so wearing the item's marker invites the
+      server to undo part of the conversion.
+- [ ] Every other field of that stream - bit depth, frame rate, colour transfer, the
+      Dolby Vision flags, `AspectRatio`, `IsAnamorphic` - matches the original source's video
+      stream. The version re-labels the codec and restates the size, and nothing else. A client
+      that shows a stream title built from the codec will show `MVC` where the original shows
+      `HEVC`, and a full-SBS version's badge reads `4K` for a 1080p film because its encoded frame
+      really is 3840 wide; both are the expected visible difference.
+- [ ] The original library source still reports the size it was probed with (the version's size is
+      on a copy of the stream, never on the item's own).
 - [ ] Resume position and seek behavior remain reasonable when switching between versions.
 - [ ] The original library source remains playable and unchanged.
 - [ ] Changing enabled profiles changes the offered versions without a server restart.
@@ -367,10 +394,10 @@ video stream never reads either flag anyway. So:
 What the plugin does instead is report the version's video with a codec no client's transcode
 profile names (`mvc`), which leaves the server no codec it is allowed to copy and therefore no
 copy to build. The name is the lever, not a description: ffprobe reports an MVC track as
-`hevc`, and the version's stream report differs from the item's own in that one field and
-nothing else. The server then builds a real encode command, which is visible in the
-transcoding URL as a video codec that is not the source's own, and in the child FFmpeg command
-as `-codec:v <encoder>`.
+`hevc`. Apart from that codec and the frame size the profile encodes (the table above), the
+version's stream report is the item's own, field for field. The server then builds a real encode
+command, which is visible in the transcoding URL as a video codec that is not the source's own,
+and in the child FFmpeg command as `-codec:v <encoder>`.
 
 ## V6. Marker transport
 
@@ -516,6 +543,10 @@ Expected behavior:
 - a server-owned existing `-vf` chain is not removed
 - audio maps chosen by Jellyfin remain intact
 
+This is the profile the geometry fix was found on, so it is also the one where a wrong answer is
+visible without any filter of ours in the command: the profile inserts no scaling at all, so
+whatever the server's `scale` does to the frame is what the segment ends up being. See V7.8.
+
 Example shape:
 
 ```text
@@ -534,12 +565,24 @@ Expected inserted fragments:
 
 ```text
 -map 0:v:view:all
--vf scale=iw/2:ih:flags=bicubic,format=yuv420p
+-vf scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p
 -sn
 ```
 
-If Jellyfin already supplied `-vf`, the profile filter is appended to the last existing
-chain rather than replacing it.
+- [ ] The `setsar=sar=1` is there, immediately behind the scale.
+
+      `scale` preserves the display aspect by adjusting the pixel shape it hands on, so halving
+      the width of a square-pixel frame hands on a 2:1 one. The encoded pixels are the right
+      half-SBS frame either way, but every consumer that trusts the shape travelling with the
+      frame stretches it sideways, so the declaration is part of the conversion and not a
+      cosmetic touch.
+
+- [ ] If Jellyfin already supplied `-vf`, the profile chain is **prepended** to the last existing
+      chain rather than replacing it or landing behind it. The server's scale is sized from the
+      geometry this source reports - the converted frame - and runs against whatever frame
+      reaches it, so a conversion placed behind it scales a picture that does not exist yet.
+      Nothing of the server's chain is deleted: it carries the client's resolution ceiling and
+      the bitrate ladder's rung, and at native quality it evaluates to an identity.
 
 ### 7.3 Red/cyan Dubois anaglyph
 
@@ -560,8 +603,11 @@ Expected inserted fragments:
 If Jellyfin already supplied `-vf`, the expected merged chain shape is:
 
 ```text
-<existing chain>,stereo3d=sbsl:arcd,format=yuv420p
+stereo3d=sbsl:arcd,format=yuv420p,<existing chain>
 ```
+
+The same ordering rule as half SBS, with the same reason: profile conversion first, server
+scaling of the converted picture second.
 
 ### 7.4 2D base
 
@@ -600,6 +646,18 @@ With the shipped default colors, the inserted filter graph should be:
 - [ ] The command does not contain an Anaglyfin marker token.
 - [ ] A foreign `-filter_complex` in the same output segment causes the wrapper to refuse the
   job, not graft the Anaglyfin graph onto it.
+- [ ] A server-owned `-vf` on the same command survives the rewrite unchanged. This profile's
+  conversion is a graph of its own rather than a stage of that chain, so the ordering rule of
+  7.2/7.3 does not apply to it and nothing is re-plumbed around it.
+
+Known limitation of this profile's shape, recorded rather than fixed: FFmpeg refuses a simple
+`-vf` on a stream fed from a complex filtergraph ("Simple and complex filtering cannot be used
+together for the same stream"). The profile maps the graph's own label, so any `-vf` the server
+writes for that output - which it writes whenever the request settles on a `MaxWidth`/`MaxHeight`,
+even one the profile already satisfies - is refused by FFmpeg itself. Half SBS, the anaglyph
+presets and 2D base do not have this problem because their conversion is a linear chain the server
+chain continues. Capturing the exact argv for a failing `custom_grayscale` job, together with the
+server's `-vf` value, is the evidence the next runtime task needs.
 
 ### 7.6 Map-less commands
 
@@ -646,6 +704,50 @@ stream 1:
 ```text
 -i <real source path> -map 0:v:view:all -vf stereo3d=sbsl:arcd,format=yuv420p -sn -map 0:1 -codec:v libx264 ...
 ```
+
+### 7.8 Segment dimensions: the geometry the whole chain agrees on
+
+The command line says what was asked for; the segments say what came out. Measure one segment per
+version with the same `ffprobe` the server uses:
+
+```sh
+ffprobe -v error -select_streams v:0 \
+  -show_entries stream=width,height,sample_aspect_ratio,display_aspect_ratio \
+  -of default=noprint_wrappers=1 \
+  "http://<server>:8096/Videos/<item-id>/<media-source-id>/main/1.ts?api_key=<key>"
+```
+
+For a 1920x1080 MVC source, encoded at a quality setting that asks for no downscale (a client with
+auto/high bitrate, or a `maxWidth`/`maxHeight` at or above the values in the second column):
+
+| Version | Expected segment `width x height` | Expected `sample_aspect_ratio` |
+| --- | --- | --- |
+| `sbs_full` | `3840 x 1080` | `1:1` |
+| `sbs_half` | `1920 x 1080` | `1:1` |
+| `anaglyph_*` | `1920 x 1080` | `1:1` |
+| `custom_grayscale` | `1920 x 1080` | `1:1` |
+| `two_d_base` | `1920 x 1080` | `1:1` |
+
+- [ ] Full SBS segments are **source width x 2** by **source height**, and no server shrink has been
+      applied on top of the conversion.
+- [ ] Half SBS and every anaglyph version are **source width** by **source height**.
+- [ ] Half SBS reports `sample_aspect_ratio=1:1` and not `2:1`. A `2:1` there means the
+      `setsar=sar=1` stage did not run (or ran before the scale, where it is overwritten), and
+      players will stretch the frame sideways.
+- [ ] The server's `scale` ran **after** the profile conversion. Read it off the command from V7:
+      the merged `-vf` value starts with the profile's own filters and the server's chain follows.
+      At native quality the server's scale is then an identity, which is exactly what the table
+      above is. If the server's chain came first, a full-SBS version of this source measures
+      `1920 x 540` - the right aspect ratio, half the pixels - and that number is a filter-order
+      bug and nothing else.
+- [ ] A segment smaller than the table is only expected when the *client* asked for it: a device
+      ceiling (`maxWidth`/`maxHeight` in the transcoding URL) or a bitrate ladder rung. Note which
+      one and its value; an Anaglyfin version of a 1080p film clamped to 1280 wide by an 8 Mbit
+      bandwidth setting is policy working, not the geometry report failing. The bug shape is a
+      segment that is smaller than the geometry report *while the aspect ratio is wrong too*, or a
+      segment that is smaller while the request asked for native quality.
+- [ ] Recording the segment size of one version without recording the `-vf` value it came from is
+      not evidence: the two together are what show the order.
 
 ## V8. Ordinary playback pass-through
 

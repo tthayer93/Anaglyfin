@@ -443,16 +443,221 @@ public class AnaglyfinMediaSourceProviderTests
 
             // Everything a player or the server's transcode conditions read stays as the
             // file's own probe reported it: the version re-labels the codec, it does not
-            // re-describe the picture.
+            // re-describe the picture. Size is the one field a version answers differently,
+            // because a version really does encode a different frame - see
+            // EveryVersionReportsTheFrameItsOwnProfileEncodes.
             var probed = Assert.Single(original.MediaStreams, stream => stream.Type == MediaStreamType.Video);
-            Assert.Equal(probed.Width, video.Width);
-            Assert.Equal(probed.Height, video.Height);
             Assert.Equal(probed.BitDepth, video.BitDepth);
             Assert.Equal(probed.RealFrameRate, video.RealFrameRate);
             Assert.Equal(probed.Profile, video.Profile);
             Assert.Equal(probed.Level, video.Level);
             Assert.Equal(probed.Index, video.Index);
         }
+    }
+
+    // --- reported geometry ---------------------------------------------------------
+
+    [Fact]
+    public async Task EveryVersionReportsTheFrameItsOwnProfileEncodes()
+    {
+        // Why the numbers below are load-bearing and not decoration: the server sizes the
+        // transcode it builds from the video stream this source reports. When the client asks
+        // for no resolution and brings at least the stream's bitrate, its MaxWidth/MaxHeight
+        // default to exactly these numbers, and the software scale it then writes into -vf is
+        // evaluated at run time against the frame that actually reaches the filter. So a version
+        // that reports the source's frame while encoding another one gets its own converted
+        // picture scaled into the source's box on the way out - the full-SBS version of this
+        // 1920x1080 source, encoding 3840x1080 while claiming 1920x1080, came out of a real
+        // server at 1920x540.
+        var allProfiles = new PluginConfiguration
+        {
+            EnabledProfileIds = new List<string>
+            {
+                ProfileIds.SideBySideFull,
+                ProfileIds.SideBySideHalf,
+                ProfileIds.TwoDBase,
+                ProfileIds.AnaglyphRedCyanDubois,
+                ProfileIds.CustomGrayscale
+            }
+        };
+        var configuration = new StubConfigurationSource { Configuration = allProfiles };
+        var provider = CreateProvider(configuration: configuration);
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        item.StaticSources = new[] { original };
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        // One entry per version so a wrong answer names which profile it belongs to.
+        var reported = sources.ToDictionary(
+            source => ProfileMarkerParser.Parse(source.Path).ProfileId!,
+            source =>
+            {
+                var video = Assert.Single(source.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+                return (video.Width, video.Height);
+            });
+
+        Assert.Equal(
+            new Dictionary<string, (int? Width, int? Height)>
+            {
+                // The native all-view frame: both eyes, side by side, at full height.
+                [ProfileIds.SideBySideFull] = (3840, 1080),
+
+                // Halved back to the source's own size on the way to the encoder, so the source's
+                // size is the size the encoder is handed.
+                [ProfileIds.SideBySideHalf] = (1920, 1080),
+
+                // The base view, and both anaglyph families, are inside the source's frame.
+                [ProfileIds.TwoDBase] = (1920, 1080),
+                [ProfileIds.AnaglyphRedCyanDubois] = (1920, 1080),
+                [ProfileIds.CustomGrayscale] = (1920, 1080)
+            },
+            reported);
+
+        // Every one of those versions is still the file's own stream in every other respect: a
+        // version restates the size of its picture, not the rest of its paperwork. (The codec
+        // every version answers differently, and why, is
+        // TheVersionsReportTheirVideoAsACodecNoTranscodeProfileCanCopy.)
+        var probed = Assert.Single(original.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+        foreach (var source in sources)
+        {
+            var video = Assert.Single(source.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+            Assert.Equal(probed.Index, video.Index);
+            Assert.Equal(probed.BitDepth, video.BitDepth);
+            Assert.Equal(probed.RealFrameRate, video.RealFrameRate);
+            Assert.Equal(probed.Profile, video.Profile);
+            Assert.Equal(probed.Level, video.Level);
+
+            // The two fields a doubled width makes dishonest if they were left behind, and which
+            // the server consults for neither of its scaling decisions: the display ratio is a
+            // client badge, and the sample aspect ratio travels with the frame, not with the
+            // row in the database.
+            Assert.Equal(probed.AspectRatio, video.AspectRatio);
+            Assert.Equal(probed.IsAnamorphic, video.IsAnamorphic);
+        }
+    }
+
+    [Fact]
+    public async Task ReportingAConvertedFrameLeavesWhatTheItemReportsAboutItsOwnAlone()
+    {
+        // The item's original source hands out the very objects its own clients are served, so
+        // the doubled width of a full-SBS version has to be a copy's width. Written onto the
+        // probed stream it would tell every client, and every later transcode of the original
+        // file, that a 1920x1080 film is 3840 wide.
+        var configuration = new StubConfigurationSource
+        {
+            Configuration = new PluginConfiguration { EnabledProfileIds = new List<string> { ProfileIds.SideBySideFull } }
+        };
+        var provider = CreateProvider(configuration: configuration);
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        item.StaticSources = new[] { original };
+
+        var source = Assert.Single(await provider.GetMediaSources(item, CancellationToken.None));
+
+        var version = Assert.Single(source.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+        Assert.Equal(3840, version.Width);
+        Assert.Equal(1080, version.Height);
+
+        var probed = Assert.Single(original.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+        Assert.Equal(1920, probed.Width);
+        Assert.Equal(1080, probed.Height);
+        Assert.NotSame(probed, version);
+
+        // And the answer is stable across requests: the size is derived from the profile and the
+        // source, never stored, so a second playback-info request cannot see the first one's
+        // clone.
+        var again = Assert.Single(await provider.GetMediaSources(item, CancellationToken.None));
+        Assert.Equal(
+            1920,
+            Assert.Single(original.MediaStreams, stream => stream.Type == MediaStreamType.Video).Width);
+        Assert.Equal(3840, Assert.Single(again.MediaStreams, stream => stream.Type == MediaStreamType.Video).Width);
+    }
+
+    [Theory]
+    [InlineData(null, null)] // never probed for a size
+    [InlineData(0, null)] // a report that carries 0 rather than nothing
+    public async Task AVersionDoesNotInventAWidthTheSourceNeverReported(int? sourceWidth, int? sourceHeight)
+    {
+        // Doubling nothing produces a number, and a number out of nothing is exactly what the
+        // server would then scale a real picture against. With no width to work from the version
+        // reports what the file reports, which is the answer the original source gives too.
+        var configuration = new StubConfigurationSource
+        {
+            Configuration = new PluginConfiguration { EnabledProfileIds = new List<string> { ProfileIds.SideBySideFull } }
+        };
+        var provider = CreateProvider(configuration: configuration);
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        original.MediaStreams = new[]
+        {
+            new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "hevc", Width = sourceWidth, Height = sourceHeight }
+        };
+        item.StaticSources = new[] { original };
+
+        var source = Assert.Single(await provider.GetMediaSources(item, CancellationToken.None));
+
+        var video = Assert.Single(source.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+        Assert.Equal(sourceWidth, video.Width);
+        Assert.Equal(sourceHeight, video.Height);
+
+        // The forced codec is a separate lever and is still reported: keeping the version on the
+        // encode path does not depend on knowing its size.
+        Assert.Equal(ForceTranscodeVideoStreams.VideoCodec, video.Codec);
+    }
+
+    [Fact]
+    public async Task TheHeightASourceReportedIsKeptEvenWhenTheWidthCouldNotBeDoubled()
+    {
+        // Only the width is derived here. Dropping or halving a height the file did report,
+        // because the width beside it was missing, would lose information the server sizes
+        // against for nothing.
+        var configuration = new StubConfigurationSource
+        {
+            Configuration = new PluginConfiguration { EnabledProfileIds = new List<string> { ProfileIds.SideBySideFull } }
+        };
+        var provider = CreateProvider(configuration: configuration);
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        original.MediaStreams = new[]
+        {
+            new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "hevc", Width = null, Height = 1080 }
+        };
+        item.StaticSources = new[] { original };
+
+        var source = Assert.Single(await provider.GetMediaSources(item, CancellationToken.None));
+
+        var video = Assert.Single(source.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+        Assert.Null(video.Width);
+        Assert.Equal(1080, video.Height);
+    }
+
+    [Fact]
+    public async Task AnaglyfinVersionsDeclareNoStereoFormatForTheServerToUndo()
+    {
+        // A version's stereo claim lives in its picture, not in its metadata, and leaving the
+        // field alone is not enough to say that: the item's own source carries a real
+        // Video3DFormat, and a version that inherited it in the name of fidelity would tell the
+        // server to run its own stereo conversion over the frame the profile has just produced.
+        // Jellyfin 12 answers a SideBySide/HalfSideBySide source and fixed request dimensions
+        // with a crop-and-setsar chain straight out of GetFixedSwScaleFilter - the server taking
+        // the file apart again while a version is trying to deliver it.
+        var provider = CreateProvider();
+        var item = CreateMvcItem();
+        var original = CreateOriginalSource();
+        original.Video3DFormat = Video3DFormat.MVC;
+        item.StaticSources = new[] { original };
+
+        var sources = await provider.GetMediaSources(item, CancellationToken.None);
+
+        Assert.NotEmpty(sources);
+        foreach (var source in sources)
+        {
+            Assert.Null(source.Video3DFormat);
+        }
+
+        // The item's own source keeps its own declaration.
+        Assert.Equal(Video3DFormat.MVC, original.Video3DFormat);
     }
 
     [Fact]
@@ -860,7 +1065,10 @@ public class AnaglyfinMediaSourceProviderTests
             Formats = new[] { "matroska" },
             MediaStreams = new[]
             {
-                new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "hevc" },
+                // A probed 1080p MVC track: the per-eye frame ffprobe reports for the sample
+                // this feature was debugged on, which is the number the geometry assertions
+                // below double or keep.
+                new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "hevc", Width = 1920, Height = 1080 },
                 new MediaStream { Type = MediaStreamType.Audio, Index = 1, Codec = "aac", Language = "eng" },
                 new MediaStream { Type = MediaStreamType.Subtitle, Index = 2, Language = "eng" },
                 new MediaStream { Type = MediaStreamType.Subtitle, Index = 3, Language = "spa" }

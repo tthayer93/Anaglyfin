@@ -371,7 +371,7 @@ public class WrapperArgumentRewriterTests
                 "-hide_banner", "-loglevel", "warning",
                 "-i", SourcePath,
                 "-map", "0:v:view:all",
-                "-vf", "scale=iw/2:ih:flags=bicubic,format=yuv420p", "-sn",
+                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
                 "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
                 "-f", "hls", "-hls_time", "6", "playlist.m3u8"
             },
@@ -379,7 +379,7 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
-    public void RedCyanAppendsItsFilterToTheVideoFilterChainTheServerAlreadyAskedFor()
+    public void RedCyanRunsItsConversionInFrontOfTheVideoFilterChainTheServerAlreadyAskedFor()
     {
         var arguments = new List<string>
         {
@@ -399,9 +399,11 @@ public class WrapperArgumentRewriterTests
                 "-i", SourcePath,
                 "-map", "0:v:view:all", "-sn",
 
-                // One -vf, comma-chained, server filter first and the profile conversion
-                // behind it: replacing the chain would silently drop server-side filtering.
-                "-vf", "scale=1920:1080,stereo3d=sbsl:arcd,format=yuv420p",
+                // One -vf, comma-chained, with the profile conversion first and the server's
+                // filters behind it: replacing the chain would silently drop server-side
+                // filtering, and putting the conversion last would have the server scale the
+                // frame the profile has not converted yet.
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p,scale=1920:1080",
                 "-map", "0:a", "-c:v", "libx264",
                 "-f", "hls", "-hls_time", "6", "playlist.m3u8"
             },
@@ -411,8 +413,8 @@ public class WrapperArgumentRewriterTests
     [Fact]
     public void TheLastVideoFilterChainOnTheCommandIsTheOneTheProfileExtends()
     {
-        // FFmpeg keeps the last value of a repeated option, so appending to the first one
-        // would be appending to a chain that never runs.
+        // FFmpeg keeps the last value of a repeated option, so extending the first one would be
+        // writing into a chain that never runs.
         var arguments = new List<string>
         {
             "-i", Marker(ProfileIds.AnaglyphRedCyanDubois),
@@ -428,8 +430,70 @@ public class WrapperArgumentRewriterTests
                 "-i", SourcePath,
                 "-map", "0:v:view:all", "-sn",
                 "-vf", "scale=1920:1080",
-                "-vf", "format=nv12,stereo3d=sbsl:arcd,format=yuv420p",
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p,format=nv12",
                 "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Theory]
+    [InlineData(ProfileIds.AnaglyphRedCyanDubois, "stereo3d=sbsl:arcd,format=yuv420p")]
+    [InlineData(ProfileIds.SideBySideHalf, "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p")]
+    public void TheProfileConvertsBeforeTheServerScales(string profileId, string profileFilter)
+    {
+        // The order this asserts is the whole reason the wrapper touches the chain at all. The
+        // server writes its scale from the ceilings the request settled on, and those default to
+        // the width and height this source reports - the converted frame - while the scale itself
+        // is evaluated at run time against whatever frame reaches it. With the conversion behind
+        // the chain, a full-SBS version reaches that scale as 3840x1080 and leaves it as
+        // 1920x540: the server shrank a picture the profile had not produced yet, and the
+        // profile's own work then landed on the shrunken one.
+        var serverChain = "fps=24,scale=trunc(min(max(iw\\,ih*1.7778)\\,min(1920\\,1080*1.7778))/2)*2:trunc(min(max(iw/1.7778\\,ih)\\,min(1920/1.7778\\,1080))/2)*2,format=yuv420p";
+
+        var arguments = new List<string>
+        {
+            "-i", Marker(profileId),
+            "-map", "0:v", "-map", "0:a",
+            "-vf", serverChain,
+            "-c:v", "libx264", "-b:v", "8000k", "-f", "hls", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        var merged = ValueAfter(result.Arguments, WrapperArgumentRewriter.VideoFilterArgument);
+
+        // The profile's conversion is the head of the chain, the server's chain survives behind
+        // it byte for byte, and the two are one option rather than a repeated -vf whose first
+        // value FFmpeg would ignore.
+        Assert.StartsWith(profileFilter + ",", merged, StringComparison.Ordinal);
+        Assert.Equal(profileFilter + "," + serverChain, merged);
+        Assert.Single(result.Arguments, token => token == WrapperArgumentRewriter.VideoFilterArgument);
+
+        // The quality arguments living outside -vf are the server's and stay untouched.
+        Assert.Contains("-b:v", result.Arguments, StringComparer.Ordinal);
+        Assert.Contains("8000k", result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void AProfileThatConvertsNothingLeavesTheServersChainAlone()
+    {
+        // 2D base has no chain of its own to put in front, so the server's filters run exactly as
+        // written - the same decoder frame they were sized for.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.TwoDBase),
+            "-vf", "scale=1920:1080,subtitles=filename='/movies/eng.srt'",
+            "-map", "0:v", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-vf", "scale=1920:1080,subtitles=filename='/movies/eng.srt'",
+                "-map", "0:v", "playlist.m3u8"
             },
             result.Arguments);
     }
@@ -572,6 +636,44 @@ public class WrapperArgumentRewriterTests
                 "-map", "0:a", "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
             },
             result.Arguments);
+    }
+
+    [Fact]
+    public void TheCustomGrayscaleGraphIsNeverReorderedIntoTheServersChain()
+    {
+        // The linear profiles get in front of the server's chain because their conversion IS a
+        // stage of that chain. This profile's conversion is a filtergraph of its own, and a graph
+        // has no position inside somebody else's linear chain: it is written as its own
+        // -filter_complex option, the server's -vf is left byte for byte alone, and nothing is
+        // quietly re-plumbed on the assumption that two graphs can be interleaved. (FFmpeg is
+        // blunter still than the ordering question: a stream fed from a complex graph takes no
+        // simple -vf at all - "Simple and complex filtering cannot be used together for the same
+        // stream" - which is a limitation of this profile's shape rather than of the merge, and
+        // is why its burn-in travels behind the mapped label as its own stage.)
+        var serverChain = "scale=trunc(min(max(iw\\,ih*1.7778)\\,min(1920\\,1080*1.7778))/2)*2:trunc(min(max(iw/1.7778\\,ih)\\,min(1920/1.7778\\,1080))/2)*2";
+
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.CustomGrayscale),
+            "-map", "0:v", "-map", "0:a",
+            "-vf", serverChain,
+            "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+
+        // The graph stands alone, and it carries no text from the server's chain.
+        var graph = ValueAfter(result.Arguments, WrapperArgumentRewriter.FilterComplexArgument);
+        Assert.Equal(CustomGraph, graph);
+        Assert.DoesNotContain("scale=trunc", graph, StringComparison.Ordinal);
+
+        // The server's chain survives unchanged, and the profile's map still precedes it.
+        Assert.Equal(serverChain, ValueAfter(result.Arguments, WrapperArgumentRewriter.VideoFilterArgument));
+        Assert.True(
+            result.Arguments.ToList().IndexOf("-map") < result.Arguments.ToList().IndexOf("-vf"),
+            string.Join(' ', result.Arguments));
     }
 
     // ----- 2D base ---------------------------------------------------------------------
@@ -1069,7 +1171,7 @@ public class WrapperArgumentRewriterTests
             {
                 "-i", SourcePath,
                 "-map", "0:v:view:all",
-                "-vf", "scale=iw/2:ih:flags=bicubic,format=yuv420p", "-sn",
+                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
                 "-map", "0:0", "-map", "0:10", "-map", "1:2", "playlist.m3u8"
             },
             result.Arguments);
@@ -1151,7 +1253,7 @@ public class WrapperArgumentRewriterTests
                 "-hide_banner", "-loglevel", "warning",
                 "-i", SourcePath,
                 "-map", "0:v:view:all",
-                "-vf", "scale=iw/2:ih:flags=bicubic,format=yuv420p", "-sn",
+                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
                 "-map", "0:1",
                 "-codec:v:0", "libx264", "-preset:v", "medium", "-b:v", "8000k",
                 "-codec:a:0", "copy",
@@ -1291,4 +1393,21 @@ public class WrapperArgumentRewriterTests
 
     private static string InputOf(IReadOnlyList<string> arguments)
         => arguments[arguments.ToList().IndexOf(WrapperArgumentRewriter.InputFileArgument) + 1];
+
+    /// <summary>
+    /// The value an option carries in a rewritten vector, or <c>null</c> when the vector does not
+    /// carry that option at all.
+    /// </summary>
+    private static string? ValueAfter(IReadOnlyList<string> arguments, string option)
+    {
+        for (var index = 0; index < arguments.Count - 1; index++)
+        {
+            if (string.Equals(arguments[index], option, StringComparison.Ordinal))
+            {
+                return arguments[index + 1];
+            }
+        }
+
+        return null;
+    }
 }

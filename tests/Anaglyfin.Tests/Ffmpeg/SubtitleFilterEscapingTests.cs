@@ -79,8 +79,13 @@ public class SubtitleFilterEscapingTests
         var filters = FilterGraphTokenizer.DecodeGraph(rewrite.InsertArguments[^1]);
 
         Assert.Equal(
-            new[] { "scale", "format", "subtitles" },
+            new[] { "scale", "setsar", "format", "subtitles" },
             filters.Select(filter => filter.Name));
+
+        // The half-SBS chain's own square-pixel declaration is a stage of its own in front of
+        // the burn-in, spelled with the option name the pinned FFmpeg's own option table
+        // answers to ("sar"), and it does not open up into two filters on the way.
+        Assert.Equal("1", FilterGraphTokenizer.DecodeOptions(filters[1].Options!)["sar"]);
 
         var options = FilterGraphTokenizer.DecodeOptions(filters[^1].Options!);
         Assert.Equal(2, options.Count);

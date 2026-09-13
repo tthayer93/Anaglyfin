@@ -30,7 +30,8 @@ namespace Anaglyfin.Ffmpeg;
 /// </item>
 /// <item>
 /// Half SBS derives from that same all-view output by scaling the combined frame
-/// (<c>scale=iw/2:ih</c>), not by decoding eyes separately and not by a stereo3d
+/// (<c>scale=iw/2:ih</c>) and then declaring the result square-pixel
+/// (<c>setsar=sar=1</c>), not by decoding eyes separately and not by a stereo3d
 /// re-tag, which only changes the pixel aspect ratio.
 /// </item>
 /// <item>
@@ -70,10 +71,49 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     public const string FormatYuv420PFilter = "format=yuv420p";
 
     /// <summary>
+    /// Declares the frame it follows square-pixel, which is what every Anaglyfin profile's
+    /// output is.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The filter carries no pixels; it carries the pixel <em>shape</em>, and the one place
+    /// that shape is wrong by construction is the half-SBS scale below. Spelled
+    /// <c>setsar=sar=1</c> rather than the shorter <c>setsar=1</c> for the same reason the
+    /// server spells it that way in its own stereo chains: the option name in the text says
+    /// what the number means, and both spellings reach the same ratio (the shorthand lands on
+    /// the filter's first option, <c>sar</c>, in FFmpeg's own option table).
+    /// </para>
+    /// <para>
+    /// The alternative that would need no extra filter - <c>scale</c>'s own
+    /// <c>reset_sar</c> option - exists only in recent FFmpeg builds, while
+    /// <c>setsar</c> has been in every FFmpeg anyone deploys.
+    /// </para>
+    /// </remarks>
+    public const string SquareSampleAspectRatioFilter = "setsar=sar=1";
+
+    /// <summary>
     /// Half SBS conversion: scale the combined native SBS frame to half width. Real
     /// scaling, so the output is genuinely half-side-by-side.
     /// </summary>
-    public const string HalfSideBySideScaleFilter = "scale=iw/2:ih:flags=bicubic,format=yuv420p";
+    /// <remarks>
+    /// Scaling half the width of a frame whose eyes are already laid side by side is the whole
+    /// conversion, and it is why no <c>stereo3d</c> re-tag appears here: a re-tag changes the
+    /// pixel aspect and leaves two full-size eyes in one frame.
+    /// <para>
+    /// What scaling does on the way out is the reason the chain does not stop at the scale:
+    /// <c>scale</c> keeps the picture's display aspect by adjusting the sample aspect ratio it
+    /// hands on, so halving the width of a square-pixel frame hands on a 2:1 one
+    /// (<c>vf_scale.c</c>: out SAR = in SAR × in size / out size). Nothing in the encoded
+    /// file's pixels is wrong - 1920x1080 of half-SBS is exactly the frame this profile sells -
+    /// but every consumer that trusts the metadata the frame travels with now stretches it
+    /// sideways, and so does anything downstream that scales from it. Declaring 1:1 behind the
+    /// scale is therefore part of the conversion rather than a cosmetic touch: it is what makes
+    /// the reported 1920x1080 of this profile mean 1920x1080 of square pixels all the way to
+    /// the player.
+    /// </para>
+    /// </remarks>
+    public const string HalfSideBySideScaleFilter =
+        "scale=iw/2:ih:flags=bicubic," + SquareSampleAspectRatioFilter + "," + FormatYuv420PFilter;
 
     /// <summary>Filter graph output label of the custom grayscale anaglyph.</summary>
     public const string CustomAnaglyphOutputLabel = "[anaglyfin_custom]";
