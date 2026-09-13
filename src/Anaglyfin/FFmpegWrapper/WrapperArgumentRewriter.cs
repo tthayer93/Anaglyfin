@@ -42,8 +42,9 @@ namespace Anaglyfin.FFmpegWrapper;
 /// provider put into it. Then, through <see cref="IFfmpegProfileArgumentBuilder"/>, the
 /// profile's own view selection and filter chain are inserted, video maps that would
 /// compete with them are removed, subtitle stream maps give way to <c>-sn</c> when the
-/// profile burns subtitles in, and a linear profile filter is appended to an existing
-/// <c>-vf</c> chain rather than replacing it. An audio map that is already on the command,
+/// profile burns subtitles in, and a linear profile filter goes <em>in front of</em> an
+/// existing <c>-vf</c> chain rather than replacing it or landing behind it - see
+/// <see cref="PrependToFilterChain"/>. An audio map that is already on the command,
 /// the encoder, the muxer and the HLS arguments are never touched: they are Jellyfin's
 /// business, and the product requirement is that Anaglyfin playback differs from stock
 /// playback in picture and not in delivery. The one audio argument this rewriter does
@@ -452,7 +453,7 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         {
             if (existingFilterValueIndex >= 0)
             {
-                replacements[existingFilterValueIndex] = AppendToFilterChain(arguments[existingFilterValueIndex], profileFilter);
+                replacements[existingFilterValueIndex] = PrependToFilterChain(profileFilter, arguments[existingFilterValueIndex]);
             }
             else
             {
@@ -530,16 +531,67 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     }
 
     /// <summary>
-    /// Appends the profile's chain to an existing <c>-vf</c> chain.
+    /// Puts the profile's chain in front of an existing <c>-vf</c> chain.
     /// </summary>
+    /// <param name="profileFilter">The profile's own chain, conversion first, burn-in last.</param>
+    /// <param name="existingChain">The chain already on the command, written by the server.</param>
+    /// <returns>
+    /// One comma-chained <c>-vf</c> value with the profile's filters running first. An empty
+    /// existing chain is not chained, because FFmpeg reads a leading comma as an empty filter
+    /// name.
+    /// </returns>
     /// <remarks>
-    /// Comma-chaining keeps whatever the command already asked for and puts the profile
-    /// conversion behind it, which is also where a burn-in belongs; replacing the chain
-    /// would silently drop server-side filtering. An empty existing chain is not chained,
-    /// because FFmpeg reads a leading comma as an empty filter name.
+    /// <para>
+    /// <b>Why in front.</b> A <c>-vf</c> chain runs left to right on the frames the previous
+    /// filter produced, and the server's chain is sized for the picture this source says it
+    /// carries: its <c>scale</c> clamps against the <c>MaxWidth</c>/<c>MaxHeight</c> the request
+    /// settled on, and those default to the width and height the version reports - which is the
+    /// frame <em>after</em> the profile conversion (<see cref="MediaSources.ProfileVideoGeometry"/>).
+    /// Landing the conversion behind that chain therefore runs the numbers in the wrong order:
+    /// the server scales the un-converted all-view frame to the box of the converted one, and on
+    /// a full-SBS version of a 1920x1080 source that turns 3840x1080 into 1920x540 before the
+    /// profile's own work even starts. In front, the sequence reads the way the pipeline is
+    /// built - convert, then whatever the server asks of the converted picture - and at native
+    /// quality the server's scale lands on an identity.
+    /// </para>
+    /// <para>
+    /// <b>What is kept, and why the server's scale is not simply dropped.</b> Nothing of the
+    /// server's chain is removed here, because the chain is not decoration: it carries the
+    /// client's resolution ceiling and the bitrate ladder's rung, which are the server's answer
+    /// to the requesting device rather than a mistake to correct. A wrapper that deleted filters
+    /// it did not write would also have to parse them, and nothing on a received command line is
+    /// ever treated as filter syntax (see the class remarks). Chaining is the same text-safety
+    /// class as before: one string is written in front of another and no foreign text is read.
+    /// </para>
+    /// <para>
+    /// <b>What the server's chain sees at the profile's output.</b> Every converting profile
+    /// ends its own chain at <c>format=yuv420p</c> and, for half SBS, at an explicit square
+    /// sample aspect ratio, so the frames arriving at the server's filters are software frames
+    /// of the geometry the version reports. A following <c>format=yuv420p</c> is then a no-op,
+    /// and a following <c>format=nv12</c> - the QSV upload form - is the server doing what it
+    /// always does with a software frame on its way to an hardware encoder. No hardware <em>decode</em>
+    /// filter can be waiting behind the profile's position either: the codec this provider
+    /// reports is never one the server can request a hardware decoder for, so these sources are
+    /// software-decoded by construction and their chain starts in software too.
+    /// </para>
+    /// <para>
+    /// <b>Subtitle burn-in.</b> A profile's burn-in is already the last stage of its own chain,
+    /// so this ordering renders text onto the finished profile picture and ahead of the server's
+    /// scale, which is where a burn-in belongs: at the size the picture was converted to, and
+    /// once. Behind the server's chain it would be scaled with everything else instead.
+    /// </para>
+    /// <para>
+    /// <b>The one profile this does not apply to.</b> The custom grayscale anaglyph converts
+    /// through a <c>-filter_complex</c> graph, and a graph is not a stage in somebody else's
+    /// linear chain: it is its own graph, it is inserted as its own option, and nothing here
+    /// reorders it. FFmpeg then refuses a simple <c>-vf</c> on a stream fed from a complex graph
+    /// outright ("Simple and complex filtering cannot be used together for the same stream"), so
+    /// for that profile the merge below is not a question that arises - its burn-in travels as
+    /// its own stage behind the mapped label, exactly as before this ordering existed.
+    /// </para>
     /// </remarks>
-    private static string AppendToFilterChain(string existingChain, string profileFilter)
-        => string.IsNullOrEmpty(existingChain) ? profileFilter : existingChain + "," + profileFilter;
+    private static string PrependToFilterChain(string profileFilter, string existingChain)
+        => string.IsNullOrEmpty(existingChain) ? profileFilter : profileFilter + "," + existingChain;
 
     private static bool IsInputOption(string? token)
         => string.Equals(token, InputFileArgument, StringComparison.Ordinal);
