@@ -111,38 +111,45 @@ public class MvcSourceCandidateTests
     }
 
     [Fact]
-    public void FromMediaSourceDoesNotInheritTheTagsItWasNotGiven()
+    public void FromMediaSourceCarriesNoTagsBecauseASourceHasNone()
     {
-        // A media source carries no tags of its own and the item's tags describe the item's own
-        // file, so a caller that wanted a sibling version judged must say so by giving no tags:
-        // the alternative is one file's metadata making another file 3D.
+        // A media source carries no tags of its own, and the item's tags describe the item's own
+        // file - so a source asked about through this door is judged by what its file says, and
+        // a caller that wanted the item's signals is asking about the item and should hold it.
         var source = new MediaSourceInfo
         {
             Name = "1080p",
             Path = "/movies/Ready Player One (2018)/Ready Player One (2018) - 1080p.mkv"
         };
 
-        var decision = _detector.Detect(MvcSourceCandidate.FromMediaSource(source));
+        var candidate = MvcSourceCandidate.FromMediaSource(source);
+
+        Assert.Null(candidate.Tags);
+
+        var decision = _detector.Detect(candidate);
 
         Assert.False(decision.IsEligible);
         Assert.Equal(MvcEligibilityReason.NoMvcSignal, decision.Reason);
     }
 
     [Fact]
-    public void FromMediaSourceUsesTheTagsOfTheItemThatOwnsIt()
+    public void FromItemIsTheDoorForTheItemItsOwnFile()
     {
-        // The other half of that call: asked about the source that IS the item, the caller hands
-        // over the item's tags, and they count exactly as they do through FromItem.
-        var source = new MediaSourceInfo
+        // The other half of that division: the item's own file is the one file its name and tags
+        // describe, and it is asked about through FromItem - which is what a movie named for its
+        // 3D-ness while its file is not still gets detected by.
+        var item = new Movie
         {
-            Name = "Avatar",
+            Name = "Avatar 3D MVC",
             Path = "/movies/Avatar (2009)/Avatar (2009).mkv"
         };
 
-        var decision = _detector.Detect(MvcSourceCandidate.FromMediaSource(source, new[] { "3D MVC" }));
+        var candidate = MvcSourceCandidate.FromItem(item);
+
+        var decision = _detector.Detect(candidate);
 
         Assert.True(decision.IsEligible);
-        Assert.Equal(MvcEligibilityReason.ItemTagDeclaresMvc, decision.Reason);
+        Assert.Equal(MvcEligibilityReason.ItemNameDeclaresMvc, decision.Reason);
     }
 
     [Fact]

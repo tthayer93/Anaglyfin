@@ -88,36 +88,32 @@ public sealed class MvcSourceCandidate
     /// One static media source - one alternate version of the item the server is being asked
     /// about - as the item's own media-source API reports it.
     /// </param>
-    /// <param name="itemTags">
-    /// Tags of the item the source belongs to, or <c>null</c>. A media source carries no tags
-    /// of its own, so a caller that has the owning item's tags can hand them over; see the
-    /// remarks for when that is and is not a fair claim to make.
-    /// </param>
     /// <returns>A candidate carrying the source's path, its own version label and its declared 3D format.</returns>
     /// <remarks>
     /// <para>
     /// This is the source-shaped twin of <see cref="FromItem"/>, and it exists because an item
-    /// is not always one file. A movie assembled from a stack or from linked alternate versions
-    /// answers a playback-info request with one static media source per version, and only one of
-    /// those files may be the MVC one: read the item's own fields and every version of
-    /// <c>Ready Player One</c> inherits the primary file's answer, which is the opposite of a
+    /// is not always one file. A movie assembled from a stack, or carrying linked alternate
+    /// versions, answers a playback-info request with one static media source per version, and
+    /// only one of those files may be the MVC one: read the item's own fields and every version
+    /// of <c>Ready Player One</c> inherits the primary file's answer, which is the opposite of a
     /// detection. The three signals here are the ones a source genuinely owns - the file it names,
-    /// the label the server put on that file, and the stereo format declared for it.
+    /// the label the server put on that file, and the stereo format recorded for it.
     /// </para>
     /// <para>
-    /// <see cref="Video3DFormat"/> is the item's own value copied onto its own source by the
-    /// server, so a source that is not the item reports the format of its own file rather than
-    /// the primary's.
+    /// <see cref="Video3DFormat"/> is not inherited either: the server copies the value of the
+    /// item a source belongs to onto that source and onto no other, so a source that is not the
+    /// item carries the format of its own file rather than the primary's.
     /// </para>
     /// <para>
-    /// <paramref name="itemTags"/> is a caller's judgement call, not a free inheritance: an item's
-    /// tags describe the item, which is the item's own file and nothing else's, so a caller asking
-    /// about a <em>sibling</em> version would be crediting one file with evidence another file
-    /// never gave. The provider therefore passes tags only for the source that is the item.
+    /// <see cref="Tags"/> is left empty because a media source has none and the item's tags
+    /// describe the item, which is one particular file. A caller asking about that file should be
+    /// holding the item and calling <see cref="FromItem"/>, which does carry them; a caller
+    /// asking about a <em>sibling</em> version must not credit one file with evidence another file
+    /// never gave.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="source"/> is <c>null</c>.</exception>
-    public static MvcSourceCandidate FromMediaSource(MediaSourceInfo source, IReadOnlyList<string>? itemTags = null)
+    public static MvcSourceCandidate FromMediaSource(MediaSourceInfo source)
     {
         ArgumentNullException.ThrowIfNull(source);
 
@@ -129,7 +125,7 @@ public sealed class MvcSourceCandidate
             Path = source.Path,
             Name = source.Name,
             Video3DFormat = source.Video3DFormat,
-            Tags = itemTags
+            Tags = null
         };
     }
 }

@@ -245,6 +245,15 @@ negative: Movie.2010.3D.1080p.HSBS.mkv
 negative: Movie.2010.3D.1080p.mkv
 ```
 
+And one item that is several files - a movie folder whose primary version is plain and whose
+MVC version sits beside it, which is the layout that shows up as a stack or as local alternate
+versions in the client's version menu:
+
+```text
+/Movies/Ready Player One (2018)/Ready Player One (2018) - 1080p.mkv
+/Movies/Ready Player One (2018)/Ready Player One (2018) - 3D mvc.mkv
+```
+
 The detector is intentionally conservative:
 
 - `Video3DFormat=MVC` metadata is enough by itself.
@@ -253,6 +262,10 @@ The detector is intentionally conservative:
 - Plain `3D` does not make an item eligible.
 - SBS/TAB names without an MVC marker are ineligible.
 - Text that merely contains `mvc` inside a longer word is rejected.
+- The signals are read per **media source**, not only per item: each file an item can be played
+  from is judged by its own path, its own version label and the stereo format recorded for it.
+  The item's own tags and name describe the item's own file and are applied to that file alone,
+  never to a sibling version.
 
 - [ ] A file with explicit `MVC` in the file name produces Anaglyfin versions after a scan
   or metadata refresh.
@@ -261,6 +274,8 @@ The detector is intentionally conservative:
   produce Anaglyfin versions.
 - [ ] A non-video item does not produce Anaglyfin versions.
 - [ ] `.strm` items and disc-image-like items do not produce Anaglyfin versions.
+- [ ] A stacked movie whose primary file is plain and whose MVC version sits beside it produces
+      Anaglyfin versions after a scan, even though the item itself reports no 3D at all. See V5.1.
 
 If detection is wrong, record the item path, `Video3DFormat`, tags, and whether Anaglyfin
 logged a no-source decision. Those decisions are Debug lines from
@@ -284,8 +299,13 @@ Then look for:
 
 ```text
 Anaglyfin offers 4 versions for <item name>.
-Anaglyfin offers no versions for <item name>: <decision>.
+Anaglyfin offers no versions for <item name>: no media source of it is 3D MVC.
+Anaglyfin offers no versions for the media source <version label> of <item name>: <decision>.
 ```
+
+The second and third lines are the per-file decisions: an item that is several files is asked
+about once per file, so a movie whose MVC version was missed shows up as a refusal naming that
+version rather than as silence about the item.
 
 ## V5. Alternate media source list
 
@@ -325,7 +345,7 @@ For each alternate source, check:
 
 | Field | Expected |
 | --- | --- |
-| `Id` | GUID, lower-case `N` format, derived from the item id and the profile id |
+| `Id` | GUID, lower-case `N` format, derived from the media source's identity and the profile id |
 | `Name` | human-readable profile display name |
 | `Path` | Anaglyfin marker URL, carrying `video=<index>` |
 | `Protocol` | `Http` |
@@ -377,6 +397,55 @@ For each alternate source, check:
 - [ ] Resume position and seek behavior remain reasonable when switching between versions.
 - [ ] The original library source remains playable and unchanged.
 - [ ] Changing enabled profiles changes the offered versions without a server restart.
+
+### 5.1 Stacked items and alternate versions
+
+A movie assembled from a stack, or carrying local or linked alternate versions, is **one**
+library item over **several** files. Its own `Path`, `Name` and `Video3DFormat` describe the
+primary file only; the other versions arrive as additional static media sources of the same item
+and, in the case of a local alternate version, are not listable items a client could open by
+themselves. Asking such an item whether it is 3D therefore asks about the primary file, and a
+movie that is 3D in one of its versions answers "no".
+
+This is the layout to reproduce it with:
+
+```text
+/Movies/Ready Player One (2018)/Ready Player One (2018) - 1080p.mkv
+/Movies/Ready Player One (2018)/Ready Player One (2018) - 3D mvc.mkv
+```
+
+Request playback info for the movie item itself - not for the MVC file, which the client cannot
+address directly - and expect the item's two originals followed by the four profiles of the MVC
+one:
+
+```text
+1080p                          original, untouched
+3D mvc                         original, untouched
+3D Anaglyph Red/Cyan (Dubois)  of 3D mvc
+3D Full Side-by-Side           of 3D mvc
+3D Half Side-by-Side           of 3D mvc
+2D Base                        of 3D mvc
+```
+
+- [ ] The stack root's playback info includes Anaglyfin versions even though the item's own
+      `Path`, `Name` and `Video3DFormat` carry no 3D signal.
+- [ ] Every Anaglyfin source built from a stacked version names **that version's file** in its
+      marker (`source=`), and reports that file's duration, container, size and stream list - not
+      the primary file's.
+- [ ] Each Anaglyfin source id is derived from the media source it converts: two files of one item
+      never share an id, and every id is still a lower-case `N` GUID that differs from the item id
+      and from the id of any version it was derived from.
+- [ ] Ids are stable across repeated playback-info requests and across a server restart.
+- [ ] With one eligible MVC file among the versions the labels are unchanged: `3D Full
+      Side-by-Side`, `3D Half Side-by-Side`, `3D Anaglyph Red/Cyan (Dubois)`, `2D Base`.
+- [ ] With more than one eligible MVC file, every label names the file it converts, e.g.
+      `3D mvc / 3D Full Side-by-Side`, and each profile appears once per eligible file.
+- [ ] Nothing is offered twice: one eligible file yields one source per profile, and the total
+      number of Anaglyfin sources equals profiles x eligible files.
+- [ ] A stack with no MVC file among its versions gets no Anaglyfin sources at all.
+- [ ] The static sources themselves are untouched: the primary 1080p source and the MVC source
+      both keep their real codec, frame size, runtime and stereo declaration.
+- [ ] A single-file MVC movie is unaffected: same ids, same labels, same four versions.
 
 ### Why `SupportsDirectStream: false` is not a check
 
@@ -947,7 +1016,7 @@ checks are optional unless a failure shows a provider-created marker being refus
 | V2 | Admin page | Page renders and settings round-trip |  |  |
 | V3 | Wrapper deployment | Jellyfin -> wrapper -> FFmpeg-mvc works |  |  |
 | V4 | Detection | MVC-positive items offer versions; negatives do not |  |  |
-| V5 | Media sources | GUID source ids, and a video codec no profile can stream-copy |  |  |
+| V5 | Media sources | GUID source ids per media source, stacked alternate versions, and a video codec no profile can stream-copy |  |  |
 | V6 | Marker transport | Marker survives one token, names the video stream, never reaches FFmpeg child |  |  |
 | V7 | Profile commands | Required profile fragments appear behind a real video encoder |  |  |
 | V8 | Pass-through | Ordinary playback remains unchanged |  |  |

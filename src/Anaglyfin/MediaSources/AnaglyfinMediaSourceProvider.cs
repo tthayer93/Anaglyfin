@@ -493,6 +493,14 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
     /// is what covers both without ever answering twice.
     /// </para>
     /// <para>
+    /// <b>The item is the witness for its own file, and only for that one.</b> A source is a
+    /// report about a file, so the item's tags and display name - the signals a user or a
+    /// metadata provider gave the file, which no media source repeats - travel with the source
+    /// that is the item and with no other. A sibling version is judged by the file it names, the
+    /// label the server read off that file, and the stereo format recorded for it: nothing that
+    /// belongs to a neighbour.
+    /// </para>
+    /// <para>
     /// Sources are read through the item's own media-source API with path substitution off,
     /// because the wrapper needs server-side paths, and are kept in the order the server
     /// gave them (its own source first). The item's linked alternate versions arrive through
@@ -515,16 +523,17 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
                 continue;
             }
 
-            // A source keyed by the item's own id is the item: it is the same file, and the
-            // item's tags describe it. Any other source is a different file and may not be
-            // credited with the primary's signals - which is the whole reason the enumeration
-            // exists.
+            // A source keyed by the item's own id (or path) is the item's own file, and the item
+            // is the richer witness for it: it carries the tags and the display name a user or
+            // metadata manager gave that file, which no media source repeats. Any other source is
+            // a different file and may not be credited with those signals - which is the whole
+            // reason the enumeration exists.
             var namesTheItemSelf = NamesTheItem(item, source);
             namesTheItem |= namesTheItemSelf;
 
-            var candidate = MvcSourceCandidate.FromMediaSource(
-                source,
-                namesTheItemSelf ? item.Tags : null);
+            var candidate = namesTheItemSelf
+                ? MvcSourceCandidate.FromItem(item)
+                : MvcSourceCandidate.FromMediaSource(source);
 
             var decision = _detector.Detect(candidate);
             if (decision.IsEligible)

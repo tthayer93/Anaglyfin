@@ -1375,27 +1375,33 @@ public class AnaglyfinMediaSourceProviderTests
     }
 
     [Fact]
-    public async Task ASiblingVersionIsNotGivenTheItemTagsItsOwnFileNeverClaimed()
+    public async Task TheItemAnswersForItsOwnFileAndNotForASibling()
     {
-        // Tags describe the item, which is its own file. Crediting a sibling version with them
-        // would let the primary's metadata decide the sibling's playability - the same
-        // cross-file contamination this enumeration exists to remove, arriving from the other
-        // direction.
+        // A media source is a report about a file, so the item's name and tags - the signals a
+        // user or a metadata provider gave its file, which no media source repeats - travel with
+        // the source that is the item and with no other. Crediting a sibling version with them
+        // would let the primary's metadata decide the sibling's playability: the same cross-file
+        // contamination the enumeration exists to remove, arriving from the other direction.
         var detector = new ScriptedDetector();
         var provider = CreateProvider(detector: detector);
         var item = CreateStackedMovie();
+        item.Name = "Ready Player One (2018) 3D MVC";
         item.Tags = new[] { "3D MVC" };
 
         await provider.GetMediaSources(item, CancellationToken.None);
 
         Assert.Equal(2, detector.Candidates.Count);
 
-        // The source that is the item answers with the item's tags, because they describe it.
+        // The source that is the item answers as the item: its own path, the name and the tags it
+        // was given.
         Assert.Equal(PrimaryVersionPath, detector.Candidates[0].Path);
+        Assert.Equal("Ready Player One (2018) 3D MVC", detector.Candidates[0].Name);
         Assert.Equal(new[] { "3D MVC" }, detector.Candidates[0].Tags ?? Array.Empty<string>());
 
-        // Its sibling answers for itself and nothing else.
+        // Its sibling answers for itself and nothing else: the label the server read off its own
+        // file, and no metadata borrowed from a neighbour.
         Assert.Equal(MvcVersionPath, detector.Candidates[1].Path);
+        Assert.Equal("3D mvc", detector.Candidates[1].Name);
         Assert.Null(detector.Candidates[1].Tags);
     }
 
