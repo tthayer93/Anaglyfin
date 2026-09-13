@@ -90,30 +90,58 @@ So an alternate source reports its video as `mvc`. The value of that name is tha
 contains it - no client direct-play list and no client transcode profile - which makes stream
 copy impossible for every client and every permission. It is deliberately not a claim about
 the wire format: ffprobe reports an MVC track as `hevc`, and the version's report changes that
-field and no other. The stream carrying it is a clone of the probed stream - a JSON round-trip
-of the model type rather than a hand-copied field list, so nothing as visible as an HDR range
-can go missing on the way; the item's original source keeps the objects it was probed with.
+field and the frame size the profile encodes, and no other. The stream carrying them is a clone
+of the probed stream - a JSON round-trip of the model type rather than a hand-copied field list,
+so nothing as visible as an HDR range can go missing on the way; the item's original source keeps
+the objects it was probed with. The wrapper will not run a profile pipeline over a command that
+copies its video anyway (`ServerChoseVideoCopy`), because the copy form of a Jellyfin command
+carries no encoder stack for the profile to write into.
 
-The wrapper will not run a profile pipeline over a command that copies its video anyway
-(`ServerChoseVideoCopy`), because the copy form of a Jellyfin command carries no encoder stack
-for the profile to write into.
+## Reported geometry
+
+A version reports the frame its profile encodes, because that is the frame the server is about to
+size. With a client that asks for no resolution and brings at least the reported bitrate, the
+server defaults the request's `MaxWidth`/`MaxHeight` to the reported video stream's `Width` and
+`Height`, and the software `scale` it writes from those is evaluated against whatever frame
+reaches it. So full SBS - the native all-view output, both eyes side by side - reports double the
+source's width at the source's height, while half SBS, both anaglyph families and 2D base land
+back on the source's own size and report it unchanged. Nothing here is measured or stored: the
+size is derived from the profile's conversion and the source's numbers, so no probe and no cache
+is involved, and a source that named no width gets no invented one. `Video3DFormat` stays unset on
+a version: the server reads a stereo format as an instruction to convert that format to 2D itself,
+which is the opposite of what a source that has already converted the picture wants.
 
 ## Profile command rules
 
 | Profile | Required fragments |
 | --- | --- |
 | `sbs_full` | `-map 0:v:view:all`, `-sn` |
-| `sbs_half` | `-map 0:v:view:all`, `-vf scale=iw/2:ih:flags=bicubic,format=yuv420p`, `-sn` |
+| `sbs_half` | `-map 0:v:view:all`, `-vf scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p`, `-sn` |
 | `anaglyph_arcd` | `-map 0:v:view:all`, `-vf stereo3d=sbsl:arcd,format=yuv420p`, `-sn` |
 | `two_d_base` | marker replacement only |
 | `custom_grayscale` | `-filter_complex <Anaglyfin graph>`, `-map [anaglyfin_custom]`, `-sn` |
 
-Rewritten commands keep Jellyfin's encoder, muxer, HLS, and output choices. The only audio
-argument the rewriter adds is `-map 0:a?` when the server command had no maps at all and the
-profile inserted a video map. Of the server's own maps, a profile that owns the video pipeline
-takes away three shapes: a map that names the video type (`0:v`, `0:v:0`, a graph label), the
-exclusion of that type (`-map -0:v`, which would take the profile's own picture back out of the
-output), and the numbered map the marker's `video=<index>` identifies (`-map 0:<index>`,
+The half-SBS chain's `setsar=sar=1` is not decoration: `scale` keeps the display aspect by
+adjusting the sample aspect ratio it hands on, so halving the width of a square-pixel frame hands
+on a 2:1 one, and the declaration behind it is what makes the reported 1920x1080 mean square
+pixels all the way to the player.
+
+Rewritten commands keep Jellyfin's encoder, muxer, HLS, and output choices. Where a profile's
+conversion is a linear chain and the server already wrote a `-vf`, the profile's filters are
+**prepended** to that chain: the server's scale is sized from the converted geometry the version
+reports and evaluates against the frame that actually reaches it, so a conversion landing behind
+it scales a picture that has not been made yet (a full-SBS version of a 1920x1080 source came out
+of that ordering at 1920x540). Prepending keeps every filter the server wrote - the client's
+resolution ceiling, the ladder's rung, any burn-in - and at native quality the server's scale
+becomes an identity. A `-filter_complex` the server wrote is never reordered or interleaved: a
+graph is not a stage of somebody else's chain, and a profile that owns the video pipeline refuses
+a command that already carries one.
+
+The only audio argument the rewriter adds is `-map 0:a?` when the server command had no maps at
+all and the profile inserted a video map. Of the server's own maps, a profile that owns the video
+pipeline takes away three shapes: a map that names the video type (`0:v`, `0:v:0`, a graph label),
+the exclusion of that type (`-map -0:v`, which would take the profile's own picture back out of
+the output), and the numbered map the marker's `video=<index>` identifies (`-map 0:<index>`,
 `-map 0:<index>?`), which no argv reader can tell video from audio. A map that names any other
 stream stays, and so does any exclusion that does not name video: `-map -0:s` under a profile
 suppressing subtitles is the server agreeing with the profile, and deleting it would put
