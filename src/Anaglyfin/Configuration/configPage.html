@@ -392,7 +392,7 @@
 
                                 // An entry pinning neither device nor client matches nothing,
                                 // so an empty row is dropped instead of stored.
-                                if (entry.deviceId.length > 0 || entry.clientName.length > 0) {
+                                if (entry.DeviceId.length > 0 || entry.ClientName.length > 0) {
                                     entries.push(entry);
                                 }
                             }
@@ -602,11 +602,34 @@
                 }
 
                 function readDeviceRow(row) {
+                    // The entry is spelled the way the settings model spells it, because a save
+                    // posts this object straight through: the endpoint binds an entry's
+                    // properties by the model's own spelling and ignores any other one.
                     return {
-                        deviceId: textOf(deviceRowField(row, 'deviceId')),
-                        clientName: textOf(deviceRowField(row, 'clientName')),
-                        profileId: textOf(deviceRowField(row, 'profileId'))
+                        DeviceId: textOf(deviceRowField(row, 'deviceId')),
+                        ClientName: textOf(deviceRowField(row, 'clientName')),
+                        ProfileId: textOf(deviceRowField(row, 'profileId'))
                     };
+                }
+
+                /*
+                 * A stored entry arrives spelled either way - PascalCase from a plain read of
+                 * the settings endpoint, camelCase from a client that asked for that spelling -
+                 * so the row is filled from whichever spelling is present rather than from the
+                 * one this page happens to write. A property named in both is read as the
+                 * PascalCase one, which is the spelling that reaches the saved settings.
+                 */
+                function entryText(entry, propertyName) {
+                    if (!entry) {
+                        return '';
+                    }
+
+                    var camelCase = propertyName.charAt(0).toLowerCase() + propertyName.substring(1);
+                    var value = Object.prototype.hasOwnProperty.call(entry, propertyName)
+                        ? entry[propertyName]
+                        : entry[camelCase];
+
+                    return typeof value === 'string' ? value : '';
                 }
 
                 function addDeviceRow(container, entry) {
@@ -615,9 +638,9 @@
 
                     fillProfileOptions(deviceRowField(row, 'profileId'));
 
-                    deviceRowField(row, 'deviceId').value = entry && typeof entry.deviceId === 'string' ? entry.deviceId : '';
-                    deviceRowField(row, 'clientName').value = entry && typeof entry.clientName === 'string' ? entry.clientName : '';
-                    deviceRowField(row, 'profileId').value = knownProfileId(entry ? entry.profileId : '', profileIds()[0]);
+                    deviceRowField(row, 'deviceId').value = entryText(entry, 'DeviceId');
+                    deviceRowField(row, 'clientName').value = entryText(entry, 'ClientName');
+                    deviceRowField(row, 'profileId').value = knownProfileId(entryText(entry, 'ProfileId'), profileIds()[0]);
 
                     var remove = row.querySelector('.anaglyfin-deviceDefault-remove');
                     remove.addEventListener('click', function () {
@@ -669,8 +692,9 @@
                     }
                 }
 
-                // The settings endpoint spells properties in camelCase. Reading both spellings
-                // keeps the page honest whichever way the server writing the payload spells it.
+                // A settings response is spelled PascalCase by default, and camelCase when the
+                // client asked the endpoint for that spelling, so both spellings are read. The
+                // page answers in PascalCase only, which is the spelling the endpoint binds.
                 function readProperty(config, propertyName) {
                     if (!config || !propertyName) {
                         return undefined;
@@ -688,14 +712,23 @@
                     return undefined;
                 }
 
+                /*
+                 * The settings endpoint reads a body by the settings model's own spelling and
+                 * ignores any other one: a body naming the camelCase spelling is answered with
+                 * success and binds nothing, so every setting edited on the page came back as
+                 * the model default on the next read. The page therefore writes the spelling the
+                 * endpoint binds, and drops the camelCase twin a response read against the
+                 * camelCase profile left behind, so one property is never spelled two ways in
+                 * the body a save posts.
+                 */
                 function writeProperty(config, propertyName, value) {
                     var camelCase = propertyName.charAt(0).toLowerCase() + propertyName.substring(1);
 
                     if (camelCase !== propertyName) {
-                        delete config[propertyName];
+                        delete config[camelCase];
                     }
 
-                    config[camelCase] = value;
+                    config[propertyName] = value;
                 }
 
                 function showMessage(text) {
