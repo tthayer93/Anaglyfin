@@ -2,6 +2,7 @@ using System;
 using Anaglyfin.Detection;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using Xunit;
 
@@ -9,7 +10,8 @@ namespace Anaglyfin.Tests.Detection;
 
 /// <summary>
 /// Covers how the signals an <see cref="IMvcSourceDetector"/> consumes are read off a
-/// Jellyfin item, which is what the media source provider will hand it.
+/// Jellyfin item and off one of its media sources, which are the two things the media
+/// source provider hands it.
 /// </summary>
 public class MvcSourceCandidateTests
 {
@@ -69,5 +71,90 @@ public class MvcSourceCandidateTests
     public void FromItemRejectsAMissingItem()
     {
         Assert.Throws<ArgumentNullException>(() => MvcSourceCandidate.FromItem(null!));
+    }
+
+    [Fact]
+    public void FromMediaSourceCarriesTheFormatThatSourceDeclares()
+    {
+        // A stacked movie declares its 3D on the version's own media source; reading the item
+        // instead would ask about the wrong file and answer for the wrong file.
+        var source = new MediaSourceInfo
+        {
+            Id = "b05781ed-3d3a-4bf0-a3bd-7f7a1e56b41f",
+            Name = "3D mvc",
+            Path = "/movies/Ready Player One (2018)/Ready Player One (2018) - 3D mvc.mkv",
+            Video3DFormat = Video3DFormat.MVC
+        };
+
+        var decision = _detector.Detect(MvcSourceCandidate.FromMediaSource(source));
+
+        Assert.True(decision.IsEligible);
+        Assert.Equal(MvcEligibilityReason.ItemMetadataDeclaresMvc, decision.Reason);
+    }
+
+    [Fact]
+    public void FromMediaSourceReadsTheLabelTheServerGaveThatFile()
+    {
+        // A local alternate version is named for what distinguishes it, which is exactly where
+        // the 3D marker of a version lives.
+        var source = new MediaSourceInfo
+        {
+            Id = "b05781ed-3d3a-4bf0-a3bd-7f7a1e56b41f",
+            Name = "3D mvc",
+            Path = "/movies/Ready Player One (2018)/Ready Player One (2018).mkv"
+        };
+
+        var decision = _detector.Detect(MvcSourceCandidate.FromMediaSource(source));
+
+        Assert.True(decision.IsEligible);
+        Assert.Equal(MvcEligibilityReason.ItemNameDeclaresMvc, decision.Reason);
+    }
+
+    [Fact]
+    public void FromMediaSourceCarriesNoTagsBecauseASourceHasNone()
+    {
+        // A media source carries no tags of its own, and the item's tags describe the item's own
+        // file - so a source asked about through this door is judged by what its file says, and
+        // a caller that wanted the item's signals is asking about the item and should hold it.
+        var source = new MediaSourceInfo
+        {
+            Name = "1080p",
+            Path = "/movies/Ready Player One (2018)/Ready Player One (2018) - 1080p.mkv"
+        };
+
+        var candidate = MvcSourceCandidate.FromMediaSource(source);
+
+        Assert.Null(candidate.Tags);
+
+        var decision = _detector.Detect(candidate);
+
+        Assert.False(decision.IsEligible);
+        Assert.Equal(MvcEligibilityReason.NoMvcSignal, decision.Reason);
+    }
+
+    [Fact]
+    public void FromItemIsTheDoorForTheItemItsOwnFile()
+    {
+        // The other half of that division: the item's own file is the one file its name and tags
+        // describe, and it is asked about through FromItem - which is what a movie named for its
+        // 3D-ness while its file is not still gets detected by.
+        var item = new Movie
+        {
+            Name = "Avatar 3D MVC",
+            Path = "/movies/Avatar (2009)/Avatar (2009).mkv"
+        };
+
+        var candidate = MvcSourceCandidate.FromItem(item);
+
+        var decision = _detector.Detect(candidate);
+
+        Assert.True(decision.IsEligible);
+        Assert.Equal(MvcEligibilityReason.ItemNameDeclaresMvc, decision.Reason);
+    }
+
+    [Fact]
+    public void FromMediaSourceRejectsAMissingSource()
+    {
+        Assert.Throws<ArgumentNullException>(() => MvcSourceCandidate.FromMediaSource(null!));
     }
 }

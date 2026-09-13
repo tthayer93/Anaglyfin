@@ -41,6 +41,36 @@ public class AnaglyfinMediaSourceProviderTests
 
     private static readonly string ItemKey = ItemId.ToString("N", CultureInfo.InvariantCulture);
 
+    // --- the stacked library this feature was reproduced on -------------------------------
+    //
+    // One Movie item, two files in one folder:
+    //
+    //   /movies/Ready Player One (2018)/Ready Player One (2018) - 1080p.mkv
+    //   /movies/Ready Player One (2018)/Ready Player One (2018) - 3D mvc.mkv
+    //
+    // The library exposes the first as the item and the second as a version of it that no
+    // client can list, so everything the MVC file is known by travels on its media source.
+    private const string StackFolder = "/movies/Ready Player One (2018)";
+
+    private const string PrimaryVersionPath = StackFolder + "/Ready Player One (2018) - 1080p.mkv";
+
+    private const string MvcVersionPath = StackFolder + "/Ready Player One (2018) - 3D mvc.mkv";
+
+    // Its own by a second, and its own by several gigabytes, on purpose: a version that came
+    // out with the primary's runtime or size would be fidelity to the wrong file, and an
+    // assertion could not tell the two apart otherwise.
+    private const long MvcRunTimeTicks = 7_201_000_000L;
+
+    private const long MvcVersionSize = 49_055_603_825L;
+
+    private static readonly Guid MvcVersionItemId = Guid.Parse("7a5d0f2c-1b3e-4c6a-9d84-0f1e2d3c4b5a");
+
+    private static readonly string MvcVersionKey = MvcVersionItemId.ToString("N", CultureInfo.InvariantCulture);
+
+    private static readonly Guid SecondMvcVersionItemId = Guid.Parse("2b6c9d4e-8f1a-47c3-b05d-9e6f2a1c8d73");
+
+    private static readonly string SecondMvcVersionKey = SecondMvcVersionItemId.ToString("N", CultureInfo.InvariantCulture);
+
     // --- identity and interface -------------------------------------------------
 
     [Fact]
@@ -137,6 +167,98 @@ public class AnaglyfinMediaSourceProviderTests
         // ArgumentException; both are argument failures on the same contract.
         Assert.ThrowsAny<ArgumentException>(() => AnaglyfinMediaSourceProvider.BuildMediaSourceId(Guid.Empty, null!, ProfileIds.TwoDBase));
         Assert.ThrowsAny<ArgumentException>(() => AnaglyfinMediaSourceProvider.BuildMediaSourceId(ItemId, MvcMoviePath, " "));
+    }
+
+    [Fact]
+    public void SourceIdIsFoldedFromTheMediaSourceItConverts()
+    {
+        // An item is not always one file, so the item's id alone cannot say which version of
+        // which file this is. The source's own id - which is how the server keys and resolves
+        // it - is the seed, and two files of one item therefore get two ids for one profile.
+        var fromMvcSource = AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(MvcVersionKey, MvcVersionPath, ProfileIds.SideBySideFull);
+
+        Assert.Equal(DeriveGuid(MvcVersionKey + ":" + ProfileIds.SideBySideFull), fromMvcSource);
+        AssertIsLowerCaseGuid(fromMvcSource);
+
+        // Same profile, same item, another file: another id. Folded from the item instead,
+        // these two would be one id, and the second source unreachable.
+        Assert.NotEqual(
+            fromMvcSource,
+            AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(SecondMvcVersionKey, StackFolder + "/Ready Player One (2018) - 3D mvc remux.mkv", ProfileIds.SideBySideFull));
+
+        // And another file of the same item as its own item, which is what a stacked library
+        // hands the provider: the item-seeded id is still in play for the primary file.
+        Assert.NotEqual(IdOf(ProfileIds.SideBySideFull), fromMvcSource);
+    }
+
+    [Fact]
+    public void ASourceThatIsTheItemGivesTheItemItsOwnVersionIds()
+    {
+        // The compatibility pin for the single-file case: a static source is keyed by the
+        // item's id, so seeding from the source and seeding from the item must be the same
+        // computation. Clients have this string stored for every single-file MVC movie on the
+        // server; an answer that drifted here would orphan all of them.
+        Assert.Equal(
+            AnaglyfinMediaSourceProvider.BuildMediaSourceId(ItemId, MvcMoviePath, ProfileIds.AnaglyphRedCyanDubois),
+            AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(ItemKey, MvcMoviePath, ProfileIds.AnaglyphRedCyanDubois));
+    }
+
+    [Fact]
+    public void SourceIdIsTheSameWhicheverWayTheSourceIdIsSpelled()
+    {
+        var dashed = MvcVersionItemId.ToString("D", CultureInfo.InvariantCulture);
+        var undashed = MvcVersionItemId.ToString("N", CultureInfo.InvariantCulture);
+
+        // The comparison the server makes on these ids is byte for byte, so the identity behind
+        // an id has to be one thing regardless of the decoration it arrived wearing.
+        Assert.Equal(
+            AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(dashed, MvcVersionPath, ProfileIds.TwoDBase),
+            AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(undashed, MvcVersionPath, ProfileIds.TwoDBase));
+    }
+
+    [Fact]
+    public void SourceIdFallsBackToThePathWhenTheSourceIdsNothing()
+    {
+        // A source keyed by something that is not a GUID (a live-tv style key) or by nothing at
+        // all still gets a stable, GUID-shaped id: the routes that parse it do not know or care
+        // which identity the provider had to fall back to.
+        var digestOfPath = AnaglyfinMediaSourceProvider.BuildMediaSourceId(Guid.Empty, MvcVersionPath, ProfileIds.TwoDBase);
+
+        foreach (var unusableId in new string?[] { null, string.Empty, "   ", "not-a-guid", Guid.Empty.ToString("N", CultureInfo.InvariantCulture) })
+        {
+            var id = AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(unusableId, MvcVersionPath, ProfileIds.TwoDBase);
+
+            AssertIsLowerCaseGuid(id);
+            Assert.Equal(digestOfPath, id);
+        }
+
+        Assert.NotEqual(
+            AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(null, MvcVersionPath, ProfileIds.TwoDBase),
+            AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(null, StackFolder + "/Ready Player One (2018) - 3D mvc remux.mkv", ProfileIds.TwoDBase));
+    }
+
+    [Fact]
+    public void SourceIdNeverWearsTheIdItWasDerivedFrom()
+    {
+        // The static source is keyed by that id and sorted first, so a version wearing it would
+        // shadow the original file - including the hidden MVC version this feature exists for.
+        foreach (var profileId in ProfileIds.AllProfileIds)
+        {
+            var id = AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(MvcVersionKey, MvcVersionPath, profileId);
+
+            Assert.DoesNotContain(MvcVersionKey, new[] { id }, StringComparer.Ordinal);
+            Assert.DoesNotContain(ItemKey, new[] { id }, StringComparer.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void SourceIdFromASourceNeedsSomethingToIdentify()
+    {
+        // Same contract as the item-seeded form: no profile, or no identity of any kind, is an
+        // argument failure rather than an invented id.
+        Assert.ThrowsAny<ArgumentException>(() => AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(MvcVersionKey, MvcVersionPath, " "));
+        Assert.ThrowsAny<ArgumentException>(() => AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource(null, null, ProfileIds.TwoDBase));
+        Assert.ThrowsAny<ArgumentException>(() => AnaglyfinMediaSourceProvider.BuildMediaSourceIdFromSource("   ", "   ", ProfileIds.TwoDBase));
     }
 
     // --- eligibility gate ---------------------------------------------------------
@@ -1025,6 +1147,357 @@ public class AnaglyfinMediaSourceProviderTests
         Assert.NotEmpty(sources);
     }
 
+    // --- stacked items: one item, several files --------------------------------------
+
+    [Fact]
+    public async Task AStackOffersVersionsOfItsMvcVersionAndNotOfItsPlainVersion()
+    {
+        // The shape this exists for: a folder holding "… - 1080p.mkv" beside "… - 3D mvc.mkv"
+        // is ONE library item whose Path, Name and Video3DFormat describe the primary file,
+        // with the MVC file reachable only as one of its static media sources. Judged as an
+        // item, the movie is not 3D at all and nothing is offered - which is the bug: the MVC
+        // file is not a listable item a client could open instead, so those versions simply
+        // do not exist anywhere. Judged per source, the 1080p file stays out and the MVC one
+        // gets its versions.
+        var provider = CreateRealProvider();
+        var item = CreateStackedMovie();
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        Assert.Equal(
+            new[]
+            {
+                MvcIdOf(ProfileIds.AnaglyphRedCyanDubois),
+                MvcIdOf(ProfileIds.SideBySideFull),
+                MvcIdOf(ProfileIds.SideBySideHalf),
+                MvcIdOf(ProfileIds.TwoDBase)
+            },
+            sources.Select(source => source.Id));
+
+        // Every version converts the MVC file, named in its own marker.
+        Assert.All(sources, source => Assert.Equal(MvcVersionPath, ProfileMarkerParser.Parse(source.Path).SourcePath));
+
+        // One eligible file, so nothing to disambiguate: the labels are the profiles' own,
+        // exactly as they read for a single-file MVC movie.
+        Assert.Equal(
+            new[] { "3D Anaglyph Red/Cyan (Dubois)", "3D Full Side-by-Side", "3D Half Side-by-Side", "2D Base" },
+            sources.Select(source => source.Name));
+    }
+
+    [Fact]
+    public async Task StackVersionsCarryTheDurationContainerAndStreamsOfTheirOwnVersion()
+    {
+        // Fidelity follows the file: the versions of the MVC answer with the MVC file's own
+        // duration, container and tracks. Taken from the item, they would carry the primary's
+        // - a version of one file reporting the runtime and track list of another.
+        var provider = CreateRealProvider();
+        var item = CreateStackedMovie();
+        var mvc = item.StaticSources[1];
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        Assert.NotEmpty(sources);
+        foreach (var source in sources)
+        {
+            Assert.Equal(MvcRunTimeTicks, source.RunTimeTicks);
+            Assert.NotEqual(RunTimeTicks, source.RunTimeTicks);
+            Assert.Equal("mkv", source.Container);
+            Assert.Equal(mvc.Size, source.Size);
+            Assert.Equal(mvc.Bitrate, source.Bitrate);
+            Assert.Equal(mvc.Formats, source.Formats);
+
+            // The MVC file's own tracks, in its own order, with the one stream a version has
+            // to answer about re-labelled and re-sized.
+            Assert.Equal(mvc.MediaStreams.Count, source.MediaStreams.Count);
+            Assert.Same(mvc.MediaStreams[1], source.MediaStreams[1]);
+            Assert.Same(mvc.MediaStreams[2], source.MediaStreams[2]);
+
+            var video = Assert.Single(source.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+            Assert.Equal(ForceTranscodeVideoStreams.VideoCodec, video.Codec);
+            Assert.NotSame(mvc.MediaStreams[0], video);
+        }
+    }
+
+    [Fact]
+    public async Task OfferingStackVersionsLeavesTheVersionsOwnReportsAlone()
+    {
+        // The static sources are the server's own objects for the item, and the versions of
+        // them are the originals the user must keep: the item's primary source and the MVC
+        // alternate both leave this call exactly as they arrived.
+        var provider = CreateRealProvider();
+        var item = CreateStackedMovie();
+        var primary = item.StaticSources[0];
+        var mvc = item.StaticSources[1];
+
+        await provider.GetMediaSources(item, CancellationToken.None);
+
+        Assert.Equal("hevc", Assert.Single(primary.MediaStreams, s => s.Type == MediaStreamType.Video).Codec);
+        Assert.Equal(3, primary.MediaStreams.Count);
+        Assert.Null(primary.Video3DFormat);
+
+        var mvcVideo = Assert.Single(mvc.MediaStreams, s => s.Type == MediaStreamType.Video);
+        Assert.Equal("hevc", mvcVideo.Codec);
+        Assert.Equal(1920, mvcVideo.Width);
+        Assert.Equal(3, mvc.MediaStreams.Count);
+        Assert.Equal(Video3DFormat.MVC, mvc.Video3DFormat);
+        Assert.Equal(MvcVersionPath, mvc.Path);
+        Assert.Equal(MvcVersionItemId.ToString("N", CultureInfo.InvariantCulture), mvc.Id);
+    }
+
+    [Fact]
+    public async Task AStackOfNothingButPlainVersionsOffersNothing()
+    {
+        // Enumerating sources is not a licence to invent 3D: a stack whose every file the
+        // detector refuses still gets no versions.
+        var provider = CreateRealProvider();
+        var item = CreateStackedMovie();
+        item.StaticSources = new[]
+        {
+            CreateVersionSource(ItemId, "1080p", PrimaryVersionPath),
+            CreateVersionSource(MvcVersionItemId, "1080p HSBS", "/movies/Ready Player One (2018)/Ready Player One (2018) - HSBS.mkv")
+        };
+
+        Assert.Empty(await provider.GetMediaSources(item, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task EveryMvcVersionOfAStackGetsItsOwnProfileVersions()
+    {
+        // Two eligible files in one item is a choice of file as well as a choice of conversion,
+        // so both get their full set of profiles and each label says which file it converts.
+        var provider = CreateRealProvider();
+        var item = CreateStackedMovie();
+        var secondMvc = CreateVersionSource(
+            SecondMvcVersionItemId,
+            "3D mvc remux",
+            StackFolder + "/Ready Player One (2018) - 3D mvc remux.mkv",
+            Video3DFormat.MVC);
+        item.StaticSources = new[] { item.StaticSources[0], item.StaticSources[1], secondMvc };
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        Assert.Equal(8, sources.Count);
+        Assert.Equal(sources.Count, sources.Select(source => source.Id).Distinct(StringComparer.Ordinal).Count());
+
+        // File first, then the conversion, so two versions of one profile cannot look like the
+        // same offer twice - which is precisely what a user cannot choose between.
+        Assert.Equal(
+            new[]
+            {
+                "3D mvc / 3D Anaglyph Red/Cyan (Dubois)",
+                "3D mvc / 3D Full Side-by-Side",
+                "3D mvc / 3D Half Side-by-Side",
+                "3D mvc / 2D Base",
+                "3D mvc remux / 3D Anaglyph Red/Cyan (Dubois)",
+                "3D mvc remux / 3D Full Side-by-Side",
+                "3D mvc remux / 3D Half Side-by-Side",
+                "3D mvc remux / 2D Base"
+            },
+            sources.Select(source => source.Name));
+
+        // Four of each, each naming its own file: the label and the marker agree.
+        Assert.Equal(
+            4,
+            sources.Count(source => ProfileMarkerParser.Parse(source.Path).SourcePath == MvcVersionPath));
+        Assert.Equal(
+            4,
+            sources.Count(source => ProfileMarkerParser.Parse(source.Path).SourcePath == secondMvc.Path));
+
+        // And the ids separate them, because an id folded only from the item would hand the
+        // server two sources under one address.
+        Assert.Equal(
+            new[] { ProfileIds.AnaglyphRedCyanDubois, ProfileIds.SideBySideFull, ProfileIds.SideBySideHalf, ProfileIds.TwoDBase }
+                .Select(MvcIdOf)
+                .Concat(new[] { ProfileIds.AnaglyphRedCyanDubois, ProfileIds.SideBySideFull, ProfileIds.SideBySideHalf, ProfileIds.TwoDBase }
+                    .Select(id => SecondMvcIdOf(id))),
+            sources.Select(source => source.Id));
+    }
+
+    [Fact]
+    public async Task OneSourceListedTwiceIsOfferedOnce()
+    {
+        // A server is free to list one file twice - a version that is both a local alternate
+        // version and a linked one, say. Duplicate control is by the identity a version's id is
+        // folded from, which is the same question as "is this the same file again?", so the two
+        // cannot disagree about the answer: the second listing is not a second question, and the
+        // offer is not a second copy of the answer.
+        var provider = CreateRealProvider();
+        var item = CreateStackedMovie();
+        var mvc = item.StaticSources[1];
+        item.StaticSources = new[] { item.StaticSources[0], mvc, mvc };
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        Assert.Equal(4, sources.Count);
+        Assert.Equal(4, sources.Select(source => source.Id).Distinct(StringComparer.Ordinal).Count());
+
+        // And it was never asked twice: one question per file, in the order the server gave them.
+        var asked = new ScriptedDetector();
+        await CreateProvider(detector: asked).GetMediaSources(item, CancellationToken.None);
+        Assert.Equal(new string?[] { PrimaryVersionPath, MvcVersionPath }, asked.Candidates.Select(candidate => candidate.Path));
+    }
+
+    [Fact]
+    public async Task TwoFilesOfOneItemNeverShareOneVersionId()
+    {
+        var provider = CreateRealProvider();
+        var item = CreateStackedMovie();
+        var secondMvc = CreateVersionSource(
+            SecondMvcVersionItemId,
+            "3D mvc remux",
+            StackFolder + "/Ready Player One (2018) - 3D mvc remux.mkv",
+            Video3DFormat.MVC);
+        item.StaticSources = new[] { item.StaticSources[0], item.StaticSources[1], secondMvc };
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        foreach (var source in sources)
+        {
+            AssertIsLowerCaseGuid(source.Id);
+
+            // Neither the item's id nor either version's own id: the static sources are keyed
+            // by those and sorted first, so a version wearing one would shadow the original.
+            Assert.DoesNotContain(ItemKey, new[] { source.Id }, StringComparer.Ordinal);
+            Assert.DoesNotContain(MvcVersionItemId.ToString("N", CultureInfo.InvariantCulture), new[] { source.Id }, StringComparer.Ordinal);
+            Assert.DoesNotContain(SecondMvcVersionItemId.ToString("N", CultureInfo.InvariantCulture), new[] { source.Id }, StringComparer.Ordinal);
+        }
+
+        Assert.Equal(sources.Count, sources.Select(source => source.Id).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public async Task AStackIsAskedOncePerSourceAndNotAgainAsAnItem()
+    {
+        // The item's own file is one of the sources, so asking the item as well would answer
+        // the same file twice. What is asked is what the offer is built from, so the count is
+        // the assertion: every file once, and no extra question about the item.
+        var detector = new ScriptedDetector();
+        var provider = CreateProvider(detector: detector);
+        var item = CreateStackedMovie();
+
+        await provider.GetMediaSources(item, CancellationToken.None);
+
+        Assert.Equal(2, detector.CallCount);
+        Assert.Equal(new string?[] { PrimaryVersionPath, MvcVersionPath }, detector.Candidates.Select(candidate => candidate.Path));
+    }
+
+    [Fact]
+    public async Task TheItemAnswersForItsOwnFileAndNotForASibling()
+    {
+        // A media source is a report about a file, so the item's name and tags - the signals a
+        // user or a metadata provider gave its file, which no media source repeats - travel with
+        // the source that is the item and with no other. Crediting a sibling version with them
+        // would let the primary's metadata decide the sibling's playability: the same cross-file
+        // contamination the enumeration exists to remove, arriving from the other direction.
+        var detector = new ScriptedDetector();
+        var provider = CreateProvider(detector: detector);
+        var item = CreateStackedMovie();
+        item.Name = "Ready Player One (2018) 3D MVC";
+        item.Tags = new[] { "3D MVC" };
+
+        await provider.GetMediaSources(item, CancellationToken.None);
+
+        Assert.Equal(2, detector.Candidates.Count);
+
+        // The source that is the item answers as the item: its own path, the name and the tags it
+        // was given.
+        Assert.Equal(PrimaryVersionPath, detector.Candidates[0].Path);
+        Assert.Equal("Ready Player One (2018) 3D MVC", detector.Candidates[0].Name);
+        Assert.Equal(new[] { "3D MVC" }, detector.Candidates[0].Tags ?? Array.Empty<string>());
+
+        // Its sibling answers for itself and nothing else: the label the server read off its own
+        // file, and no metadata borrowed from a neighbour.
+        Assert.Equal(MvcVersionPath, detector.Candidates[1].Path);
+        Assert.Equal("3D mvc", detector.Candidates[1].Name);
+        Assert.Null(detector.Candidates[1].Tags);
+    }
+
+    [Fact]
+    public async Task SourcesThatNameNoPlayableFileAreNotAskedAbout()
+    {
+        // A placeholder (the server knows a version exists and has nothing playable about it
+        // yet) and a remote source (which the marker contract cannot address) would each answer
+        // "yes" to a detector that reads only names, and each would produce a version whose
+        // marker names a file the wrapper cannot open.
+        var detector = new ScriptedDetector();
+        var provider = CreateProvider(detector: detector);
+        var item = CreateStackedMovie();
+        item.StaticSources = new[]
+        {
+            item.StaticSources[0],
+            item.StaticSources[1],
+            new MediaSourceInfo { Id = "placeholder-version", Name = "still resolving", Type = MediaSourceType.Placeholder, Protocol = MediaProtocol.File },
+            new MediaSourceInfo { Id = "remote-version", Name = "3D mvc remote", Path = "/movies/remote/3D mvc.mkv", Protocol = MediaProtocol.Http, IsRemote = true },
+            new MediaSourceInfo { Id = "pointer-version", Name = "3D mvc strm", Path = "/movies/Ready Player One (2018)/3D mvc.strm", Protocol = MediaProtocol.File },
+            new MediaSourceInfo { Id = "disc-version", Name = "3D mvc disc", Path = "/movies/Ready Player One (2018)/3D mvc.iso", Protocol = MediaProtocol.File, VideoType = VideoType.Iso }
+        };
+
+        await provider.GetMediaSources(item, CancellationToken.None);
+
+        Assert.Equal(new string?[] { PrimaryVersionPath, MvcVersionPath }, detector.Candidates.Select(candidate => candidate.Path));
+    }
+
+    [Fact]
+    public async Task AnItemThatReportsNoSourcesIsStillAskedAboutItself()
+    {
+        // The fallback the enumeration may not silently remove: a source implementation with no
+        // static list has one witness, and dropping it would cost every single-file MVC movie
+        // its versions.
+        var detector = new ScriptedDetector();
+        var provider = CreateProvider(detector: detector);
+        var item = CreateMvcItem();
+        item.StaticSources = Array.Empty<MediaSourceInfo>();
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        var candidate = Assert.Single(detector.Candidates);
+        Assert.Equal(MvcMoviePath, candidate.Path);
+        Assert.Equal(MvcMovieName, candidate.Name);
+        Assert.Equal(4, sources.Count);
+        Assert.Equal(new string?[] { MvcMoviePath }, sources.Select(s => ProfileMarkerParser.Parse(s.Path).SourcePath).Distinct());
+    }
+
+    [Fact]
+    public async Task ASingleFileMvcMovieIsOfferedExactlyAsItWasBeforeSourcesWereEnumerated()
+    {
+        // The regression this whole file guards: an item whose only source is its own file must
+        // come out of the per-source code path with the same ids, names, markers and settings
+        // reads it always had - four versions, asked once, one read, nothing doubled.
+        var detector = new ScriptedDetector();
+        var configuration = new StubConfigurationSource();
+        var provider = CreateProvider(detector: detector, configuration: configuration);
+        var item = CreateMvcItem();
+
+        var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
+
+        Assert.Equal(1, detector.CallCount);
+        Assert.Equal(1, configuration.CallCount);
+        Assert.Equal(
+            new[]
+            {
+                IdOf(ProfileIds.AnaglyphRedCyanDubois),
+                IdOf(ProfileIds.SideBySideFull),
+                IdOf(ProfileIds.SideBySideHalf),
+                IdOf(ProfileIds.TwoDBase)
+            },
+            sources.Select(source => source.Id));
+        Assert.Equal(
+            new[] { "3D Anaglyph Red/Cyan (Dubois)", "3D Full Side-by-Side", "3D Half Side-by-Side", "2D Base" },
+            sources.Select(source => source.Name));
+    }
+
+    [Fact]
+    public async Task StackVersionIdsAreStableAcrossRequestsAndAcrossProviders()
+    {
+        var item = CreateStackedMovie();
+
+        var first = (await CreateRealProvider().GetMediaSources(item, CancellationToken.None)).ToList();
+        var second = (await CreateRealProvider().GetMediaSources(item, CancellationToken.None)).ToList();
+
+        Assert.Equal(first.Select(source => source.Id), second.Select(source => source.Id));
+        Assert.NotSame(first[0], second[0]);
+    }
+
     // --- construction helpers -----------------------------------------------------------
 
     private static AnaglyfinMediaSourceProvider CreateProvider(
@@ -1037,6 +1510,75 @@ public class AnaglyfinMediaSourceProviderTests
             configuration ?? new StubConfigurationSource(),
             NullLogger<AnaglyfinMediaSourceProvider>.Instance);
 
+    private static AnaglyfinMediaSourceProvider CreateRealProvider()
+        => new(
+            new MvcSourceDetector(),
+            new ProfileCatalog(),
+            new StubConfigurationSource(),
+            NullLogger<AnaglyfinMediaSourceProvider>.Instance);
+
+    /// <summary>
+    /// The stacked movie: one item whose own path, name and 3D format describe its plain
+    /// 1080p file, with the MVC file reachable only as one of the item's media sources.
+    /// </summary>
+    private static FakeVideo CreateStackedMovie()
+        => new()
+        {
+            Id = ItemId,
+            Name = "Ready Player One (2018)",
+            Path = PrimaryVersionPath,
+            RunTimeTicks = RunTimeTicks,
+            VideoType = VideoType.VideoFile,
+
+            // In the order the server gives them: the item's own source first, so an offer
+            // that quietly asked the item as well would be a second set of versions of this
+            // plain file.
+            StaticSources = new[]
+            {
+                CreateVersionSource(ItemId, "1080p", PrimaryVersionPath),
+                CreateVersionSource(
+                    MvcVersionItemId,
+                    "3D mvc",
+                    MvcVersionPath,
+                    Video3DFormat.MVC,
+                    MvcRunTimeTicks,
+                    MvcVersionSize)
+            }
+        };
+
+    /// <summary>
+    /// One alternate version of the stacked movie, as the item's own media-source API reports
+    /// it: keyed by the id of the item that file belongs to, and carrying that file's own
+    /// duration, container and stream report.
+    /// </summary>
+    private static MediaSourceInfo CreateVersionSource(
+        Guid id,
+        string name,
+        string path,
+        Video3DFormat? video3DFormat = null,
+        long? runTimeTicks = RunTimeTicks,
+        long? size = FileSize,
+        int? bitrate = 40_000_000)
+        => new()
+        {
+            Id = id.ToString("N", CultureInfo.InvariantCulture),
+            Name = name,
+            Path = path,
+            Protocol = MediaProtocol.File,
+            Container = "mkv",
+            Size = size,
+            Bitrate = bitrate,
+            RunTimeTicks = runTimeTicks,
+            Formats = new[] { "matroska" },
+            Video3DFormat = video3DFormat,
+            MediaStreams = new[]
+            {
+                new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "hevc", Width = 1920, Height = 1080 },
+                new MediaStream { Type = MediaStreamType.Audio, Index = 1, Codec = "truehd", Language = "eng" },
+                new MediaStream { Type = MediaStreamType.Subtitle, Index = 2, Language = "eng" }
+            }
+        };
+
     private static FakeVideo CreateMvcItem(
         string path = MvcMoviePath,
         string name = MvcMovieName,
@@ -1048,15 +1590,23 @@ public class AnaglyfinMediaSourceProviderTests
             Path = path,
             RunTimeTicks = RunTimeTicks,
             VideoType = videoType,
-            StaticSources = new[] { CreateOriginalSource() }
+
+            // The item's own source is a report about the item's own file, so it is built from
+            // the same path and name. A fixture that let the two disagree would be a library in
+            // an impossible state - and one the provider now believes, because a source is the
+            // authority on the file it names.
+            StaticSources = new[] { CreateOriginalSource(path, name) }
         };
 
-    private static MediaSourceInfo CreateOriginalSource()
+    private static MediaSourceInfo CreateOriginalSource(
+        string path = MvcMoviePath,
+        string name = MvcMovieName,
+        Guid? id = null)
         => new()
         {
-            Id = ItemId.ToString("N", CultureInfo.InvariantCulture),
-            Name = MvcMovieName,
-            Path = MvcMoviePath,
+            Id = (id ?? ItemId).ToString("N", CultureInfo.InvariantCulture),
+            Name = name,
+            Path = path,
             Protocol = MediaProtocol.File,
             Container = "mkv",
             Size = FileSize,
@@ -1083,6 +1633,23 @@ public class AnaglyfinMediaSourceProviderTests
     /// </summary>
     private static string IdOf(string profileId)
         => AnaglyfinMediaSourceProvider.BuildMediaSourceId(ItemId, MvcMoviePath, profileId);
+
+    /// <summary>
+    /// The id one profile of the stacked movie's MVC version is expected to carry: the same
+    /// documented fold as <see cref="IdOf"/>, seeded with that version's own source id rather
+    /// than the stack root's. Restated through <see cref="DeriveGuid"/> rather than asked of
+    /// the provider, because a version id is exactly as independent of the item as this whole
+    /// feature says it is - and a helper that called the provider to predict the provider
+    /// would not notice it regressing to the item.
+    /// </summary>
+    private static string MvcIdOf(string profileId)
+        => DeriveGuid(MvcVersionKey + ":" + profileId);
+
+    /// <summary>
+    /// The id one profile of the stacked movie's second MVC version is expected to carry.
+    /// </summary>
+    private static string SecondMvcIdOf(string profileId)
+        => DeriveGuid(SecondMvcVersionKey + ":" + profileId);
 
     /// <summary>
     /// The provider's documented derivation, computed here rather than called: MD5 over the
@@ -1138,7 +1705,9 @@ public class AnaglyfinMediaSourceProviderTests
 
     /// <summary>
     /// An <see cref="IMvcSourceDetector"/> with a fixed script, so tests can separate
-    /// eligibility plumbing from the detection rules themselves.
+    /// eligibility plumbing from the detection rules themselves. It records every candidate it
+    /// was asked about, in order: with an offer now built from several files, "who was asked,
+    /// and in what order" is part of what a test has to be able to see.
     /// </summary>
     private sealed class ScriptedDetector : IMvcSourceDetector
     {
@@ -1148,12 +1717,14 @@ public class AnaglyfinMediaSourceProviderTests
 
         public int CallCount { get; private set; }
 
-        public MvcSourceCandidate? LastCandidate { get; private set; }
+        public List<MvcSourceCandidate> Candidates { get; } = new();
+
+        public MvcSourceCandidate? LastCandidate => Candidates.Count == 0 ? null : Candidates[^1];
 
         public MvcSourceEligibility Detect(MvcSourceCandidate candidate)
         {
             CallCount++;
-            LastCandidate = candidate;
+            Candidates.Add(candidate);
 
             if (Throws)
             {
