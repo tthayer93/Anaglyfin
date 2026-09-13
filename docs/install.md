@@ -229,10 +229,22 @@ final test target, and it is not rebuilt by this repository. So:
 
 ## After installing
 
-Dashboard -> Plugins should list `Anaglyfin` with the description recorded in `meta.json`, and the
-Anaglyfin settings page should open. Both, and everything downstream of them - alternate versions
-on an MVC item, marker transport, the rewritten FFmpeg command - are checked by the checklist in
-`docs/validation.md`.
+Dashboard -> Plugins should list `Anaglyfin` with the description recorded in `meta.json`.
+
+The settings page is edited from the dashboard's own settings menu, where it is listed under its
+own name next to the server's entries. Jellyfin 12 lists a plugin page in that menu only when the
+page asks to be listed there - the `EnableInMainMenu` flag on the page info served by
+`/web/ConfigurationPages` - and a page that does not ask is reachable only from that plugin's own
+entry on the Dashboard page. Anaglyfin's page asks, so the settings are not hidden behind a plugin
+list an administrator has to think to open; `Dashboard -> Plugins -> Anaglyfin` opens the same page
+too.
+
+Opening the page's URL directly instead shows Anaglyfin's shipped defaults behind a warning: a
+copy of the page outside the dashboard has no signed-in client to read the stored settings from or
+save them back through, so it declines to edit them.
+
+Both entries, and everything downstream of them - alternate versions on an MVC item, marker
+transport, the rewritten FFmpeg command - are checked by the checklist in `docs/validation.md`.
 
 In the server log, an install that worked says so before the dashboard is opened:
 

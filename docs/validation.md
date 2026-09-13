@@ -111,7 +111,10 @@ Restart or reload Jellyfin after installation.
   Exposes 3D MVC sources to Jellyfin as selectable playback versions.
   ```
 
-- [ ] The admin dashboard shows an `Anaglyfin` settings entry under plugins.
+- [ ] The dashboard's own settings menu lists `Anaglyfin` as an entry beside the server's
+  settings. The page asks to be listed there, so a server whose menu omits it is a server
+  where the settings cannot be reached at all.
+- [ ] `Dashboard -> Plugins -> Anaglyfin` reaches the same page.
 - [ ] Opening the settings page does not produce a blank page or an unstyled fragment.
 - [ ] The server does not log assembly-load errors, missing dependency errors, or
   target-framework mismatch errors for `Anaglyfin.dll`.
@@ -121,11 +124,15 @@ later runtime check depends on discovery.
 
 ## V2. Admin settings page
 
-Open:
+Open the page by either route:
 
 ```text
+Dashboard -> settings menu -> Anaglyfin
 Dashboard -> Plugins -> Anaglyfin
 ```
+
+The first is the entry the page exists in the dashboard for; the second is the same page
+through the plugin list. Record which one was used.
 
 Check the rendered page against the shipped defaults:
 
@@ -141,6 +148,11 @@ Check the rendered page against the shipped defaults:
 | Video encoder policy | `Automatic` | Select exists |
 
 - [ ] Save succeeds and the settings round-trip after reopening the page.
+- [ ] `GET /web/ConfigurationPages` reports the page with `EnableInMainMenu: true`, which is
+  the flag the v12 web dashboard needs before it will list the page anywhere.
+- [ ] Opening the page's own URL directly - outside the dashboard, so with no signed-in
+  client - shows the shipped defaults behind a warning naming the dashboard route, and
+  saving refuses without writing anything.
 - [ ] The wrapper environment guidance block lists:
 
   ```text
