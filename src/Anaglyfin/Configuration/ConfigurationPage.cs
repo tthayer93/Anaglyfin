@@ -47,16 +47,25 @@ public static class ConfigurationPage
     /// </summary>
     /// <returns>The single page Anaglyfin contributes to the dashboard.</returns>
     /// <remarks>
-    /// <see cref="PluginPageInfo.EnableInMainMenu"/> is deliberately left off: the page is
-    /// reached from the plugin's own entry in the dashboard, which is where an
-    /// administrator looks for a plugin's settings, and it does not need a second home in
-    /// the server's main menu.
+    /// <para>
+    /// <see cref="PluginPageInfo.EnableInMainMenu"/> is on. The v12 web dashboard offers a
+    /// plugin page in its own settings menu only when that flag asks for it, and the only
+    /// other way to a page is through that plugin's entry on the Dashboard page: a page that
+    /// declines the menu entry is invisible to anybody who does not already know to dig it
+    /// out of the plugin list.
+    /// </para>
+    /// <para>
+    /// This is Anaglyfin's only page and the only way to configure Anaglyfin, so it takes the
+    /// menu entry rather than depending on an administrator guessing where an unlisted page
+    /// is hidden.
+    /// </para>
     /// </remarks>
     public static PluginPageInfo CreatePageInfo()
         => new()
         {
             Name = PageName,
             DisplayName = DisplayName,
-            EmbeddedResourcePath = HtmlResourceName
+            EmbeddedResourcePath = HtmlResourceName,
+            EnableInMainMenu = true
         };
 }

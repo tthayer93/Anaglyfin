@@ -79,6 +79,19 @@
                 margin: 0 0 0 1em;
             }
 
+            .anaglyfin-readonly {
+                margin: 0 0 1.2em;
+                padding: 0.8em 1em;
+                border-left: 0.25em solid #cf4e52;
+                background: rgba(207, 78, 82, 0.13);
+            }
+
+            /* The notice starts hidden and the page reveals it, so the hidden state has to
+               survive whatever the dashboard's own sheet decides about div elements. */
+            .anaglyfin-readonly[hidden] {
+                display: none;
+            }
+
             .anaglyfin-message {
                 min-height: 1.2em;
                 margin-top: 0.6em;
@@ -94,6 +107,26 @@
                     converting them. Everything on this page is a name from Anaglyfin's own
                     profile list or a number: it accepts no conversion description, no
                     encoder argument and no path.
+                </div>
+
+                <!--
+                  The dashboard hands this document a signed-in client to read the settings
+                  from and save them back through. Opened directly it has neither, so it says
+                  so here and names where the page is edited from, rather than showing a form
+                  whose Save could only fail. It starts hidden: the dashboard is where the
+                  page normally arrives from, and there it has nothing to warn about.
+                -->
+                <div id="AnaglyfinDashboardNotice" class="anaglyfin-readonly" hidden>
+                    <b>Anaglyfin settings are edited from the Jellyfin dashboard.</b>
+                    <div class="fieldDescription">
+                        This copy of the page was opened directly, so it has no signed-in
+                        dashboard to ask for the stored settings and nothing to save them
+                        back through. Everything below is Anaglyfin's shipped defaults and
+                        saving is refused, rather than writing over the server's settings
+                        with guesses. Open the page from the dashboard instead: it is listed
+                        as <b>Anaglyfin</b> in the dashboard settings menu, and it is
+                        reachable from <b>Dashboard -> Plugins -> Anaglyfin</b> as well.
+                    </div>
                 </div>
 
                 <form id="AnaglyfinConfigForm">
@@ -680,6 +713,21 @@
                         && !!window.Dashboard;
                 }
 
+                /*
+                 * Nothing on this page reaches the settings endpoint without the dashboard's
+                 * signed-in client, and the page does not improvise one: an administrator
+                 * reading a copy of the page opened on its own is told so, and told where the
+                 * page is edited from, before any of the form is trusted.
+                 */
+                function revealDashboardNotice() {
+                    var page = pageElement();
+                    var notice = page ? page.querySelector('#AnaglyfinDashboardNotice') : null;
+
+                    if (notice) {
+                        notice.hidden = false;
+                    }
+                }
+
                 var configurationLoading = false;
 
                 function loadConfiguration() {
@@ -694,7 +742,8 @@
 
                     if (!dashboardAvailable()) {
                         configurationLoading = false;
-                        showMessage('Open this page from the Jellyfin dashboard to edit the settings.');
+                        revealDashboardNotice();
+                        showMessage('The stored settings were not read: this copy of the page has no dashboard to read them from.');
                         return;
                     }
 
@@ -718,7 +767,8 @@
                     event.preventDefault();
 
                     if (!dashboardAvailable()) {
-                        showMessage('Open this page from the Jellyfin dashboard to edit the settings.');
+                        revealDashboardNotice();
+                        showMessage('Nothing was saved: this copy of the page has no dashboard to save through.');
                         return false;
                     }
 

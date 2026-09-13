@@ -33,8 +33,9 @@ namespace Anaglyfin.Tests.Configuration;
 /// </para>
 /// <para>
 /// What no test here can prove is the browser half: that the dashboard raises the event the
-/// page loads on, and that the web client exposes the plugin settings under the calls the
-/// page makes. Those are recorded on the page itself and need a real server.
+/// page loads on, that the web client exposes the plugin settings under the calls the page
+/// makes, and that a page asking for a place in the settings menu is listed there once the
+/// dashboard has it. Those are recorded on the page itself and need a real server.
 /// </para>
 /// </remarks>
 public class ConfigurationPageTests
@@ -67,9 +68,71 @@ public class ConfigurationPageTests
         Assert.Equal(ConfigurationPage.DisplayName, page.DisplayName);
         Assert.Equal(ConfigurationPage.HtmlResourceName, page.EmbeddedResourcePath);
 
-        // The page is reached from the plugin's own entry in the dashboard, so it must not
-        // also claim a place in the server's main menu.
-        Assert.False(page.EnableInMainMenu);
+        // A v12 dashboard lists a plugin page in its own settings menu only when the page
+        // asks to be listed, and this page is the only way to configure Anaglyfin. A build
+        // that quietly drops the flag ships a server whose settings cannot be reached.
+        Assert.True(page.EnableInMainMenu);
+    }
+
+    [Fact]
+    public void TheAdminPageStillCarriesTheFormThatSavesIt()
+    {
+        // The menu entry is only worth having if the page it leads to can still write the
+        // settings: the form, the control that submits it, and the handler that answers that
+        // submission are one chain, and a page that lost any link of it opens read-only.
+        var html = ReadPageHtml();
+
+        var opened = html.IndexOf("<form id=\"AnaglyfinConfigForm\"", StringComparison.Ordinal);
+        Assert.True(opened >= 0, "The admin page no longer carries the form the settings are saved from.");
+
+        var closed = html.IndexOf("</form>", opened, StringComparison.Ordinal);
+        Assert.True(closed > opened, "The admin settings form is never closed.");
+
+        var form = html[opened..closed];
+
+        Assert.Matches("<button[^>]*type=\"submit\"[^>]*>", form);
+        Assert.Contains("<div id=\"AnaglyfinMessage\"", form, StringComparison.Ordinal);
+
+        // And the submission is answered by the page itself, rather than by a browser POST
+        // to an endpoint that does not take one.
+        Assert.Contains("form.addEventListener('submit', saveConfiguration);", html, StringComparison.Ordinal);
+        Assert.Contains("window.ApiClient.updatePluginConfiguration(", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheAdminPageSaysWhereItIsEditedWhenItWasOpenedOutsideTheDashboard()
+    {
+        var html = ReadPageHtml();
+
+        // Opened directly rather than from the dashboard, this document has no signed-in
+        // client to read the stored settings from and none to save them back through. It has
+        // to say so - and name where the page is edited from - rather than presenting a form
+        // whose only possible answer is a refusal.
+        var pageOpened = html.IndexOf("<div id=\"AnaglyfinConfigPage\"", StringComparison.Ordinal);
+        var notice = html.IndexOf("<div id=\"AnaglyfinDashboardNotice\" class=\"anaglyfin-readonly\" hidden>", StringComparison.Ordinal);
+        var formOpened = html.IndexOf("<form id=\"AnaglyfinConfigForm\"", StringComparison.Ordinal);
+
+        Assert.True(pageOpened >= 0, "The admin page no longer opens with its page element.");
+        Assert.True(
+            notice > pageOpened && notice < formOpened,
+            "The page no longer warns above the form that cannot save without the dashboard.");
+
+        // Naming the menu the page asks to be listed in is the point of the warning: whoever
+        // reached a raw copy of the page needs the way back to the dashboard one.
+        Assert.Contains("dashboard settings menu", html, StringComparison.Ordinal);
+        Assert.Contains("Dashboard -> Plugins -> Anaglyfin", html, StringComparison.Ordinal);
+
+        // The warning belongs to exactly the two places the page declines to act - it cannot
+        // read and it cannot save - and appears nowhere else, because a page opened from the
+        // dashboard has nothing to warn about.
+        Assert.Equal(2, Regex.Matches(html, "revealDashboardNotice\\(\\);").Count);
+        Assert.Matches(@"if \(!dashboardAvailable\(\)\) \{\s*configurationLoading = false;\s*revealDashboardNotice\(\);", html);
+
+        // And declining is the whole of it: the page does not improvise a transport of its own
+        // for the settings endpoint, because a copy of the page opened on its own has no
+        // credential to write server settings with.
+        Assert.DoesNotContain("fetch(", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("XMLHttpRequest", html, StringComparison.Ordinal);
     }
 
     [Fact]
