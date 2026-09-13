@@ -268,20 +268,26 @@ public class ConfigurationPageTests
     [Fact]
     public void TheAdminPageCanSendEverySettingBack()
     {
-        // The page sends one camelCase property per bound field, which is the shape the
-        // settings endpoint binds. Round-tripping that payload proves the names on the page
-        // are the names on the model and that every shape is one the endpoint can read: the
-        // two halves of a contract a browser would otherwise reveal by silently dropping a
-        // setting on save.
+        // The page sends one property per bound field, spelled the way the settings model spells
+        // it, and the payload is read back with the settings endpoint's own case sensitive
+        // matching. A tolerant reader here would accept the camelCase body the endpoint answers
+        // with success and no binding at all, and the one mistake this contract exists to catch
+        // is precisely that one.
         var payload = BuildPayloadThePageSends();
 
         var reloaded = JsonSerializer.Deserialize<PluginConfiguration>(
             payload,
             new JsonSerializerOptions
             {
-                PropertyNameCaseInsensitive = true,
                 Converters = { new JsonStringEnumConverter() }
             });
+
+        // Spelled the way the model names them is the whole of the contract: a payload carrying
+        // the same settings under other names binds nothing and reports nothing.
+        var sentNames = JsonNode.Parse(payload)!.AsObject().Select(pair => pair.Key).ToArray();
+        Assert.Equal(
+            ReadBoundFieldNames().OrderBy(name => name, StringComparer.Ordinal),
+            sentNames.OrderBy(name => name, StringComparer.Ordinal));
 
         var configuration = Assert.IsAssignableFrom<PluginConfiguration>(reloaded);
 
@@ -308,6 +314,71 @@ public class ConfigurationPageTests
                 AsJson(property.GetValue(new PluginConfiguration())),
                 AsJson(property.GetValue(configuration)));
         }
+    }
+
+    [Fact]
+    public void TheAdminPageSavesInTheSpellingTheSettingsEndpointBinds()
+    {
+        // The settings endpoint reads a body by the settings model's own spelling and ignores
+        // any other one, and it ignores it with a success code: an administrator who edited a
+        // setting in the wrong spelling is told the save worked and reads back the shipped
+        // default. Nothing but the spelling of the name tells the two saves apart, so the
+        // spelling is pinned here rather than left to a browser to discover.
+        var writeBody = FunctionBody(ReadPageHtml(), "writeProperty");
+
+        // The value goes under the name the markup binds the field by, which the markup spells
+        // as the settings model spells it.
+        Assert.Matches(@"config\[propertyName\]\s*=\s*value;", writeBody);
+        Assert.DoesNotContain("config[camelCase] = value", writeBody, StringComparison.Ordinal);
+
+        // And the camelCase twin left in the same object by a read that asked for that spelling
+        // is dropped rather than posted beside it: one setting spelled two ways in one body is a
+        // save whose outcome belongs to whatever the endpoint happens to read first.
+        Assert.Contains("delete config[camelCase];", writeBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("delete config[propertyName];", writeBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheAdminPageStillReadsAStoredSettingInEitherSpelling()
+    {
+        // Only the spelling this page writes is its own decision. The settings endpoint answers a
+        // plain read PascalCase and a read made by a client that asked for the camelCase profile
+        // in camelCase, and the page cannot choose which of the two the dashboard's client asks
+        // for - so both spellings stay readable.
+        var readBody = FunctionBody(ReadPageHtml(), "readProperty");
+
+        Assert.Contains("hasOwnProperty.call(config, camelCase)", readBody, StringComparison.Ordinal);
+        Assert.Contains("hasOwnProperty.call(config, propertyName)", readBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheAdminPageSavesADeviceOverrideEntryInTheSpellingTheModelUses()
+    {
+        // A device override travels as a nested object of the same body and is bound the same
+        // way, so an entry spelled camelCase is dropped with the same silent success as a
+        // camelCase setting - and its row comes back empty on the next read for the same reason.
+        var html = ReadPageHtml();
+
+        var emitted = Regex.Matches(FunctionBody(html, "readDeviceRow"), "(?<key>[A-Za-z]+):\\s*textOf\\(")
+            .Cast<Match>()
+            .Select(match => match.Groups["key"].Value)
+            .ToArray();
+
+        Assert.Equal(
+            DeviceEntryPropertyNames().OrderBy(name => name, StringComparer.Ordinal),
+            emitted.OrderBy(name => name, StringComparer.Ordinal));
+
+        // A stored entry is read from either spelling, because the response a row is filled from
+        // is spelled by whatever the dashboard's client asked the endpoint for.
+        var stored = FunctionBody(html, "entryText");
+        Assert.Contains("hasOwnProperty.call(entry, propertyName)", stored, StringComparison.Ordinal);
+        Assert.Contains("entry[camelCase]", stored, StringComparison.Ordinal);
+
+        // And every entry property is filled through that reader, rather than by one spelling of
+        // one property named inline where the other spelling would read as absent.
+        var filled = FunctionBody(html, "addDeviceRow");
+        Assert.All(DeviceEntryPropertyNames(), name => Assert.Matches($@"entryText\(entry, '{name}'\)", filled));
+        Assert.DoesNotContain("entry.deviceId", filled, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -612,13 +683,24 @@ public class ConfigurationPageTests
             .Where(property => property.CanWrite && property.DeclaringType == typeof(PluginConfiguration))
             .Select(property => property.Name);
 
+    /// <summary>
+    /// The names a device override entry is stored under: the same names the settings endpoint
+    /// binds it by, since an entry is a nested object of the settings body.
+    /// </summary>
+    private static IEnumerable<string> DeviceEntryPropertyNames()
+        => typeof(DeviceProfileDefault)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(property => property.CanWrite && property.DeclaringType == typeof(DeviceProfileDefault))
+            .Select(property => property.Name);
+
     private static PropertyInfo SettingsProperty(string fieldName)
         => typeof(PluginConfiguration).GetProperty(fieldName, BindingFlags.Public | BindingFlags.Instance)
             ?? throw new InvalidOperationException($"The admin page binds {fieldName}, which the settings model does not have.");
 
     /// <summary>
-    /// Builds the JSON a browser saves from this page: one camelCase property per field the
-    /// page binds, each spelled the way that field's setting is stored.
+    /// Builds the JSON a browser saves from this page: one property per field the page binds,
+    /// each named the way that setting is named on the settings model, which is the only spelling
+    /// the settings endpoint binds.
     /// </summary>
     private static string BuildPayloadThePageSends()
     {
@@ -626,7 +708,7 @@ public class ConfigurationPageTests
 
         foreach (var fieldName in ReadBoundFieldNames())
         {
-            payload[CamelCase(fieldName)] = PayloadValueFor(fieldName, SettingsProperty(fieldName).PropertyType);
+            payload[fieldName] = PayloadValueFor(fieldName, SettingsProperty(fieldName).PropertyType);
         }
 
         return payload.ToJsonString();
@@ -657,11 +739,12 @@ public class ConfigurationPageTests
 
         if (propertyType == typeof(List<DeviceProfileDefault>))
         {
+            // A nested entry is named by the same rule as the setting holding it.
             return new JsonArray(new JsonObject
             {
-                ["deviceId"] = "living-room-tv",
-                ["clientName"] = "AndroidTV",
-                ["profileId"] = "custom_grayscale"
+                ["DeviceId"] = "living-room-tv",
+                ["ClientName"] = "AndroidTV",
+                ["ProfileId"] = "custom_grayscale"
             });
         }
 
@@ -687,8 +770,21 @@ public class ConfigurationPageTests
     private static string AsJson(object? value)
         => JsonSerializer.Serialize(value ?? "null");
 
-    private static string CamelCase(string name)
-        => name.Length == 0
-            ? name
-            : char.ToLowerInvariant(name[0]) + name[1..];
+    /// <summary>
+    /// Reads the body of one function of the page script, so a test can pin what that function
+    /// does to a saved setting without pinning the whole script around it.
+    /// </summary>
+    private static string FunctionBody(string html, string functionName)
+    {
+        // Every function of the page script opens and closes at the same indentation, and a
+        // block nested inside one closes deeper than that, so the first brace back at the
+        // function's own indentation is the end of its body.
+        var body = Regex.Match(
+            html,
+            @"function " + Regex.Escape(functionName) + @"\([^)]*\)\s*\{(?<body>[\s\S]*?)\n {16}\}");
+
+        Assert.True(body.Success, $"The admin page script no longer declares {functionName} where its tests can find it.");
+
+        return body.Groups["body"].Value;
+    }
 }
