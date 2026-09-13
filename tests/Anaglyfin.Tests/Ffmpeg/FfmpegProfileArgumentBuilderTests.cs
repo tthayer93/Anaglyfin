@@ -86,11 +86,48 @@ public class FfmpegProfileArgumentBuilderTests
 
         Assert.Equal(ProfileIds.SideBySideHalf, rewrite.ProfileId);
         Assert.Equal(
-            new[] { "-map", "0:v:view:all", "-vf", "scale=iw/2:ih:flags=bicubic,format=yuv420p" },
+            new[] { "-map", "0:v:view:all", "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p" },
             rewrite.InsertArguments);
         Assert.Equal("0:v:view:all", rewrite.VideoMap);
-        Assert.Equal("scale=iw/2:ih:flags=bicubic,format=yuv420p", rewrite.VideoFilter);
+        Assert.Equal("scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", rewrite.VideoFilter);
         Assert.Null(rewrite.FilterComplex);
+    }
+
+    [Fact]
+    public void HalfSideBySideDeclaresSquarePixelsAfterHalvingTheWidth()
+    {
+        // The scale is what halves the frame, and it is also what hands on a 2:1 sample aspect
+        // ratio while it does: scale keeps the display aspect by adjusting the pixel shape
+        // (out SAR = in SAR x in size / out size), so a square-pixel 3840x1080 becomes
+        // 1920x1080 of 2:1 pixels. The encoded pixels are exactly the half-SBS frame this
+        // profile sells, so nothing is wrong with the picture - but everything downstream that
+        // trusts the shape travelling with it stretches it sideways, including the server's own
+        // scale once a client reports a ceiling. Declaring 1:1 immediately behind the scale,
+        // and before the pixel-format normalisation, is part of the conversion: it is what makes
+        // the 1920x1080 this profile reports to clients mean 1920x1080 of square pixels.
+        var stages = _builder.BuildSideBySideHalf().VideoFilter!.Split(',');
+
+        Assert.Equal(
+            new[] { "scale=iw/2:ih:flags=bicubic", "setsar=sar=1", "format=yuv420p" },
+            stages);
+    }
+
+    [Fact]
+    public void OnlyHalfSideBySideDeclaresItsSampleAspectRatio()
+    {
+        // The other chains change no pixel shape: full SBS is the decoder's own frame, an
+        // anaglyph mixes inside it, and 2D inserts nothing. A setsar in one of those would be a
+        // claim about a scale that never happened.
+        Assert.DoesNotContain(
+            "setsar",
+            string.Join(' ', _builder.BuildSideBySideFull().InsertArguments));
+        Assert.DoesNotContain(
+            "setsar",
+            string.Join(' ', _builder.BuildStereo3DAnaglyph("arcd").InsertArguments));
+        Assert.DoesNotContain(
+            "setsar",
+            string.Join(' ', _builder.BuildCustomGrayscaleAnaglyph(new RgbColor(255, 0, 0), new RgbColor(0, 255, 255)).InsertArguments));
+        Assert.DoesNotContain("setsar", string.Join(' ', _builder.BuildTwoDimensionalBase().InsertArguments));
     }
 
     [Fact]
@@ -306,12 +343,12 @@ public class FfmpegProfileArgumentBuilderTests
                 "-map",
                 "0:v:view:all",
                 "-vf",
-                "scale=iw/2:ih:flags=bicubic,format=yuv420p,subtitles=filename='" + MoviePath + "':si=1"
+                "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p,subtitles=filename='" + MoviePath + "':si=1"
             },
             rewrite.InsertArguments);
 
         // VideoFilter stays the conversion itself; the merge is visible in the args.
-        Assert.Equal("scale=iw/2:ih:flags=bicubic,format=yuv420p", rewrite.VideoFilter);
+        Assert.Equal("scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", rewrite.VideoFilter);
         Assert.Equal("subtitles=filename='" + MoviePath + "':si=1", rewrite.SubtitleFilter);
         Assert.True(rewrite.ShouldAppendSubtitlesToProfileFilter);
         Assert.True(rewrite.ShouldSuppressSubtitleStreams);
