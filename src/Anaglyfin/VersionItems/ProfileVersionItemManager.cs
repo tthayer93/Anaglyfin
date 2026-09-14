@@ -647,7 +647,12 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         var needsStreams = !ReportsSameStreams(_store.GetMediaStreams(current.Id), version.MediaStreams);
         var needsLink = !linkedIds.Contains(current.Id);
         var needsName = NeedsName(current, version.Name);
-        var needsMetadata = !planned.Metadata.FieldsMatch(current);
+
+        // The metadata is asked once, and for the field it is wrong on rather than the bare fact that
+        // it is wrong somewhere: the same walk answers "does anything differ" and "which one", and the
+        // reason below can name the field a hunt would otherwise have to find by hand.
+        var metadataDrift = planned.Metadata.FieldDrift(current);
+        var needsMetadata = metadataDrift is not null;
         var needsImages = !planned.Metadata.ImagesMatch(current);
 
         // The lock is part of what the item is, not of what it copied: an unlocked item whose path
@@ -724,7 +729,17 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             AddIf("bitrate", needsBitrate);
             AddIf("container", needsContainer);
             AddIf("parent", needsParent);
-            AddIf("metadata", needsMetadata);
+
+            // Metadata is a dozen fields under one reason, so it is the one reason worth naming the
+            // field on: "metadata" says a version was rewritten for something on its panel, and the
+            // field says which row to go look at. A field name carries no value, so nothing a user
+            // would call private reaches the log - and a settle that will not settle stops being a
+            // library-wide hunt for the one field that will not round-trip.
+            if (needsMetadata)
+            {
+                reasons.Add("metadata(" + metadataDrift + ")");
+            }
+
             AddIf("images", needsImages);
             AddIf("frame", needsFrame);
             AddIf("lock", needsLock);

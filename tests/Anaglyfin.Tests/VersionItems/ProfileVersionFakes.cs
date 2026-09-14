@@ -96,13 +96,26 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     public Func<Video, bool>? ThrowOnLinkedVersions { get; set; }
 
     /// <summary>
-    /// Gets the ids whose child rows (image list, credits) are answered in a rotated order on every
-    /// read. A database hands child rows back in whatever order its query happens to produce and
+    /// Gets the ids whose child rows and list-valued fields (the image list, the credits, and the
+    /// genre/tag/studio/filming-location lists) are answered in a rotated order on every read. A
+    /// database hands rows keyed by an item back in whatever order its query happens to produce and
     /// owes nobody the order they were written in; a comparison keyed on read order mistakes one
     /// rotation for every row having moved. A test that wants to be that database puts the item's id
     /// in this list.
     /// </summary>
     public HashSet<Guid> RotateChildrenFor { get; } = new();
+
+    /// <summary>
+    /// Gets the ids whose sort name the server re-derives from the item's own Name on every read, the
+    /// way the item model's lazy sort-name getter does once anything has dropped its cached value.
+    /// Naming an item or setting its forced sort name drops that cache, and reading a stored row back
+    /// names the item; a row the update path carried no forced sort name on answers none. So a real
+    /// read hands back a sort name derived from the item's Name - never the <c>SortName</c> a caller
+    /// wrote last pass - which for a version (whose Name is its profile label, not the movie title) is
+    /// a value that can never equal the one copied off the source. A test that wants to be that server
+    /// for one item puts its id in this list.
+    /// </summary>
+    public HashSet<Guid> ReDeriveSortNameFromNameFor { get; } = new();
 
     /// <summary>
     /// Gets or sets the callback a test runs the moment a creation is attempted, before the creation
@@ -128,23 +141,68 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
             return null;
         }
 
+        // Rows and list values keyed by an item come back in the order the query produced, not the
+        // order they were written; the sort name comes back derived from the item's Name, not the
+        // value a caller wrote. A manager that reads a difference out of either is rewriting an item
+        // to what it already is, on every pass, forever - which is the whole of what these two
+        // switches let a test be a real server about.
         if (RotateChildrenFor.Contains(itemId))
         {
-            // Read order is the repository's business, not the writer's: hand the image rows back
-            // rotated by one from however they stand, so a manager that compares them index by
-            // index against the order it wrote them sees every row having moved - and a manager
-            // that compares them by what they name sees the same set it wrote.
+            // Read order is the repository's business, not the writer's: hand the image rows, and the
+            // genre/tag/studio/filming-location lists, back rotated by one from however they stand, so
+            // a manager that compares any of them index by index against the order it wrote them sees
+            // every value having moved - and one that compares them by what they name or hold sees the
+            // same set it wrote. (The credits are rotated the same way in <see cref="GetPeople"/>.)
             var images = item.ImageInfos;
             if (images is { Length: > 1 })
             {
-                var rotated = new ItemImageInfo[images.Length];
-                Array.Copy(images, 1, rotated, 0, images.Length - 1);
-                rotated[images.Length - 1] = images[0];
-                item.ImageInfos = rotated;
+                item.ImageInfos = RotatedByOne(images);
+            }
+
+            if (item.Genres is { Length: > 1 })
+            {
+                item.Genres = RotatedByOne(item.Genres);
+            }
+
+            if (item.Tags is { Length: > 1 })
+            {
+                item.Tags = RotatedByOne(item.Tags);
+            }
+
+            if (item.Studios is { Length: > 1 })
+            {
+                item.Studios = RotatedByOne(item.Studios);
+            }
+
+            if (item.ProductionLocations is { Length: > 1 })
+            {
+                item.ProductionLocations = RotatedByOne(item.ProductionLocations);
             }
         }
 
+        if (ReDeriveSortNameFromNameFor.Contains(itemId))
+        {
+            // The item model answers SortName lazily and drops the cached value the instant the item is
+            // named or its forced sort name set; reading a stored row back names the item, and the row
+            // carries no forced sort name the update path did not persist. So the sort name the next read
+            // answers with is derived from this item's Name - never the SortName written last pass, and
+            // for a version (named for its profile label) never the source's title-derived pair either.
+            // Dropping the cache the way the load does is the two assignments below.
+            item.ForcedSortName = null;
+            var name = item.Name;
+            item.Name = name;
+        }
+
         return item;
+    }
+
+    private static T[] RotatedByOne<T>(T[] values)
+    {
+        var rotated = new T[values.Length];
+        Array.Copy(values, 1, rotated, 0, values.Length - 1);
+        rotated[values.Length - 1] = values[0];
+
+        return rotated;
     }
 
     /// <inheritdoc />

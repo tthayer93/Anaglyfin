@@ -346,6 +346,155 @@ public class ProfileVersionIdempotentMetadataTests
             new[] { new PersonInfo { Name = "Tye Sheridan", Role = "Parzival", Type = PersonKind.Actor, SortOrder = 0 } }));
     }
 
+    [Fact]
+    public void TheSortNamePairIsOutOfTheComparisonAndUntouchedByTheCopy()
+    {
+        // cp13 root cause, stated as a comparison: a version's Name is its profile label, and the item
+        // model answers an item's sort names by deriving them from that Name. The source the version
+        // copies wears the movie's title-derived pair, so the pair a version reads back is never the pair
+        // that was written - and comparing it is a rewrite that can never settle. It is out of the
+        // contract for exactly the reason the Name is.
+        var source = new Video
+        {
+            Id = Guid.NewGuid(),
+            Name = "Ready Player One",
+            OriginalTitle = "Ready Player One",
+            Overview = "In 2045, the answer can be found in the OASIS.",
+            ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        };
+        source.ForcedSortName = "Ready Player One";
+        source.SortName = "ready player one";
+
+        var metadata = VersionItemMetadata.FromSource(source);
+
+        // The version, answering its sort pair the way the server derives it from its label. Every other
+        // field agrees with the source; only the sort pair differs, and it is not compared.
+        var current = new Video
+        {
+            Id = Guid.NewGuid(),
+            Name = "3D Full Side-by-Side",
+            OriginalTitle = "Ready Player One",
+            Overview = "In 2045, the answer can be found in the OASIS."
+        };
+        current.ForcedSortName = "3d full side-by-side";
+        current.SortName = "3d full side by side";
+
+        Assert.True(metadata.FieldsMatch(current));
+        Assert.Null(metadata.FieldDrift(current));
+
+        // And the copy does not overwrite them: writing the metadata leaves the item's own sort pair
+        // exactly as it found it, so a row that already holds sort values keeps them untouched.
+        var target = new Video { Id = Guid.NewGuid(), Name = "3D Full Side-by-Side" };
+        target.ForcedSortName = "keep me";
+        target.SortName = "keep me";
+
+        metadata.ApplyTo(target);
+
+        Assert.Equal("keep me", target.SortName);
+        Assert.Equal("keep me", target.ForcedSortName);
+    }
+
+    [Fact]
+    public void TheSetLikeMetadataFieldsAreComparedAsSetsNotAsPositions()
+    {
+        // Genres, tags, studios and filming locations are rows keyed by the item, the same shape as the
+        // image rows and the credits, so a query hands them back in its own order. Compared by position
+        // that is every value having moved, and a rewrite on every pass forever.
+        var source = new Video
+        {
+            Id = Guid.NewGuid(),
+            Name = "Ready Player One",
+            OriginalTitle = "Ready Player One",
+            Genres = new[] { "Science Fiction", "Adventure" },
+            Tags = new[] { "3D", "Virtual reality" },
+            Studios = new[] { "Warner Bros.", "Legendary" },
+            ProductionLocations = new[] { "London, England, USA", "Atlanta, Georgia, USA" },
+            ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        };
+        var metadata = VersionItemMetadata.FromSource(source);
+
+        var reordered = new Video
+        {
+            Id = Guid.NewGuid(),
+            Name = "3D Full Side-by-Side",
+            OriginalTitle = "Ready Player One",
+            Genres = new[] { "Adventure", "Science Fiction" },
+            Tags = new[] { "Virtual reality", "3D" },
+            Studios = new[] { "Legendary", "Warner Bros." },
+            ProductionLocations = new[] { "Atlanta, Georgia, USA", "London, England, USA" }
+        };
+
+        // The same values in another read order say the same thing.
+        Assert.True(metadata.FieldsMatch(reordered));
+
+        // ...and a value that genuinely moved is still a difference, named on the field it moved on.
+        var oneMoreGenre = new Video
+        {
+            Id = Guid.NewGuid(),
+            Name = "3D Full Side-by-Side",
+            OriginalTitle = "Ready Player One",
+            Genres = new[] { "Adventure", "Science Fiction", "Action" },
+            Tags = new[] { "3D", "Virtual reality" },
+            Studios = new[] { "Warner Bros.", "Legendary" },
+            ProductionLocations = new[] { "London, England, USA", "Atlanta, Georgia, USA" }
+        };
+        Assert.False(metadata.FieldsMatch(oneMoreGenre));
+        Assert.Equal(nameof(Video.Genres), metadata.FieldDrift(oneMoreGenre));
+
+        // Order-indifferent is not indifferent: one studio gone is a difference, not a reorder.
+        var oneStudioShort = new Video
+        {
+            Id = Guid.NewGuid(),
+            Name = "3D Full Side-by-Side",
+            OriginalTitle = "Ready Player One",
+            Genres = new[] { "Adventure", "Science Fiction" },
+            Tags = new[] { "Virtual reality", "3D" },
+            Studios = new[] { "Warner Bros." },
+            ProductionLocations = new[] { "Atlanta, Georgia, USA", "London, England, USA" }
+        };
+        Assert.False(metadata.FieldsMatch(oneStudioShort));
+        Assert.Equal(nameof(Video.Studios), metadata.FieldDrift(oneStudioShort));
+    }
+
+    [Fact]
+    public void AFieldDriftNamesTheOneFieldAReconcileWouldRewriteOn()
+    {
+        // The reason a settle that will not settle was a forensic pass instead of one debug boot: "metadata"
+        // named nothing. The drift is reported by field, and by the first one, so the next hunt starts
+        // at the right row.
+        var source = new Video
+        {
+            Id = Guid.NewGuid(),
+            Name = "Ready Player One",
+            OriginalTitle = "Ready Player One",
+            Overview = "In 2045.",
+            OfficialRating = "PG-13",
+            ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        };
+        var metadata = VersionItemMetadata.FromSource(source);
+
+        // Nothing drifted: no field to name.
+        var settled = new Video
+        {
+            Id = Guid.NewGuid(),
+            Name = "3D Full Side-by-Side",
+            OriginalTitle = "Ready Player One",
+            Overview = "In 2045.",
+            OfficialRating = "PG-13"
+        };
+        Assert.Null(metadata.FieldDrift(settled));
+
+        // One field off: it is named.
+        settled.Overview = "a synopsis the source no longer carries";
+        Assert.Equal(nameof(Video.Overview), metadata.FieldDrift(settled));
+
+        // Two fields off: the first one in the comparison's order is the one named, and it is still a
+        // no-match.
+        settled.OfficialRating = "R";
+        Assert.Equal(nameof(Video.Overview), metadata.FieldDrift(settled));
+        Assert.False(metadata.FieldsMatch(settled));
+    }
+
     // --- what a pass over a settled library does not do ---------------------------
 
     [Fact]
@@ -390,6 +539,120 @@ public class ProfileVersionIdempotentMetadataTests
         Assert.False(third.Changed);
         Assert.Equal(imagesSaved, store.ImagesSaved.Count);
         Assert.Equal(peopleSaved, store.PeopleSaved.Count);
+    }
+
+    [Fact]
+    public async Task AVersionWhoseSortNameTheServerReDerivesFromItsLabelSettlesAnyway()
+    {
+        // The cp13 signature: four version items rewritten on every boot, reason "metadata", and
+        // nothing observable ever different through the API. A version's Name is its profile label; the
+        // source it copies wears the movie's title-derived SortName/ForcedSortName. The item model answers
+        // an item's sort name by deriving it from the item's own Name on every read, so the pair the
+        // plugin wrote never round-trips - and a comparison that read it back found a drift no write
+        // could settle. This is the fake being exactly that server for the version item.
+        var store = StackedStore(out var movie, out var mvc);
+        var manager = CreateManager(store);
+
+        // The source really does carry the title-derived pair that used to be copied and compared.
+        Assert.Equal("Ready Player One", mvc.ForcedSortName);
+        Assert.Equal("ready player one", mvc.SortName);
+
+        await manager.ReconcileLibraryAsync(CancellationToken.None);
+
+        var versionId = VersionIdOf(movie.StaticSources[1], SideBySideFull);
+        var version = (Video)store.FindItem(versionId)!;
+
+        // A settled version is named for its profile label, and that label - not the movie title - is
+        // what the server will derive its sort names from.
+        Assert.Equal(new ProfileCatalog().GetProfile(SideBySideFull).DisplayName, version.Name);
+
+        // The database under this item now re-derives its sort name from its Name on every read, and
+        // hands back no forced sort name, exactly as the load path does. Before the fix this is the state
+        // that rewrote the item forever: the plugin had asked it to sort under "ready player one", and
+        // every read answered a label-derived sort name.
+        store.ReDeriveSortNameFromNameFor.Add(versionId);
+
+        var created = store.Created.Count;
+
+        var second = await manager.ReconcileLibraryAsync(CancellationToken.None);
+
+        // Read, and stop. The sort name comes back different from anything the copy wrote, and the pass
+        // notices nothing - because it no longer reads that pair at all.
+        Assert.False(second.Changed);
+        Assert.Equal(0, second.Created + second.Updated + second.Deleted + second.Skipped);
+        Assert.Equal(created, store.Created.Count);
+        Assert.Empty(store.Updated);
+        Assert.Empty(store.Deleted);
+
+        // And it stays settled boot after boot: the sort name still comes back label-derived, and the
+        // pass still has no reason to write, because the pair is out of the contract rather than merely
+        // matched by luck.
+        var third = await manager.ReconcileLibraryAsync(CancellationToken.None);
+        Assert.False(third.Changed);
+        Assert.Empty(store.Updated);
+    }
+
+    [Fact]
+    public async Task EveryOtherCopiedMetadataFieldStillConvergesAndThenSettles()
+    {
+        // Dropping the sort-name pair from the copy must cost nothing else. If a field had gone
+        // write-only - written every pass but never compared, so its drift never noticed - or been lost
+        // outright with the pair, this pass would leave it wrong. Every remaining copied field is knocked
+        // off the source's answer, repaired by one pass, and shown back on the item.
+        var store = StackedStore(out var movie, out var mvc);
+        var manager = CreateManager(store);
+
+        await manager.ReconcileLibraryAsync(CancellationToken.None);
+
+        var versionId = VersionIdOf(movie.StaticSources[1], SideBySideFull);
+        var version = store.FindItem(versionId)!;
+
+        version.Overview = "an old synopsis";
+        version.OriginalTitle = "an old title";
+        version.Tagline = "an old tagline";
+        version.OfficialRating = "R";
+        version.CustomRating = "old";
+        version.HomePageUrl = "https://example.invalid/old";
+        version.CommunityRating = 1f;
+        version.CriticRating = 2f;
+        version.ProductionYear = 1999;
+        version.PremiereDate = new DateTime(1999, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        version.EndDate = new DateTime(1999, 12, 31, 0, 0, 0, DateTimeKind.Utc);
+        version.Genres = new[] { "Western" };
+        version.Tags = new[] { "old" };
+        version.Studios = new[] { "Old Studio" };
+        version.ProductionLocations = new[] { "Old Place" };
+        version.ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Imdb"] = "tt0000000" };
+
+        var repaired = await manager.ReconcileLibraryAsync(CancellationToken.None);
+
+        Assert.Equal(1, repaired.Updated);
+
+        // Every field is back on the source's answer - which, for the stacked store, could only have come
+        // from the scraped MVC item and never from the 1080p root.
+        Assert.Equal(mvc.Overview, version.Overview);
+        Assert.Equal("Ready Player One", version.OriginalTitle);
+        Assert.Equal(mvc.Tagline, version.Tagline);
+        Assert.Equal(mvc.OfficialRating, version.OfficialRating);
+        Assert.Equal(mvc.CustomRating, version.CustomRating);
+        Assert.Equal(mvc.HomePageUrl, version.HomePageUrl);
+        Assert.Equal(mvc.CommunityRating, version.CommunityRating);
+        Assert.Equal(mvc.CriticRating, version.CriticRating);
+        Assert.Equal(mvc.ProductionYear, version.ProductionYear);
+        Assert.Equal(mvc.PremiereDate, version.PremiereDate);
+        Assert.Equal(mvc.EndDate, version.EndDate);
+        Assert.Equal(mvc.Genres, version.Genres);
+        Assert.Equal(mvc.Tags, version.Tags);
+        Assert.Equal(mvc.Studios, version.Studios);
+        Assert.Equal(mvc.ProductionLocations, version.ProductionLocations);
+        Assert.Equal(mvc.ProviderIds["Imdb"], version.ProviderIds["Imdb"]);
+        Assert.Equal(mvc.ProviderIds["Tmdb"], version.ProviderIds["Tmdb"]);
+        Assert.Equal(2, version.ProviderIds.Count);
+
+        // And it settles straight afterwards: each field's write is exactly what the comparison compares.
+        var settled = await manager.ReconcileLibraryAsync(CancellationToken.None);
+        Assert.False(settled.Changed);
+        Assert.Empty(store.Deleted);
     }
 
     [Fact]
