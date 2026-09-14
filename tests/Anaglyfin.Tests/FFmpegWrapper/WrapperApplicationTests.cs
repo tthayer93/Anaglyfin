@@ -189,16 +189,16 @@ public sealed class WrapperApplicationTests : IDisposable
 
         Assert.Equal(WrapperApplication.ExitCodeSuccess, exitCode);
 
-        // The marker is gone, the composed-view request sits in front of its input, the profile's
-        // -sn is in the output segment, and everything the server chose is where the server put
-        // it.
+        // The marker is gone, the composed-view request sits in front of its input, and
+        // everything the server chose - its maps and its subtitles included - is where the
+        // server put it: a version that converts and renders nothing has no output argument of
+        // its own to add.
         Assert.Equal(
             new[]
             {
                 "-hide_banner", "-loglevel", "warning",
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-sn",
                 "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
                 "-f", "hls", "-hls_time", "6", "playlist.m3u8"
             },
@@ -317,12 +317,48 @@ public sealed class WrapperApplicationTests : IDisposable
     }
 
     [Fact]
-    public void ACommandAlreadyCarryingSomebodyElsesFilterGraphIsRefused()
+    public void ACommandAlreadyCarryingSomebodyElsesFilterGraphRunsAsTheMergedGraph()
     {
+        // The shape Jellyfin writes when it filters the picture itself: the profile's conversion
+        // joins that graph as its head chain and the server's reference to the source video is
+        // retargeted onto what the conversion produces. The output still maps the label the
+        // server mapped, and the wrapper runs the command rather than refusing it.
         var arguments = new List<string>
         {
             "-hide_banner", "-i", Marker(ProfileIds.AnaglyphRedCyanDubois),
             "-filter_complex", "[0:v]scale=iw/2:ih[v]", "-map", "[v]", "-map", "0:a",
+            "-f", "hls", "playlist.m3u8"
+        };
+
+        var (application, launcher) = CreateApplication();
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        Assert.Equal(
+            new[]
+            {
+                "-hide_banner",
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex",
+                "[0:v]stereo3d=sbsl:arcd,format=yuv420p[anaglyfin_profile];"
+                + "[anaglyfin_profile]scale=iw/2:ih[v]",
+                "-map", "[v]", "-map", "0:a",
+                "-f", "hls", "playlist.m3u8"
+            },
+            Assert.Single(launcher.Launches).Arguments);
+    }
+
+    [Fact]
+    public void ACommandWhoseFilterGraphWasWrittenToAFileIsRefused()
+    {
+        // Nothing in the vector says what a graph in a file reads or feeds, and a merge needs
+        // those facts: the refusal is the same exit code and the same classification it has
+        // always been, only now for the one graph shape the wrapper truly cannot reach.
+        var arguments = new List<string>
+        {
+            "-hide_banner", "-i", Marker(ProfileIds.AnaglyphRedCyanDubois),
+            "-filter_complex_script", "/tmp/graph.txt", "-map", "[v]", "-map", "0:a",
             "-f", "hls", "playlist.m3u8"
         };
 

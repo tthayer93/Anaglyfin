@@ -614,7 +614,6 @@ Expected inserted fragments:
 
 ```text
 -view_ids -1  (immediately before the marker input's -i)
--sn
 ```
 
 Expected behavior:
@@ -623,6 +622,9 @@ Expected behavior:
 - no Anaglyfin `-vf` filter is inserted for full SBS itself
 - a server-owned existing `-vf` chain is not removed
 - ordinary video and audio maps chosen by Jellyfin remain intact
+- subtitle maps the server wrote stay, and `-sn` is not inserted: this profile converts the
+  picture and renders no text onto it. A `-sn` appears only beside a burn-in, which means the
+  marker carried a subtitle ordinal
 
 This is the profile the geometry fix was found on, so it is also the one where a wrong answer is
 visible without any filter of ours in the command: the profile inserts no scaling at all, so
@@ -631,7 +633,7 @@ whatever the server's `scale` does to the frame is what the segment ends up bein
 Example shape:
 
 ```text
--view_ids -1 -i <real source path> -sn -map 0:v -map 0:a ...
+-view_ids -1 -i <real source path> -map 0:v -map 0:a ...
 ```
 
 ### 7.2 Half SBS
@@ -647,7 +649,6 @@ Expected inserted fragments:
 ```text
 -view_ids -1  (immediately before the marker input's -i)
 -vf scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p
--sn
 ```
 
 - [ ] The `setsar=sar=1` is there, immediately behind the scale.
@@ -678,7 +679,6 @@ Expected inserted fragments:
 ```text
 -view_ids -1  (immediately before the marker input's -i)
 -vf stereo3d=sbsl:arcd,format=yuv420p
--sn
 ```
 
 If Jellyfin already supplied `-vf`, the expected merged chain shape is:
@@ -688,7 +688,8 @@ stereo3d=sbsl:arcd,format=yuv420p,<existing chain>
 ```
 
 The same ordering rule as half SBS, with the same reason: profile conversion first, server
-scaling of the converted picture second.
+scaling of the converted picture second. See 7.9 for the same ordering inside a server
+`-filter_complex` graph, which is the shape a burned-in image subtitle arrives as.
 
 ### 7.4 2D base
 
@@ -720,8 +721,12 @@ With the shipped default colors, the inserted composed-view input and filter gra
 -view_ids -1  (immediately before the marker input's -i)
 -filter_complex [0:v]split=2[anaglyfin_cg_left_in][anaglyfin_cg_right_in];[anaglyfin_cg_left_in]crop=iw/2:ih:0:0,format=gray,format=rgb24,colorchannelmixer=rr=1:gg=0:bb=0[anaglyfin_cg_left];[anaglyfin_cg_right_in]crop=iw/2:ih:iw/2:0,format=gray,format=rgb24,colorchannelmixer=rr=0:gg=1:bb=1[anaglyfin_cg_right];[anaglyfin_cg_left][anaglyfin_cg_right]blend=all_mode=screen,format=yuv420p[anaglyfin_custom]
 -map [anaglyfin_custom]
--sn
 ```
+
+`-map [anaglyfin_custom]` is written only when the server's own command does not already feed that
+label to the encoder: if the server had a `-filter_complex` of its own and the merge retargeted its
+source references onto `[anaglyfin_custom]`, the label is already the picture the server maps, and
+mapping it again would be a second video in the output.
 
 When the marker carries `video=<index>`, the graph's source label is `[0:<index>]` rather than
 `[0:v]`. The command must not contain `0:v:view` in any form: the composed request replaces the
@@ -730,8 +735,12 @@ view-selector route.
 - [ ] Left/right colors from the admin page become numeric `colorchannelmixer` coefficients,
   not arbitrary text.
 - [ ] The command does not contain an Anaglyfin marker token.
-- [ ] A foreign `-filter_complex` in the same output segment causes the wrapper to refuse the
-  job, not graft the Anaglyfin graph onto it.
+- [ ] A foreign `-filter_complex` in the same output segment is merged, not grafted onto: the
+  Anaglyfin graph goes in as the graph's first chain and the server's own source references are
+  retargeted onto `[anaglyfin_custom]` (see 7.9). It is refused only where no merge is possible -
+  a graph read from `-filter_complex_script`, one that never names this input's video stream, one
+  that reaches it through a view specifier, several graphs at once, or one already carrying this
+  profile's label.
 - [ ] A server-owned `-vf` on the same command survives the rewrite unchanged. This profile's
   conversion is a graph of its own rather than a stage of that chain, so the ordering rule of
   7.2/7.3 does not apply to it and nothing is re-plumbed around it.
@@ -759,7 +768,7 @@ the rewriter also inserts:
 Expected custom-grayscale shape:
 
 ```text
--view_ids -1 -i <real source path> -filter_complex <Anaglyfin graph> -map [anaglyfin_custom] -map 0:a? -sn ...
+-view_ids -1 -i <real source path> -filter_complex <Anaglyfin graph> -map [anaglyfin_custom] -map 0:a? ...
 ```
 
 - [ ] Map-less full SBS, half SBS, and red-cyan commands insert no Anaglyfin stream map and keep FFmpeg's automatic audio selection.
@@ -780,7 +789,10 @@ somebody else's stream.
 - [ ] A custom-grayscale rewrite removes the server's `-map 0:<index>` for the marker's video,
       including the optional `-map 0:<index>?` spelling, and maps only `[anaglyfin_custom]`.
 - [ ] The server's numbered audio and subtitle maps are still there, in the order the server
-      wrote them, except subtitle maps under a profile that suppresses subtitle streams.
+      wrote them: a conversion that renders no text has no reason to touch either. (A rewrite that
+      burns its own text in is the one that takes subtitle maps out, and a rewrite whose own
+      filter text already renders the subtitles - a burn-in filter or a graph reading `[0:s]` -
+      takes nothing out even then.)
 - [ ] Exclusion maps survive: `-map -0:a`, `-map -0:s` and a bare `-map -0` are the server
       taking streams out of the output, and removing one would put the stream back -
       subtitles under a profile that burns its own in being the case that matters.
@@ -794,7 +806,7 @@ Expected shape for a red-cyan version of a source whose video is stream 0 and au
 stream 1:
 
 ```text
--view_ids -1 -i <real source path> -vf stereo3d=sbsl:arcd,format=yuv420p -sn -map 0:0 -map 0:1 -codec:v libx264 ...
+-view_ids -1 -i <real source path> -vf stereo3d=sbsl:arcd,format=yuv420p -map 0:0 -map 0:1 -codec:v libx264 ...
 ```
 
 ### 7.8 Segment dimensions: the geometry the whole chain agrees on
@@ -840,6 +852,51 @@ auto/high bitrate, or a `maxWidth`/`maxHeight` at or above the values in the sec
       segment that is smaller while the request asked for native quality.
 - [ ] Recording the segment size of one version without recording the `-vf` value it came from is
       not evidence: the two together are what show the order.
+
+### 7.9 The server's own filter graph and its subtitles
+
+The shape that made this worth testing end to end: Jellyfin burning an image subtitle (PGS) into
+the picture itself. Its command carries the subtitle stream through a scale into `[sub]`, the
+source video through its colour and scale chain into `[main]`, and overlays the two:
+
+```text
+-filter_complex [0:10]scale=1920:1080:flags=area[sub];[0:0]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,scale=1920:1080:...,format=yuv420p[main];[main][sub]overlay=eof_action=pass:repeatlast=0[out]
+-map [out] -map 0:1 -map -0:s
+```
+
+The profile's conversion belongs at the head of that graph - in front of the server's own scale,
+which is sized for the converted frame - and the server's reference to the source video is
+retargeted onto what the conversion produced. For a red-cyan version of a source whose video is
+stream 0:
+
+```text
+-filter_complex [0:0]stereo3d=sbsl:arcd,format=yuv420p[anaglyfin_profile];[0:10]scale=1920:1080:flags=area[sub];[anaglyfin_profile]setparams=...,format=yuv420p[main];[main][sub]overlay=eof_action=pass:repeatlast=0[out]
+-view_ids -1 -i <real source path>            (in front of the input)
+```
+
+- [ ] The job runs. A version of a film with a burned-in subtitle used to fail before FFmpeg was
+      started, with `IncompatibleFilterGraph` and exit code `65`.
+- [ ] The profile chain is the graph's first chain and the server's chains follow it, so the
+      profile converts before the server scales.
+- [ ] The subtitle chain, the overlay and the label the output maps are the server's, byte for
+      byte: only the label naming the source video moved.
+- [ ] Stream `10` is still addressed by the graph: a subtitle stream is not this source's video,
+      whatever number it carries.
+- [ ] No `-sn`, and the server's subtitle maps and exclusions are where it wrote them - the server
+      is already rendering this text, and a conversion has nothing to say about it.
+- [ ] Still one `-i`, one decode: the merge writes a chain, not a second input.
+- [ ] A text subtitle the server burns in through `-vf subtitles=filename='<marker>'` keeps the
+      server's filter and loses the marker: the sweep that keeps marker text out of the command
+      reaches inside the filter value, and writes the real source path in the same escaping the
+      server used.
+- [ ] Full SBS on the same server command leaves the graph alone - it has no chain to contribute -
+      and still gets its `-view_ids -1`.
+
+Where no merge is possible the wrapper refuses, and the log says which rule the command broke:
+a graph read from `-filter_complex_script`; a graph that never names this input's video stream; a
+graph that reaches it through a view specifier (`[0:v:view:all]`), which a composed decode refuses
+outright; several graphs in one command; or a graph already carrying `[anaglyfin_profile]` or
+`[anaglyfin_custom]`.
 
 ## V8. Ordinary playback pass-through
 
@@ -939,20 +996,25 @@ Validation expectation:
 Current state:
 
 - The provider currently creates markers without a subtitle ordinal.
-- Converted profiles suppress subtitle streams with `-sn`.
+- A profile rewrite touches subtitles only where it renders them itself: with a burn-in it adds
+  `-sn` and removes the server's subtitle maps, and without one it leaves the server's subtitle
+  selection - maps, exclusions, and the subtitle streams its own filter graph reads - alone.
 - Subtitle selection in a client does not yet produce a burned-in subtitle filter.
 
 Validation expectation:
 
 - [ ] The subtitle tracks copied from the original source may still appear in client UI.
 - [ ] Anaglyfin versions do not currently burn in a selected subtitle.
-- [ ] Converted profile commands contain `-sn` and do not contain a `subtitles=` filter unless
-  a later follow-up has wired the ordinal through.
+- [ ] Converted profile commands contain neither `-sn` nor a `subtitles=` filter while no ordinal
+      is wired through, and the server's own subtitle handling - its maps, its `-map -0:s`, its
+      burn-in filter or overlay graph - survives the rewrite.
+- [ ] A converted version of a film the server is already burning subtitles into still shows those
+      subtitles (see 7.9): this is the check that the old blanket `-sn`, which muted them, is gone.
 
 Expected command behavior today:
 
 ```text
--sn
+no -sn for a converting profile, because nothing renders text on its picture
 no "subtitles=filename=" inserted by Anaglyfin for the MVP provider path
 ```
 
@@ -1018,8 +1080,10 @@ Refusal safety requirements:
 - [ ] A broken or malformed marker-shaped token is refused rather than started.
 - [ ] Two valid markers in one command are refused.
 - [ ] A marker that is not the first input is refused.
-- [ ] A profile that owns the video pipeline refuses when the command already carries a foreign
-  `-filter_complex` or `-filter_complex_script`.
+- [ ] A profile that owns the video pipeline refuses a graph it cannot merge: one read from a
+  `-filter_complex_script` file, one that never names this input's video stream, one that reaches
+  it through a view specifier, several graphs at once, or one already carrying an Anaglyfin label.
+  A server graph that simply reads the source video is merged, not refused (see 7.9).
 - [ ] A profile that owns the video pipeline refuses a command that copies its video
   (`ServerChoseVideoCopy`) instead of running a pipeline that would convert nothing.
 - [ ] Refusal diagnostics do not echo marker URLs, query parameters, or media paths.

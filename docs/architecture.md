@@ -115,11 +115,17 @@ which is the opposite of what a source that has already converted the picture wa
 
 | Profile | Required fragments |
 | --- | --- |
-| `sbs_full` | `-view_ids -1` immediately before the marker input's `-i`, `-sn` |
-| `sbs_half` | `-view_ids -1` immediately before the marker input's `-i`, `-vf scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p`, `-sn` |
-| `anaglyph_arcd` | `-view_ids -1` immediately before the marker input's `-i`, `-vf stereo3d=sbsl:arcd,format=yuv420p`, `-sn` |
+| `sbs_full` | `-view_ids -1` immediately before the marker input's `-i` |
+| `sbs_half` | `-view_ids -1` immediately before the marker input's `-i`, `-vf scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p` |
+| `anaglyph_arcd` | `-view_ids -1` immediately before the marker input's `-i`, `-vf stereo3d=sbsl:arcd,format=yuv420p` |
 | `two_d_base` | marker replacement only; no `-view_ids` |
-| `custom_grayscale` | `-view_ids -1` immediately before the marker input's `-i`, `-filter_complex <Anaglyfin graph>`, `-map [anaglyfin_custom]`, `-sn` |
+| `custom_grayscale` | `-view_ids -1` immediately before the marker input's `-i`, `-filter_complex <Anaglyfin graph>`, `-map [anaglyfin_custom]` (the map only when the server's own graph does not consume the label) |
+
+A profile whose marker names a subtitle ordinal burns that track in - the `subtitles=` filter
+lands as the last stage of the profile's chain, and only then does the rewrite add `-sn` and take
+the server's subtitle maps out. A conversion on its own renders no text, so it says nothing about
+subtitles: the server's subtitle maps and the subtitle streams its own filter graph reads survive
+the rewrite untouched.
 
 The composed all-view request is an input option: FFmpeg reads `-view_ids` when it opens the
 input, so it is written in front of that input's `-i`. A view specifier such as `0:v:view:all`
@@ -139,9 +145,22 @@ reports and evaluates against the frame that actually reaches it, so a conversio
 it scales a picture that has not been made yet (a full-SBS version of a 1920x1080 source came out
 of that ordering at 1920x540). Prepending keeps every filter the server wrote - the client's
 resolution ceiling, the ladder's rung, any burn-in - and at native quality the server's scale
-becomes an identity. A `-filter_complex` the server wrote is never reordered or interleaved: a
-graph is not a stage of somebody else's chain, and a profile that owns the video pipeline refuses
-a command that already carries one.
+becomes an identity.
+
+A `-filter_complex` the server wrote is not a chain the profile can join, but it does not need to
+be: a graph links its chains by label, so the conversion arrives as one more chain of that graph -
+the composed source stream through the profile's filters, into a label of its own
+(`[anaglyfin_profile]`, or `[anaglyfin_custom]` for the graph profile) - and the server's own
+references to the source video (`[0:<index>]`, `[0:v]`, `[0:v:0]`, `[0:v:<index>]`) are retargeted
+onto it. Nothing else in the text is touched: the server's filters, its labels, the subtitle
+streams it reads and the pad it feeds the encoder all stay as written, and the server's `-map` of
+its own output stays with it. A profile with nothing to convert (full SBS with no burn-in) has no
+chain to write and leaves the graph byte for byte alone. A graph this wrapper cannot merge refuses
+the job - one read from a `-filter_complex_script` file, because the vector carries no graph text
+to merge with; one that never names the stream the profile converts; one that reaches the source
+through a view specifier, which a composed decode refuses; one that carries several graphs, where
+no argument says which of them the output is drawn from; and one that already uses the label this
+profile writes.
 
 The only audio argument the rewriter adds is `-map 0:a?` when the server command had no maps at
 all and the profile inserted a video map of its own. Linear profiles ride the stream the server
@@ -150,14 +169,24 @@ already named, so they insert no map and therefore need no replacement audio map
 For the one custom graph profile, which maps a new labelled output, the server's video maps give
 way to that label: a video-type map (`0:v`, `0:v:0`, a graph label), the exclusion of that type,
 and the numbered map identified by the marker's `video=<index>` are removed, while other stream
-maps stay. For a linear profile, the server's ordinary video map is the converted picture's
-carrier and is preserved; subtitle maps still give way to `-sn`, and a marker-input video-type
-exclusion is removed because it would delete the stream the profile is about to convert. Any
-positive marker-input view-specifier map (`0:v:view:all`, `0:v:vidx:<n>`, or `0:v:vpos:<pos>`)
-is rewritten to the marker's ordinary video stream because a view specifier cannot stand beside
-the input's `-view_ids` request. An exclusion that does not name video stays: `-map -0:s` under a
-profile suppressing subtitles is the server agreeing with the profile, and deleting it would put
-subtitles back.
+maps stay - unless the server's own graph consumes `[anaglyfin_custom]`, in which case that label
+is already feeding the encoder through the server's chains and no map of it is written at all. For
+a linear profile, the server's ordinary video map is the converted picture's carrier and is
+preserved; subtitle maps give way to `-sn` only where the rewrite renders the text itself, and a
+marker-input video-type exclusion is removed because it would delete the stream the profile is
+about to convert. Any positive marker-input view-specifier map (`0:v:view:all`, `0:v:vidx:<n>`, or
+`0:v:vpos:<pos>`) is rewritten to the marker's ordinary video stream because a view specifier
+cannot stand beside the input's `-view_ids` request. An exclusion that does not name video stays:
+`-map -0:s` under a profile suppressing subtitles is the server agreeing with the profile, and
+deleting it would put subtitles back.
+
+A marker reaching a rewritten command must not survive anywhere in it, including where the server
+quoted it into its own filter values: a server-side burn-in is built from the path of the file
+being transcoded, and for a version that path is the marker. So after the splice, every argument is
+swept, and the marker text is replaced by the real source path in each spelling a server writes a
+value under - the token itself, the whole token percent-encoded, and the token with its colons
+escaped once or twice for the two passes a filter option value goes through. The replacement is
+escaped the same way it was found.
 
 ## Security boundaries
 

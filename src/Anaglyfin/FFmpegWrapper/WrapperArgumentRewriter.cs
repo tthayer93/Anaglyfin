@@ -43,13 +43,20 @@ namespace Anaglyfin.FFmpegWrapper;
 /// </para>
 /// <para>
 /// <b>What a rewrite does.</b> The marker token is replaced by the real source path the
-/// provider put into it. Then, through <see cref="IFfmpegProfileArgumentBuilder"/>, the
-/// profile's rewrite is applied: a profile that converts a stereo picture asks the input for
-/// the composed all-view frames, its filter chain goes <em>in front of</em> an existing
-/// <c>-vf</c> chain rather than replacing it or landing behind it (see
-/// <see cref="PrependToFilterChain"/>), the one profile that converts through a filtergraph
-/// brings that graph and the map of its label, and subtitle stream maps give way to
-/// <c>-sn</c> wherever the profile burns subtitles in. An audio map that is already on the
+/// provider put into it - in the <c>-i</c> value that carried it, and everywhere else the
+/// server quoted that same value into its own arguments, which is what makes a server-side
+/// <c>subtitles</c> filter read the film rather than the marker
+/// (<see cref="AnaglyfinFilterGraphComposer.ReplaceMarkerUrl"/>). Then, through
+/// <see cref="IFfmpegProfileArgumentBuilder"/>, the profile's rewrite is applied: a profile
+/// that converts a stereo picture asks the input for the composed all-view frames, puts its
+/// filter chain <em>in front of</em> whatever the server wrote for the picture rather than
+/// behind it or in place of it (see <see cref="PrependToFilterChain"/> and the paragraph
+/// below on a server filter graph), and the one profile that converts through a filtergraph
+/// brings that graph and - unless the server's own graph consumes its output - the map of its
+/// label. Subtitle streams are taken out of the output only where this rewrite renders the
+/// subtitles itself: a conversion has nothing to do with the text on the screen, and the
+/// server's own subtitle selection - its maps, and the subtitle streams its graph reads -
+/// survives a profile rewrite untouched. An audio map that is already on the
 /// command, the encoder, the muxer and the HLS arguments are never touched: they are
 /// Jellyfin's business, and the product requirement is that Anaglyfin playback differs from
 /// stock playback in picture and not in delivery. The one audio argument this rewriter does
@@ -82,23 +89,47 @@ namespace Anaglyfin.FFmpegWrapper;
 /// <c>video=&lt;index&gt;</c> is the provider naming the video stream of its own source by
 /// its stream index, the same number the server's <c>-map 0:&lt;index&gt;</c> spends on it. A
 /// numbered map for any other stream, and every audio, subtitle, whole-file and exclusion map
-/// that does not name video, stays exactly where the server put it.
+/// that does not name video, stays exactly where the server put it. One profile has no map to
+/// defend at all even though it brings a graph: the one whose label the server's own graph
+/// consumes, which is a picture the server is already feeding to its encoder (see the paragraph
+/// below).
 /// </para>
 /// <para>
-/// <b>Where it refuses.</b> A profile that owns the output's video pipeline cannot share
-/// that pipeline with a filtergraph someone else wrote: this wrapper merges and inserts, it
-/// does not parse or graft foreign filter text (which is also a security requirement -
-/// nothing in a received command line is ever treated as filter syntax), so an existing
-/// <c>-filter_complex</c> in the output segment refuses the job. So does a marker that is
-/// not the first input, because every argument the builder emits addresses input <c>0</c>,
-/// and so does a second valid marker anywhere in the vector: a rewrite resolves exactly
-/// one marker, and the one left behind would reach FFmpeg as a file to open. And so does a
-/// command that copies its video - <c>-c copy</c>, <c>-c:v copy</c>, <c>-codec:v:0 copy</c>,
-/// <c>-vcodec copy</c> - because copying a stream is the server deciding that no
-/// conversion happens on this output, which would leave the profile's arguments present but
-/// inert (see <see cref="WrapperRewriteStatus.ServerChoseVideoCopy"/>). Every one of
-/// these refusals says which rule the command broke, and every one returns no vector at
-/// all.
+/// <b>Where the server put the picture.</b> A server that filters the video itself does it in one
+/// of two spellings, and a profile that converts a picture has to land in front of both. A
+/// <c>-vf</c> chain is a single chain of stages, so the profile's own chain goes in front of the
+/// server's (see <see cref="PrependToFilterChain"/>). A <c>-filter_complex</c> graph is not a
+/// chain somebody else can join, but it does not need to be: a graph links its chains by label,
+/// so the profile arrives as one more chain of its own - the composed source stream through the
+/// profile's conversion, into a label of its own - and the server's chains are retargeted from the
+/// source video label onto that label
+/// (<see cref="AnaglyfinFilterGraphComposer.EditVideoSourceReferences"/>). The graph then filters
+/// what the profile produced, at the position the server wrote its filters for, which is what
+/// keeps its scale sized against the converted frame instead of against the frame the profile has
+/// not made yet. Nothing else in the text is touched: its filters, its own labels, the subtitle
+/// streams it reads and the pads it feeds the encoder all stay as the server spelled them. A
+/// profile whose label a server graph consumes then maps nothing of its own, because the graph
+/// consuming that label is the thing feeding the output picture, and mapping it as well would put
+/// a second video in the way of the one the server mapped.
+/// </para>
+/// <para>
+/// <b>Where it refuses.</b> A profile that owns the output's video pipeline cannot share that
+/// pipeline with a filtergraph whose contents it cannot see, and cannot be joined to a graph that
+/// never asks for the picture it converts: this wrapper inserts a chain and retargets a label, it
+/// does not parse or graft foreign filter text (which is also a security requirement - nothing in
+/// a received command line is ever treated as filter syntax). So a graph read from a
+/// <c>-filter_complex_script</c> file refuses the job, because nothing in the vector says what it
+/// reads; so does a graph that never references this input's video stream, because the conversion
+/// would be left with nothing to feed; so does one that reads the source through a view
+/// specifier, which a composed decode refuses to name; so does one that already carries the label
+/// this profile writes. So does a marker that is not the first input, because every argument the
+/// builder emits addresses input <c>0</c>, and so does a second valid marker anywhere in the
+/// vector: a rewrite resolves exactly one marker, and the one left behind would reach FFmpeg as a
+/// file to open. And so does a command that copies its video - <c>-c copy</c>, <c>-c:v copy</c>,
+/// <c>-codec:v:0 copy</c>, <c>-vcodec copy</c> - because copying a stream is the server deciding
+/// that no conversion happens on this output, which would leave the profile's arguments present
+/// but inert (see <see cref="WrapperRewriteStatus.ServerChoseVideoCopy"/>). Every one of these
+/// refusals says which rule the command broke, and every one returns no vector at all.
 /// </para>
 /// </remarks>
 public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
@@ -381,8 +412,18 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
 
     /// <summary>
     /// Splices a built rewrite into the command that carried the marker: the composed view
-    /// request in front of the marker's <c>-i</c>, everything else in its output segment.
+    /// request in front of the marker's <c>-i</c>, everything else in its output segment, and
+    /// the conversion in front of whatever the server wrote for the picture - a <c>-vf</c>
+    /// chain or the chains of a <c>-filter_complex</c> graph.
     /// </summary>
+    /// <remarks>
+    /// The order below is the order the questions have to be asked in. What the server wrote for
+    /// the picture decides where this profile's conversion can go; where the conversion goes
+    /// decides whether the profile has a picture of its own for another video map to compete
+    /// with; and a command whose picture is written somewhere the conversion cannot reach is
+    /// refused before anything is spliced, so that no refusal depends on a decision taken after
+    /// it and no half-decision reaches the vector.
+    /// </remarks>
     private static WrapperRewriteResult ApplyRewrite(
         IReadOnlyList<string> arguments,
         ProfileMarker marker,
@@ -399,12 +440,57 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         var ownsVideoPipeline = rewrite.OwnsVideoPipeline;
         var needsComposedView = rewrite.RequiresComposedViewInput;
 
-        // Whether this profile maps a picture of its own. Only then does another video map
-        // on the command compete with it: a linear profile converting the composed frames
-        // works on the very stream the server already named, so that map is the profile's
-        // own video map and removing it would leave the converted picture with nothing to
-        // travel on.
-        var mapsItsOwnVideo = rewrite.VideoMap is not null;
+        // The chain this profile puts in front of the server's filters: its conversion, with
+        // the burn-in last where one was asked for. Null for the profiles that convert nothing
+        // (2D, and full SBS with no text to burn), and for the one profile that converts through
+        // a graph, whose burn-in travels behind its mapped label instead.
+        var profileFilter = ValueAfter(rewrite.InsertArguments, VideoFilterArgument);
+
+        // What the server wrote for the picture, and where it wrote it: FFmpeg keeps the last
+        // value of a repeated option, so both the chain and the graph are read where FFmpeg
+        // would read them.
+        var server = ReadServerFilterText(arguments, lastInputIndex);
+
+        // A server graph can carry this profile's conversion, and can carry nothing else: the
+        // profile's text goes in as one more chain of that graph, and the server's references to
+        // the source picture are retargeted onto what that chain produces. A profile with
+        // nothing to convert has nothing to put there, and leaves the server's graph exactly as
+        // the server wrote it.
+        var mergesIntoServerGraph = server.Graph is not null
+                                    && (rewrite.FilterComplex is not null || profileFilter is not null);
+
+        // The scan runs wherever a graph is present, whether or not anything is merged into it:
+        // the facts it reports - whether the graph reads the composed stream at all, whether it
+        // names a view of it, whether it renders subtitles itself - are what several of the
+        // decisions below rest on, and one of them, the view specifier, refuses even a profile
+        // that writes nothing into the graph.
+        var graphEdit = server.Graph is null
+            ? null
+            : AnaglyfinFilterGraphComposer.EditVideoSourceReferences(
+                server.Graph,
+                marker.VideoStreamIndex,
+                rewrite.FilterComplex is not null
+                    ? AnaglyfinFilterGraphComposer.CustomOutputLabel
+                    : AnaglyfinFilterGraphComposer.ProfileOutputLabel);
+
+        // Whether the server's graph is the thing reading this profile's converted picture, and
+        // therefore whether the profile's own label needs a map in front of it. Consumed by a
+        // graph, the label is already feeding the encoder through the server's own chains, and
+        // mapping it as well would put a second video in the way of the picture the server
+        // mapped.
+        var graphConsumesProfileLabel = mergesIntoServerGraph && rewrite.FilterComplex is not null;
+
+        // The same fact one step further: the linear chain that went into the graph has to be
+        // kept out of the output segment as well, or the same filters would run twice.
+        var linearChainMergedIntoGraph = mergesIntoServerGraph && rewrite.FilterComplex is null;
+
+        // Whether this profile has a picture of its own to defend in the output. A linear
+        // conversion runs on the very stream the server already named, so that map is the
+        // profile's own video map and removing it would leave the converted picture with nothing
+        // to travel on; a graph whose label the server's graph consumes has handed its picture to
+        // those same chains. Neither has a map to insert or a competing map to remove: only a
+        // graph standing on its own does.
+        var mapsItsOwnVideo = rewrite.VideoMap is not null && !graphConsumesProfileLabel;
 
         // What to name the marker input's video stream with wherever the profile needs to
         // write that name itself: the stream the marker named, since that is the one stream
@@ -426,8 +512,17 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         var removals = new HashSet<int>();
         var replacements = new Dictionary<int, string> { [markerIndex] = marker.SourcePath };
 
-        var existingGraphIndex = -1;
-        var existingFilterValueIndex = -1;
+        // Subtitle suppression is the burn-in's own consequence and never the conversion's. A
+        // profile that converts the picture says nothing about the text on it: the server picked
+        // those subtitles, the server's maps and the server's graph reference them, and a wrapper
+        // that answered that question a second time - <c>-sn</c> with the maps taken out - is how
+        // a subtitle disappears from a film. Only where this rewrite renders the subtitles itself
+        // do the streams the server selected become a second copy of the same text, and not even
+        // then where the server's own filter text is already rendering them.
+        var serverHandlesSubtitles = (graphEdit?.HandlesSubtitles ?? false)
+                                     || AnaglyfinFilterGraphComposer.HandlesSubtitles(server.Chain);
+        var suppressSubtitleStreams = rewrite.ShouldSuppressSubtitleStreams && !serverHandlesSubtitles;
+
         var subtitlesAlreadyDisabled = false;
 
         // Whether the server told FFmpeg to copy the video instead of encoding one. The
@@ -453,7 +548,7 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
                     removals.Add(index);
                     removals.Add(index + 1);
                 }
-                else if (rewrite.ShouldSuppressSubtitleStreams && IsSubtitleMap(mapValue))
+                else if (suppressSubtitleStreams && IsSubtitleMap(mapValue))
                 {
                     removals.Add(index);
                     removals.Add(index + 1);
@@ -494,16 +589,6 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
                     }
                 }
             }
-            else if (IsVideoFilterOption(token) && index + 1 < arguments.Count)
-            {
-                // FFmpeg keeps the last value of a repeated option, so the chain the
-                // profile extends is the last one on the command.
-                existingFilterValueIndex = index + 1;
-            }
-            else if (IsFilterGraphOption(token))
-            {
-                existingGraphIndex = index;
-            }
             else if (IsSubtitleDisableOption(token))
             {
                 subtitlesAlreadyDisabled = true;
@@ -524,11 +609,53 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
                 "The command copies its video stream, so the composed view and the filters this profile asks for would have no encoded output to reach; the version was asked to convert a picture the server decided to pass through.");
         }
 
-        if (ownsVideoPipeline && existingGraphIndex >= 0)
+        // A graph this wrapper cannot read - because it lives in a script file, or because the
+        // option carrying it has no graph text beside it - is not a graph anything can be put in
+        // front of. Running it as written instead would put the profile's filters and the
+        // server's picture into one command with neither seeing the other, and the profile would
+        // report a converted picture it had not produced.
+        if (ownsVideoPipeline && (server.GraphReadFromScript || (server.GraphOptionCount > 0 && server.Graph is null)))
         {
             return WrapperRewriteResult.Failure(
                 WrapperRewriteStatus.IncompatibleFilterGraph,
-                "The command already carries a filter graph, and this profile has to own the video pipeline of the output it is rewritten into.");
+                "The command's filter graph is not written in the command: it is read from a file the argument vector names, or the option carrying it has no graph text beside it, so nothing here says which streams that graph reads or what it feeds the encoder, and this profile's conversion cannot be put in front of text the wrapper cannot see.");
+        }
+
+        if (graphEdit is not null && mergesIntoServerGraph)
+        {
+            // Several graphs are several pictures, and the vector does not say which of them the
+            // output is drawn from; merging into the last one while an earlier one still reads
+            // the unconverted stream would be a guess at which picture the user asked for.
+            if (server.GraphOptionCount > 1)
+            {
+                return WrapperRewriteResult.Failure(
+                    WrapperRewriteStatus.IncompatibleFilterGraph,
+                    "The command carries more than one filter graph, and this profile's conversion can only be put in front of the graph the output's picture is drawn from, which no command with several of them says.");
+            }
+
+            if (graphEdit.Replacements == 0)
+            {
+                return WrapperRewriteResult.Failure(
+                    WrapperRewriteStatus.IncompatibleFilterGraph,
+                    "The command's filter graph never reads the video stream this profile converts, so the conversion could only be grafted into somebody else's filter text - which this wrapper does not parse - or be left with nothing to feed, which FFmpeg refuses to run.");
+            }
+
+            if (graphEdit.UsesAnaglyfinLabel)
+            {
+                return WrapperRewriteResult.Failure(
+                    WrapperRewriteStatus.IncompatibleFilterGraph,
+                    "The command's filter graph already carries a label this profile writes, so merging the conversion into that graph would leave one output pad with two producers, which FFmpeg reports as a graph it cannot parse.");
+            }
+        }
+
+        // Asked of the graph whether or not anything was merged into it: a view specifier is a
+        // request for one eye of a stream, and a decode that was asked for its composed all-view
+        // picture refuses that request outright.
+        if (needsComposedView && graphEdit?.CarriesViewSpecifier == true)
+        {
+            return WrapperRewriteResult.Failure(
+                WrapperRewriteStatus.IncompatibleFilterGraph,
+                "The command's filter graph names a view of the video stream this profile composes at the input, and a decode configured through the composed view request refuses a view specifier, so this graph cannot be given the picture the profile asks for.");
         }
 
         // The composed view, asked of the input itself: a decoder option is read when its
@@ -550,13 +677,29 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
 
         var insertions = new List<string>();
 
-        if (rewrite.FilterComplex is { } filterComplex)
+        if (mergesIntoServerGraph)
+        {
+            // The profile's own text goes in as the graph's first chain - the composed stream
+            // through the conversion into the profile's label, or the whole of the graph profile's
+            // graph, which already ends in its own label - and the server's chains follow behind
+            // it, unchanged but for the labels now naming what the profile produces. The server's
+            // option keeps the position the server wrote it at: a graph is read as a whole, and
+            // the whole of it belongs to the output that maps a pad out of it.
+            var profileSegment = rewrite.FilterComplex
+                ?? string.Concat(
+                    AnaglyfinFilterGraphComposer.ComposedVideoStreamLabel(marker.VideoStreamIndex),
+                    profileFilter!,
+                    AnaglyfinFilterGraphComposer.ProfileOutputLabel);
+
+            replacements[server.GraphValueIndex] = profileSegment + ";" + graphEdit!.Graph;
+        }
+        else if (rewrite.FilterComplex is { } profileGraph)
         {
             insertions.Add(FilterComplexArgument);
-            insertions.Add(filterComplex);
+            insertions.Add(profileGraph);
         }
 
-        if (rewrite.VideoMap is { } videoMap)
+        if (mapsItsOwnVideo && rewrite.VideoMap is { } videoMap)
         {
             insertions.Add(MapArgument);
             insertions.Add(videoMap);
@@ -581,12 +724,14 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
 
         // The builder already merged the profile conversion and the subtitle burn-in into
         // one chain where they belong together, so the chain to splice is the one in
-        // InsertArguments rather than either half on its own.
-        if (ValueAfter(rewrite.InsertArguments, VideoFilterArgument) is { } profileFilter)
+        // InsertArguments rather than either half on its own - unless that chain is already
+        // standing at the head of the server's graph, which is where a chain in front of a
+        // graph belongs and where writing it a second time would run it twice.
+        if (profileFilter is not null && !linearChainMergedIntoGraph)
         {
-            if (existingFilterValueIndex >= 0)
+            if (server.ChainValueIndex >= 0)
             {
-                replacements[existingFilterValueIndex] = PrependToFilterChain(profileFilter, arguments[existingFilterValueIndex]);
+                replacements[server.ChainValueIndex] = PrependToFilterChain(profileFilter, server.Chain!);
             }
             else
             {
@@ -596,22 +741,115 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         }
 
         // Subtitles reach a converted picture through the burn-in filter alone; a mapped
-        // or codec-level subtitle stream on top of it would render the text twice.
-        if (rewrite.ShouldSuppressSubtitleStreams && !subtitlesAlreadyDisabled)
+        // or codec-level subtitle stream on top of it would render the text twice. Where the
+        // server renders them itself, its filter text is the answer to that question already.
+        if (suppressSubtitleStreams && !subtitlesAlreadyDisabled)
         {
             insertions.Add(DisableSubtitlesArgument);
         }
 
         return WrapperRewriteResult.Rewritten(
-            Rebuild(
-                arguments,
-                markerIndex - 1,
-                inputInsertions,
-                lastInputIndex,
-                insertions,
-                removals,
-                replacements),
+            ReplaceMarkerUrls(
+                Rebuild(
+                    arguments,
+                    markerIndex - 1,
+                    inputInsertions,
+                    lastInputIndex,
+                    insertions,
+                    removals,
+                    replacements),
+                marker),
             rewrite.ProfileId);
+    }
+
+    /// <summary>
+    /// Reads the filter text the server wrote for the picture in the output segment.
+    /// </summary>
+    /// <param name="arguments">The received vector.</param>
+    /// <param name="lastInputIndex">The index of the last input value on the command.</param>
+    /// <returns>
+    /// The graph and the chain it found, where it found them, and whether the output segment
+    /// carries a second graph or a graph this wrapper cannot read at all.
+    /// </returns>
+    /// <remarks>
+    /// One pass, and no reading of the text itself: what a graph says is
+    /// <see cref="AnaglyfinFilterGraphComposer"/>'s business, and what the two spellings mean to
+    /// this rewrite is only that the server, not this wrapper, wrote the picture's pipeline. Both
+    /// the chain and the graph are read at their last occurrence, because FFmpeg keeps the last
+    /// value of a repeated option and a rewrite that extended an ignored one would be writing into
+    /// a chain that never runs.
+    /// </remarks>
+    private static ServerFilterText ReadServerFilterText(IReadOnlyList<string> arguments, int lastInputIndex)
+    {
+        string? graph = null;
+        var graphValueIndex = -1;
+        var graphOptionCount = 0;
+        var graphReadFromScript = false;
+        string? chain = null;
+        var chainValueIndex = -1;
+
+        for (var index = lastInputIndex + 1; index < arguments.Count; index++)
+        {
+            var token = arguments[index];
+
+            if (IsVideoFilterOption(token) && index + 1 < arguments.Count)
+            {
+                chain = arguments[index + 1];
+                chainValueIndex = index + 1;
+            }
+            else if (string.Equals(token, FilterComplexScriptArgument, StringComparison.Ordinal))
+            {
+                // A graph in a file is exactly as much the server's pipeline as one written
+                // inline, and exactly as unread here: the vector carries a filename, not a graph.
+                graphReadFromScript = true;
+            }
+            else if (IsFilterGraphOption(token))
+            {
+                graphOptionCount++;
+
+                // A graph option whose value is missing or empty is not a graph anything can be
+                // put in front of, so it is recorded as an option seen and not as text read: the
+                // refusal that belongs to it is the same one a script carries, and it lives with
+                // that refusal rather than being a second rule here.
+                if (index + 1 < arguments.Count && !string.IsNullOrWhiteSpace(arguments[index + 1]))
+                {
+                    graph = arguments[index + 1];
+                    graphValueIndex = index + 1;
+                }
+            }
+        }
+
+        return new ServerFilterText(graph, graphValueIndex, graphOptionCount, graphReadFromScript, chain, chainValueIndex);
+    }
+
+    /// <summary>
+    /// Replaces the marker URL wherever a rewritten argument quotes it, so that no argument of
+    /// the command handed to FFmpeg still holds marker text.
+    /// </summary>
+    /// <param name="rewritten">The vector this rewriter built, which it owns and may edit.</param>
+    /// <param name="marker">The marker the command's first input arrived as.</param>
+    /// <returns>The same vector, with the marker text replaced where it was quoted.</returns>
+    /// <remarks>
+    /// The <c>-i</c> value is already the real path, but a server that burns subtitles in writes
+    /// the path of the file it is transcoding into its own filter arguments as well, so a marker
+    /// can survive a rewrite in a <c>subtitles=</c> filter while never appearing as an input.
+    /// Every argument is asked - which costs nothing on a command this size, and is the only way
+    /// to be sure the marker text that must never reach FFmpeg does not reach it in some slot this
+    /// rewriter did not look at.
+    /// </remarks>
+    private static List<string> ReplaceMarkerUrls(List<string> rewritten, ProfileMarker marker)
+    {
+        for (var index = 0; index < rewritten.Count; index++)
+        {
+            var value = AnaglyfinFilterGraphComposer.ReplaceMarkerUrl(rewritten[index], marker);
+
+            if (!ReferenceEquals(value, rewritten[index]))
+            {
+                rewritten[index] = value;
+            }
+        }
+
+        return rewritten;
     }
 
     /// <summary>
@@ -677,8 +915,9 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// </summary>
     /// <remarks>
     /// The filter re-opens the film by name to render its text, so the burn-in carries the
-    /// marker's real source path and not the marker itself. A marker without an ordinal is
-    /// the subtitle-free version, which still suppresses subtitle streams.
+    /// marker's real source path and not the marker itself. A marker without an ordinal is the
+    /// subtitle-free version: the profile converts the picture and leaves whatever subtitles the
+    /// server picked exactly as the server picked them.
     /// </remarks>
     private static SubtitleBurnIn? ToSubtitleBurnIn(ProfileMarker marker)
         => marker.SubtitleOrdinal is int ordinal ? new SubtitleBurnIn(marker.SourcePath, ordinal) : null;
@@ -701,8 +940,11 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// <param name="insertions">The output-side arguments, in order.</param>
     /// <param name="removals">Indexes dropped from the result.</param>
     /// <param name="replacements">Indexes whose value is written as something else.</param>
-    /// <returns>The vector to hand to FFmpeg.</returns>
-    private static IReadOnlyList<string> Rebuild(
+    /// <returns>
+    /// The vector to hand to FFmpeg, as a list the caller may still edit in place - which is
+    /// exactly what the marker sweep after this method does.
+    /// </returns>
+    private static List<string> Rebuild(
         IReadOnlyList<string> arguments,
         int insertBeforeOptionIndex,
         IReadOnlyList<string> inputInsertions,
@@ -1181,6 +1423,38 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         /// <summary>The index of the token that carries this value, glued to the option or not.</summary>
         public int ValueIndex => ValueInsideOption ? OptionIndex : OptionIndex + 1;
     }
+
+    /// <summary>
+    /// The filter text the server wrote for the picture, and where in the output segment it
+    /// stands.
+    /// </summary>
+    /// <param name="Graph">
+    /// The value of the last inline <c>-filter_complex</c> on the command, or null when the
+    /// command carries none.
+    /// </param>
+    /// <param name="GraphValueIndex">
+    /// The index of that value, or -1. This is the slot a merged graph is written back into, so
+    /// that the server's option keeps the position the server wrote it at.
+    /// </param>
+    /// <param name="GraphOptionCount">
+    /// How many inline graphs the command carries. More than one is a refusal for a merge - the
+    /// vector does not say which of them feeds the output - but several are also how a
+    /// graph-less rewrite learns the command's shape is unusual.
+    /// </param>
+    /// <param name="GraphReadFromScript">
+    /// Whether a <c>-filter_complex_script</c> stands on the command: the server's picture is
+    /// then written in a file this wrapper cannot see, which is the one graph shape it can never
+    /// merge into.
+    /// </param>
+    /// <param name="Chain">The value of the last <c>-vf</c> on the command, or null when there is none.</param>
+    /// <param name="ChainValueIndex">The index of that value, or -1 when there is none.</param>
+    private readonly record struct ServerFilterText(
+        string? Graph,
+        int GraphValueIndex,
+        int GraphOptionCount,
+        bool GraphReadFromScript,
+        string? Chain,
+        int ChainValueIndex);
 
     /// <summary>
     /// Whether a token and the value after it ask FFmpeg to copy a video stream.
