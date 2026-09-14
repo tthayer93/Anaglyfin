@@ -15,9 +15,12 @@ namespace Anaglyfin.Ffmpeg;
 /// same argument tokens out - so commands can be asserted verbatim in tests.
 /// </para>
 /// <para>
-/// Every stereo profile is expressed over the single all-view native side-by-side
-/// pivot (one decode per playback), and none of the generated arguments ever asks for
-/// hardware decoding: MVC decode is software-only, and the encoder choice belongs to
+/// Every stereo profile is served by one composed all-view decode
+/// (<see cref="ProfileRewrite.RequiresComposedViewInput"/>), which the caller asks the
+/// input for with <see cref="FfmpegProfileArgumentBuilder.ComposedViewInputOption"/> before
+/// its <c>-i</c>; nothing this builder emits selects a view with a stream specifier, because
+/// a decode configured that way refuses one. None of the generated arguments ever asks for
+/// hardware decoding either: MVC decode is software-only, and the encoder choice belongs to
 /// the caller assembling the rest of the command.
 /// </para>
 /// </remarks>
@@ -32,6 +35,12 @@ public interface IFfmpegProfileArgumentBuilder
     /// the plain 2D profile (the stock pipeline owns its subtitles) and for profiles
     /// that do not support burn-in.
     /// </param>
+    /// <param name="videoStreamIndex">
+    /// The index of the video stream being converted inside the input it is read from, or
+    /// null when the caller cannot name one. Only the custom grayscale profile uses it: its
+    /// filtergraph has to say which stream it reads, and a named stream is a different claim
+    /// from "every video stream of this input".
+    /// </param>
     /// <returns>The arguments to insert into the transcode command.</returns>
     /// <exception cref="System.ArgumentException">
     /// The profile id is not on the profile id allowlist, or the profile declares a
@@ -44,35 +53,38 @@ public interface IFfmpegProfileArgumentBuilder
     /// <exception cref="System.ArgumentOutOfRangeException">
     /// The profile carries a kind this build does not know.
     /// </exception>
-    ProfileRewrite Build(StereoProfile profile, SubtitleBurnIn? subtitleBurnIn = null);
+    ProfileRewrite Build(StereoProfile profile, SubtitleBurnIn? subtitleBurnIn = null, int? videoStreamIndex = null);
 
     /// <summary>
     /// Builds the plain 2D profile: the decoder's default base view.
     /// </summary>
     /// <returns>
-    /// A rewrite that inserts nothing, because an unmodified FFmpeg-mvc invocation
-    /// already decodes exactly the base view this profile is.
+    /// A rewrite that inserts nothing and asks the decode for nothing, because an
+    /// unmodified FFmpeg-mvc invocation already decodes exactly the base view this profile
+    /// is.
     /// </returns>
     ProfileRewrite BuildTwoDimensionalBase();
 
     /// <summary>
-    /// Builds the full side-by-side profile: the native all-view output unchanged.
+    /// Builds the full side-by-side profile: the composed all-view output unchanged.
     /// </summary>
     /// <param name="subtitleBurnIn">An optional subtitle burn-in.</param>
     /// <returns>
-    /// A rewrite whose only conversion argument is the all-view map; the assembled
-    /// full-width SBS frames are the profile output, so no filter is added.
+    /// A rewrite that needs the composed input and carries no filter and no map of its own;
+    /// the assembled full-width SBS frames are the profile output and they arrive on the
+    /// stream the caller's own video map already names.
     /// </returns>
     ProfileRewrite BuildSideBySideFull(SubtitleBurnIn? subtitleBurnIn = null);
 
     /// <summary>
-    /// Builds the half side-by-side profile from the full side-by-side output.
+    /// Builds the half side-by-side profile from the composed all-view output.
     /// </summary>
     /// <param name="subtitleBurnIn">An optional subtitle burn-in.</param>
     /// <returns>
-    /// A rewrite mapping the all-view output and scaling the combined frame to half
-    /// width in place. Real scaling is required; a stereo3d re-tag keeps the frame
-    /// size and only changes the pixel aspect ratio, so it is never used here.
+    /// A rewrite needing the composed input and scaling the combined frame to half width in
+    /// place, on the stream the caller maps. Real scaling is required; a stereo3d re-tag
+    /// keeps the frame size and only changes the pixel aspect ratio, so it is never used
+    /// here.
     /// </returns>
     ProfileRewrite BuildSideBySideHalf(SubtitleBurnIn? subtitleBurnIn = null);
 
@@ -85,7 +97,7 @@ public interface IFfmpegProfileArgumentBuilder
     /// </param>
     /// <param name="subtitleBurnIn">An optional subtitle burn-in.</param>
     /// <returns>
-    /// A rewrite mapping the all-view output and converting it with
+    /// A rewrite needing the composed input and converting it with
     /// <c>stereo3d=sbsl:&lt;code&gt;</c>.
     /// </returns>
     /// <exception cref="System.ArgumentException">The code is not an allowlisted code.</exception>
@@ -97,11 +109,19 @@ public interface IFfmpegProfileArgumentBuilder
     /// <param name="leftEyeColor">The validated left eye tint.</param>
     /// <param name="rightEyeColor">The validated right eye tint.</param>
     /// <param name="subtitleBurnIn">An optional subtitle burn-in.</param>
+    /// <param name="videoStreamIndex">
+    /// The index of the composed video stream inside the input it is read from, or null to
+    /// address it by stream type instead.
+    /// </param>
     /// <returns>
-    /// A rewrite carrying one filter graph over the all-view output: split the native
+    /// A rewrite carrying one filter graph over the composed stream: split the native
     /// side-by-side frame, grayscale each eye, tint each eye with the colour's channel
     /// coefficients, screen-combine, and map the labelled result. Deliberately not
     /// colour balanced.
     /// </returns>
-    ProfileRewrite BuildCustomGrayscaleAnaglyph(RgbColor leftEyeColor, RgbColor rightEyeColor, SubtitleBurnIn? subtitleBurnIn = null);
+    ProfileRewrite BuildCustomGrayscaleAnaglyph(
+        RgbColor leftEyeColor,
+        RgbColor rightEyeColor,
+        SubtitleBurnIn? subtitleBurnIn = null,
+        int? videoStreamIndex = null);
 }
