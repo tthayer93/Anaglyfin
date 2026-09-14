@@ -33,13 +33,29 @@ namespace Anaglyfin.VersionItems;
 /// </para>
 /// <para>
 /// <b>What is deliberately not here.</b> The item's name (a version's name is its profile label,
-/// which is also the label the stock version picker shows), its file facts (the version converts a
-/// file, it is not that file), its dates of its own making (<c>DateCreated</c>, when this item came
-/// to exist), and the file-derived halves of an image row. An image entry is copied whole - same
-/// file, same size, same blurhash, same modified time - but a version's image rows are compared on
-/// the set of images they name, in no particular order, and not on those derived numbers: the server
-/// recomputes them from the file whenever it touches an item, and a copy that insisted on its own
-/// stale copy of a number the server had just refreshed would be rewritten on every pass forever.
+/// which is also the label the stock version picker shows), the sort names the server derives from
+/// that name (<c>SortName</c> and <c>ForcedSortName</c> - see below), its file facts (the version
+/// converts a file, it is not that file), its dates of its own making (<c>DateCreated</c>, when this
+/// item came to exist), and the file-derived halves of an image row. An image entry is copied whole
+/// - same file, same size, same blurhash, same modified time - but a version's image rows are
+/// compared on the set of images they name, in no particular order, and not on those derived
+/// numbers: the server recomputes them from the file whenever it touches an item, and a copy that
+/// insisted on its own stale copy of a number the server had just refreshed would be rewritten on
+/// every pass forever.
+/// </para>
+/// <para>
+/// <b>Why the sort names stay with the server.</b> A version's <c>Name</c> is its profile label, and
+/// the item model answers an item's sort name lazily from that name (or from a forced sort name),
+/// dropping the cached value the moment the item is named or its forced sort name is set - which the
+/// load path does on every read. So the sort name a version answers with is whatever the server
+/// derives from its label, never the string copied off the source, and a copy of it cannot be made
+/// to round-trip: it would be written on one pass and read back different on the next, which is the
+/// never-settling rewrite this type exists to avoid. Like the name it is derived from, the sort-name
+/// pair is the item's own identity state and stays out of the copy and out of the comparison; a
+/// version sorts however the server sorts a thing called after its label. This drops nothing the
+/// panel reads - the details panel shows <c>OriginalTitle</c>, which <em>is</em> copied - and it
+/// leaves whatever sort values an existing row already holds exactly as they are, because nothing
+/// here clears them: not comparing a field is not the same as blanking it.
 /// </para>
 /// </remarks>
 public sealed class VersionItemMetadata
@@ -59,10 +75,6 @@ public sealed class VersionItemMetadata
     private readonly string? _overview;
 
     private readonly string? _originalTitle;
-
-    private readonly string? _sortName;
-
-    private readonly string? _forcedSortName;
 
     private readonly string? _tagline;
 
@@ -97,8 +109,6 @@ public sealed class VersionItemMetadata
     private VersionItemMetadata(
         string? overview,
         string? originalTitle,
-        string? sortName,
-        string? forcedSortName,
         string? tagline,
         string? officialRating,
         string? customRating,
@@ -117,8 +127,6 @@ public sealed class VersionItemMetadata
     {
         _overview = overview;
         _originalTitle = originalTitle;
-        _sortName = sortName;
-        _forcedSortName = forcedSortName;
         _tagline = tagline;
         _officialRating = officialRating;
         _customRating = customRating;
@@ -145,8 +153,9 @@ public sealed class VersionItemMetadata
     /// <remarks>
     /// The one place that decides which of an item's fields a version carries. Two things are worth
     /// naming: the title travels as <c>OriginalTitle</c> because a version's own name is its profile
-    /// label and the panel needs the movie's name from somewhere, and the sort name is read through
-    /// the source's own getter, which is where the server keeps whatever the item sorts under.
+    /// label and the panel needs the movie's name from somewhere, and the sort-name pair stays home
+    /// because a version's name is not the source's title - the server derives that pair from the
+    /// item's own name, and a copied one would never round-trip (see the type remarks).
     /// </remarks>
     public static VersionItemMetadata FromSource(BaseItem source)
     {
@@ -155,8 +164,6 @@ public sealed class VersionItemMetadata
         return new VersionItemMetadata(
             source.Overview,
             FirstNonBlank(source.OriginalTitle, source.Name),
-            source.SortName,
-            source.ForcedSortName,
             source.Tagline,
             source.OfficialRating,
             source.CustomRating,
@@ -181,8 +188,11 @@ public sealed class VersionItemMetadata
     /// <remarks>
     /// Every field is written, including the ones that already match: this is the answer to "make
     /// this item say what the source says", and a caller that wanted to know whether anything would
-    /// change asks <see cref="FieldsMatch"/> first. The name is not written here - see the type
-    /// remarks - and neither is anything about the item's file.
+    /// change asks <see cref="FieldsMatch"/> first. The name is not written here, and neither are the
+    /// sort names derived from it - see the type remarks - and neither is anything about the item's
+    /// file. Writing no sort name is also what leaves an existing row's own sort values untouched: the
+    /// server keeps answering them from the item's label whatever a previous version of this code
+    /// wrote.
     /// </remarks>
     public void ApplyTo(BaseItem target)
     {
@@ -190,12 +200,6 @@ public sealed class VersionItemMetadata
 
         target.Overview = _overview;
         target.OriginalTitle = _originalTitle;
-
-        // ForcedSortName first, and SortName after it: setting the forced name drops the cached sort
-        // name the item was answering with, so a SortName written first would be thrown away and the
-        // item would go back to sorting under its own label.
-        target.ForcedSortName = _forcedSortName;
-        target.SortName = _sortName;
 
         target.Tagline = _tagline;
         target.OfficialRating = _officialRating;
@@ -225,30 +229,129 @@ public sealed class VersionItemMetadata
     /// <remarks>
     /// This is the same list as <see cref="ApplyTo"/>'s, read instead of written, and it has to stay
     /// level with it: a field written but not compared is a field rewritten on every pass, and a
-    /// field compared but not written is a drift nobody repairs.
+    /// field compared but not written is a drift nobody repairs. It is answered from
+    /// <see cref="FieldDrift"/>, the one walk of that list, so that the yes-or-no answer a pass acts on
+    /// and the field name a debug line reports cannot be reading two different lists.
+    /// <para>
+    /// The set-like fields - genres, tags, studios and filming locations - are compared as multisets of
+    /// their values, in no particular order, for the same reason the image rows are: they are stored as
+    /// rows keyed by the item and a query owes nobody the order it returns them in. A value that is
+    /// genuinely added, removed or renamed is still found. See <see cref="ImagesMatch"/> for the same
+    /// argument on the other list-valued field.
+    /// </para>
     /// </remarks>
     public bool FieldsMatch(BaseItem current)
     {
         ArgumentNullException.ThrowIfNull(current);
 
-        return TextEquals(current.Overview, _overview)
-               && TextEquals(current.OriginalTitle, _originalTitle)
-               && TextEquals(current.SortName, _sortName)
-               && TextEquals(current.ForcedSortName, _forcedSortName)
-               && TextEquals(current.Tagline, _tagline)
-               && TextEquals(current.OfficialRating, _officialRating)
-               && TextEquals(current.CustomRating, _customRating)
-               && TextEquals(current.HomePageUrl, _homePageUrl)
-               && NullableEquals(current.CommunityRating, _communityRating)
-               && NullableEquals(current.CriticRating, _criticRating)
-               && NullableEquals(current.ProductionYear, _productionYear)
-               && NullableEquals(current.PremiereDate, _premiereDate)
-               && NullableEquals(current.EndDate, _endDate)
-               && SameList(current.Genres, _genres)
-               && SameList(current.Tags, _tags)
-               && SameList(current.Studios, _studios)
-               && SameList(current.ProductionLocations, _productionLocations)
-               && SameProviderIds(current.ProviderIds, _providerIds);
+        return FieldDrift(current) is null;
+    }
+
+    /// <summary>
+    /// The first metadata field on which an item disagrees with the source, named.
+    /// </summary>
+    /// <param name="current">The item to read.</param>
+    /// <returns>The name of the first field that would change, or <c>null</c> when none would.</returns>
+    /// <remarks>
+    /// <para>
+    /// The whole of <see cref="FieldsMatch"/>'s list, read one field at a time and stopped at the
+    /// first disagreement. A pass that only ever said "metadata needs rewriting" is a pass an operator
+    /// still has to go and find the row for by hand - which is exactly how a single un-round-tripping
+    /// field came to cost a full forensic pass over the library and the vendored item model. Naming
+    /// the field turns that hunt into one debug boot.
+    /// </para>
+    /// <para>
+    /// It is the one place the field list is walked, and <see cref="FieldsMatch"/> is asked of it, so
+    /// a field added to the copy cannot be quietly left out of the comparison (or out of the reason a
+    /// rewrite reports): there is no second list to forget to update. The sort-name pair is deliberately
+    /// absent from it, exactly as it is from the copy - see the type remarks.
+    /// </para>
+    /// </remarks>
+    public string? FieldDrift(BaseItem current)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+
+        if (!TextEquals(current.Overview, _overview))
+        {
+            return nameof(BaseItem.Overview);
+        }
+
+        if (!TextEquals(current.OriginalTitle, _originalTitle))
+        {
+            return nameof(BaseItem.OriginalTitle);
+        }
+
+        if (!TextEquals(current.Tagline, _tagline))
+        {
+            return nameof(BaseItem.Tagline);
+        }
+
+        if (!TextEquals(current.OfficialRating, _officialRating))
+        {
+            return nameof(BaseItem.OfficialRating);
+        }
+
+        if (!TextEquals(current.CustomRating, _customRating))
+        {
+            return nameof(BaseItem.CustomRating);
+        }
+
+        if (!TextEquals(current.HomePageUrl, _homePageUrl))
+        {
+            return nameof(BaseItem.HomePageUrl);
+        }
+
+        if (!NullableEquals(current.CommunityRating, _communityRating))
+        {
+            return nameof(BaseItem.CommunityRating);
+        }
+
+        if (!NullableEquals(current.CriticRating, _criticRating))
+        {
+            return nameof(BaseItem.CriticRating);
+        }
+
+        if (!NullableEquals(current.ProductionYear, _productionYear))
+        {
+            return nameof(BaseItem.ProductionYear);
+        }
+
+        if (!NullableEquals(current.PremiereDate, _premiereDate))
+        {
+            return nameof(BaseItem.PremiereDate);
+        }
+
+        if (!NullableEquals(current.EndDate, _endDate))
+        {
+            return nameof(BaseItem.EndDate);
+        }
+
+        if (!SameList(current.Genres, _genres))
+        {
+            return nameof(BaseItem.Genres);
+        }
+
+        if (!SameList(current.Tags, _tags))
+        {
+            return nameof(BaseItem.Tags);
+        }
+
+        if (!SameList(current.Studios, _studios))
+        {
+            return nameof(BaseItem.Studios);
+        }
+
+        if (!SameList(current.ProductionLocations, _productionLocations))
+        {
+            return nameof(BaseItem.ProductionLocations);
+        }
+
+        if (!SameProviderIds(current.ProviderIds, _providerIds))
+        {
+            return nameof(BaseItem.ProviderIds);
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -420,8 +523,35 @@ public sealed class VersionItemMetadata
         return true;
     }
 
+    // Genres, tags, studios and filming locations are stored as rows keyed by the item - the same
+    // shape as the image rows and the credits - and a query hands those rows back in whatever order
+    // it produces, not the order they were written. Compared by position, one read in a new order
+    // would look like every value having moved and the item would be rewritten on every pass forever,
+    // which is the never-settling rewrite the sort-name pair caused, only coming from list order
+    // instead of a derived field. So the multiset of values is put into a canonical order first and
+    // compared elementwise: the same values answer equal whatever order either side arrived in, and a
+    // value still missing, added or renamed changes the multiset and is repaired. Copying them stays
+    // in the source's own order (ApplyTo writes them whole) - it is only the answer to "already
+    // equal?" that is order-indifferent, exactly as it is for the images and the credits.
     private static bool SameList(string[]? current, string[] wanted)
-        => (current ?? Array.Empty<string>()).SequenceEqual(wanted, StringComparer.Ordinal);
+        => SortedValues(current ?? Array.Empty<string>()).SequenceEqual(SortedValues(wanted), StringComparer.Ordinal);
+
+    private static List<string> SortedValues(string[] values)
+    {
+        var sorted = new List<string>(values.Length);
+
+        foreach (var value in values)
+        {
+            // A hole in the list is a blank, the same spelling TextEquals gives an absent text, so a
+            // null and an empty entry on the two sides of a comparison are not made to differ by the
+            // sort that is only meant to ignore position.
+            sorted.Add(value ?? string.Empty);
+        }
+
+        sorted.Sort(StringComparer.Ordinal);
+
+        return sorted;
+    }
 
     private static bool TextEquals(string? current, string? wanted)
         => string.Equals(current ?? string.Empty, wanted ?? string.Empty, StringComparison.Ordinal);

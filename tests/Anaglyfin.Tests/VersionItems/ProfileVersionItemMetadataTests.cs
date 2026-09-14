@@ -66,8 +66,6 @@ public class ProfileVersionItemMetadataTests
         // and not the 1080p root the versions happen to be offered under.
         Assert.Equal(mvc.Overview, version.Overview);
         Assert.Equal(mvc.Tagline, version.Tagline);
-        Assert.Equal(mvc.SortName, version.SortName);
-        Assert.Equal(mvc.ForcedSortName, version.ForcedSortName);
         Assert.Equal(mvc.Genres, version.Genres);
         Assert.Equal(mvc.Tags, version.Tags);
         Assert.Equal(mvc.Studios, version.Studios);
@@ -93,6 +91,14 @@ public class ProfileVersionItemMetadataTests
         Assert.Equal(new ProfileCatalog().GetProfile(SideBySideFull).DisplayName, version.Name);
         Assert.Equal("Ready Player One", version.OriginalTitle);
         Assert.Equal("Ready Player One (2018) [1080p]", movie.OriginalTitle);
+
+        // The sort-name pair is deliberately NOT copied. A version's Name is its profile label and the
+        // server derives SortName/ForcedSortName from that name, so the source's title-derived pair
+        // never round-trips back through the item - copying and comparing it is the rewrite-on-every-
+        // boot this excludes. Left alone, the version sorts under its label, so what it answers for its
+        // sort name is not the source's, and its forced sort name is whatever the server set (nothing).
+        Assert.NotEqual(mvc.SortName, version.SortName);
+        Assert.NotEqual(mvc.ForcedSortName, version.ForcedSortName);
     }
 
     [Fact]
