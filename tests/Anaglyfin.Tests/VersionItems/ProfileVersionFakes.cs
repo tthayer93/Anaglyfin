@@ -96,6 +96,15 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     public Func<Video, bool>? ThrowOnLinkedVersions { get; set; }
 
     /// <summary>
+    /// Gets the ids whose child rows (image list, credits) are answered in a rotated order on every
+    /// read. A database hands child rows back in whatever order its query happens to produce and
+    /// owes nobody the order they were written in; a comparison keyed on read order mistakes one
+    /// rotation for every row having moved. A test that wants to be that database puts the item's id
+    /// in this list.
+    /// </summary>
+    public HashSet<Guid> RotateChildrenFor { get; } = new();
+
+    /// <summary>
     /// Gets or sets the callback a test runs the moment a creation is attempted, before the creation
     /// itself is held or recorded. Together with <see cref="HoldCreations"/> this is how a test holds
     /// a reconciliation inside the library it is about to write.
@@ -113,7 +122,30 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
 
     /// <inheritdoc />
     public BaseItem? FindItem(Guid itemId)
-        => _items.TryGetValue(itemId, out var item) ? item : null;
+    {
+        if (!_items.TryGetValue(itemId, out var item))
+        {
+            return null;
+        }
+
+        if (RotateChildrenFor.Contains(itemId))
+        {
+            // Read order is the repository's business, not the writer's: hand the image rows back
+            // rotated by one from however they stand, so a manager that compares them index by
+            // index against the order it wrote them sees every row having moved - and a manager
+            // that compares them by what they name sees the same set it wrote.
+            var images = item.ImageInfos;
+            if (images is { Length: > 1 })
+            {
+                var rotated = new ItemImageInfo[images.Length];
+                Array.Copy(images, 1, rotated, 0, images.Length - 1);
+                rotated[images.Length - 1] = images[0];
+                item.ImageInfos = rotated;
+            }
+        }
+
+        return item;
+    }
 
     /// <inheritdoc />
     public IReadOnlyList<Video> GetVersionRootCandidates()
@@ -222,7 +254,25 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
 
     /// <inheritdoc />
     public IReadOnlyList<PersonInfo> GetPeople(Guid itemId)
-        => _people.TryGetValue(itemId, out var people) ? people : Array.Empty<PersonInfo>();
+    {
+        if (!_people.TryGetValue(itemId, out var people))
+        {
+            return Array.Empty<PersonInfo>();
+        }
+
+        if (RotateChildrenFor.Contains(itemId) && people.Count > 1)
+        {
+            // The same answer as the image rows above: the rows of one item are sorted by the
+            // query, not by the writer, and the copy handed back is rotated to say so.
+            var rotated = new List<PersonInfo>(people.Count);
+            rotated.AddRange(people.Skip(1));
+            rotated.Add(people[0]);
+
+            return rotated;
+        }
+
+        return people;
+    }
 
     /// <inheritdoc />
     public void SavePeople(Guid itemId, IReadOnlyList<PersonInfo> people)
