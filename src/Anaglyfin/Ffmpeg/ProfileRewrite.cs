@@ -176,10 +176,11 @@ public sealed record ProfileRewrite
     /// rewritten command.
     /// </summary>
     /// <remarks>
-    /// True for every profile the rewrite converts: subtitles then reach the picture
-    /// exclusively through <see cref="SubtitleFilter"/>, after the stereo conversion,
-    /// so mapped or codec-level subtitle streams would double-render text. False for
-    /// the plain 2D profile, whose subtitle handling is left to the stock pipeline.
+    /// True exactly where <see cref="SubtitleFilter"/> was built: the text of this file is then
+    /// rendered onto the picture by this rewrite, and a mapped or codec-level subtitle stream
+    /// beside it would double-render it. Converting a picture says nothing about the text on it,
+    /// so every other rewrite leaves the caller's subtitle choice alone - its maps, and the
+    /// subtitle streams its own filter graphs read - exactly as the plain 2D profile always did.
     /// </remarks>
     public bool ShouldSuppressSubtitleStreams { get; init; }
 

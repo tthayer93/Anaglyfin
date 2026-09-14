@@ -26,7 +26,10 @@ public class FakeFfmpegCommandCollectorTests
         var rendered = collector.Render();
 
         Assert.Contains("-view_ids -1", rendered);
-        Assert.Contains(" -sn ", rendered);
+
+        // A rewrite that converts without rendering text has no subtitle decision to make: no
+        // -sn is added, and nothing is taken out of the stream level.
+        Assert.DoesNotContain("-sn", collector.Arguments, StringComparer.Ordinal);
 
         // The composed request is an input option, not a map in the output segment.
         var viewOption = collector.IndexOf("-view_ids");
@@ -36,8 +39,9 @@ public class FakeFfmpegCommandCollectorTests
         // The linear profile rides the server's ordinary video map instead of naming another.
         Assert.Contains("-map 0:v", rendered);
 
-        // The rewrite took subtitles off the stream level...
-        Assert.DoesNotContain("0:s:0", rendered);
+        // The subtitle stream the server mapped is still mapped: converting the picture is not
+        // an answer to what text is on it.
+        Assert.Contains("0:s:0", rendered);
 
         // ...and nothing else grew a second input: still one -i, one output.
         Assert.Single(collector.Arguments, argument => argument == "-i");

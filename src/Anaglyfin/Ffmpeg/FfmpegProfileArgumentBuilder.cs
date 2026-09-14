@@ -323,7 +323,11 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
             FilterComplex = null,
             FilterComplexInput = null,
             SubtitleFilter = subtitleFilter,
-            ShouldSuppressSubtitleStreams = true,
+
+            // Suppression is the burn-in's consequence and not the conversion's: a profile that
+            // only converts the picture leaves the server's subtitle choice standing, with its
+            // maps and its filter graphs intact.
+            ShouldSuppressSubtitleStreams = subtitleFilter is not null,
             ShouldAppendSubtitlesToProfileFilter = profileFilter is not null && subtitleFilter is not null
         };
     }
@@ -375,7 +379,10 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
             FilterComplex = filterComplex,
             FilterComplexInput = filterInput,
             SubtitleFilter = subtitleFilter,
-            ShouldSuppressSubtitleStreams = true
+
+            // Same rule as the linear profiles: only the burn-in asks for the server's subtitle
+            // streams to go, never the conversion the graph performs.
+            ShouldSuppressSubtitleStreams = subtitleFilter is not null
 
             // ShouldAppendSubtitlesToProfileFilter stays false: the burn-in for this
             // profile is its own stage behind the mapped graph output, not a merge

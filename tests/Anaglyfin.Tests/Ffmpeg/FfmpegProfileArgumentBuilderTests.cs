@@ -93,7 +93,11 @@ public class FfmpegProfileArgumentBuilderTests
         Assert.Null(rewrite.VideoMap);
         Assert.Null(rewrite.VideoFilter);
         Assert.Null(rewrite.FilterComplex);
-        Assert.True(rewrite.ShouldSuppressSubtitleStreams);
+
+        // Nothing is rendered onto the picture here, so nothing entitles this rewrite to take
+        // the caller's subtitle streams away: suppression belongs to the burn-in, not to the
+        // conversion, and this profile was asked for neither.
+        Assert.False(rewrite.ShouldSuppressSubtitleStreams);
 
         // What it does need is asked at the input, which the flags say rather than leaving a
         // caller to infer it from an argument list that is empty here.
@@ -192,7 +196,9 @@ public class FfmpegProfileArgumentBuilderTests
             rewrite.InsertArguments);
         Assert.Null(rewrite.VideoMap);
         Assert.Equal($"stereo3d=sbsl:{outputCode},format=yuv420p", rewrite.VideoFilter);
-        Assert.True(rewrite.ShouldSuppressSubtitleStreams);
+
+        // A preset built without a burn-in renders no text and therefore mutes none either.
+        Assert.False(rewrite.ShouldSuppressSubtitleStreams);
         Assert.True(rewrite.RequiresComposedViewInput);
         Assert.True(rewrite.OwnsVideoPipeline);
     }
@@ -292,7 +298,10 @@ public class FfmpegProfileArgumentBuilderTests
         Assert.Null(rewrite.VideoFilter);
         Assert.Equal(ExpectedGraph, rewrite.FilterComplex);
         Assert.Equal("[0:v]", rewrite.FilterComplexInput);
-        Assert.True(rewrite.ShouldSuppressSubtitleStreams);
+
+        // Graph and no burn-in: the profile owns the output's picture and says nothing about
+        // the text on it.
+        Assert.False(rewrite.ShouldSuppressSubtitleStreams);
         Assert.False(rewrite.ShouldAppendSubtitlesToProfileFilter);
         Assert.True(rewrite.RequiresComposedViewInput);
 
@@ -427,6 +436,42 @@ public class FfmpegProfileArgumentBuilderTests
         Assert.Equal("scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", rewrite.VideoFilter);
         Assert.Equal("subtitles=filename='" + MoviePath + "':si=1", rewrite.SubtitleFilter);
         Assert.True(rewrite.ShouldAppendSubtitlesToProfileFilter);
+        Assert.True(rewrite.ShouldSuppressSubtitleStreams);
+    }
+
+    [Theory]
+    [InlineData(ProfileIds.SideBySideFull)]
+    [InlineData(ProfileIds.SideBySideHalf)]
+    [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
+    [InlineData(ProfileIds.CustomGrayscale)]
+    [InlineData(ProfileIds.TwoDBase)]
+    public void ConvertingAPictureWithoutABurnInAsksForNoSubtitleSuppression(string profileId)
+    {
+        // The rule the wrapper depends on: a rewrite that renders no text has no claim on the
+        // subtitle streams the caller picked, whatever else it does to the picture. Before this
+        // rule, a converted version quietly took the film's subtitles out of the output.
+        var profile = Catalog.GetProfile(profileId);
+
+        var rewrite = _builder.Build(profile);
+
+        Assert.Null(rewrite.SubtitleFilter);
+        Assert.False(rewrite.ShouldSuppressSubtitleStreams);
+    }
+
+    [Theory]
+    [InlineData(ProfileIds.SideBySideFull)]
+    [InlineData(ProfileIds.SideBySideHalf)]
+    [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
+    [InlineData(ProfileIds.CustomGrayscale)]
+    public void ABurnInIsWhatAsksForTheSubtitleStreamsToBeTakenOut(string profileId)
+    {
+        // The other half of the rule: text rendered by this rewrite is text the mapped streams
+        // must not render a second time.
+        var profile = Catalog.GetProfile(profileId);
+
+        var rewrite = _builder.Build(profile, BurnIn);
+
+        Assert.NotNull(rewrite.SubtitleFilter);
         Assert.True(rewrite.ShouldSuppressSubtitleStreams);
     }
 
@@ -644,9 +689,10 @@ public class FfmpegProfileArgumentBuilderTests
         {
             var rewrite = _builder.Build(profile, BurnIn);
 
-            // Subtitle suppression, pipeline ownership and the composed input all follow the
-            // same line: everything that converts owns its output and its decode; 2D keeps the
-            // stock pipeline and the decoder's own base view.
+            // Every catalog profile but 2D converts, so it owns its output and its decode; and
+            // every one of them takes the burn-in asked for here - which is now the same thing
+            // suppression follows, and lands on the same answer by a different road: 2D renders
+            // no text and converts nothing, and everything else does both.
             Assert.Equal(profile.RequiresAllViews, rewrite.ShouldSuppressSubtitleStreams);
             Assert.Equal(profile.RequiresAllViews, rewrite.RequiresComposedViewInput);
             Assert.Equal(profile.RequiresAllViews, rewrite.OwnsVideoPipeline);

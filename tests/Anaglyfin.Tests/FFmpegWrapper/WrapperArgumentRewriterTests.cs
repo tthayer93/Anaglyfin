@@ -240,7 +240,7 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
-    public void AnExistingFilterGraphRefusesAProfileThatOwnsTheVideoPipeline()
+    public void AGraphThatNamesOnlyViewsOfTheSourceRefusesEvenTheGraphProfile()
     {
         var arguments = new List<string>
         {
@@ -251,8 +251,10 @@ public class WrapperArgumentRewriterTests
 
         var result = _rewriter.Rewrite(arguments);
 
-        // Grafting Anaglyfin's graph onto somebody else's would need a filter parser and a
-        // policy for foreign text; the wrapper has neither on purpose.
+        // This graph reaches the source picture only through view specifiers, which a composed
+        // decode refuses, and it never names the stream the profile converts: there is no label
+        // here to retarget onto the profile's output, and grafting graphs would need a filter
+        // parser the wrapper does not have on purpose.
         Assert.Equal(WrapperRewriteStatus.IncompatibleFilterGraph, result.Status);
         Assert.False(result.IsSuccess);
         Assert.Empty(result.Arguments);
@@ -262,11 +264,11 @@ public class WrapperArgumentRewriterTests
     [InlineData(ProfileIds.SideBySideFull)]
     [InlineData(ProfileIds.SideBySideHalf)]
     [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
-    public void TheSameGraphRefusesTheLinearProfilesToo(string profileId)
+    public void TheSameGraphRefusesTheLinearProfilesBecauseItReadsNoStreamTheyConvert(string profileId)
     {
-        // A linear profile looks like the easy case, but it still owns the video pipeline and
-        // cannot be merged into a graph it did not write; leaving that graph unreferenced is a
-        // command FFmpeg rejects anyway.
+        // A graph whose only source references are view specifiers cannot be retargeted onto a
+        // linear profile's output: the merge writes one chain and moves labels, it does not
+        // parse filter text, and a view specifier is exactly what the composed decode refuses.
         var arguments = new List<string>
         {
             "-hide_banner", "-i", Marker(profileId),
@@ -282,6 +284,9 @@ public class WrapperArgumentRewriterTests
     [Fact]
     public void AFilterGraphReadFromAScriptFileIsJustAsForeign()
     {
+        // The refusal here is not the graph's contents but their absence from the vector: a
+        // merge retargets the labels of the graph it can read, and a file this wrapper does not
+        // open says nothing about which streams it reads or what it feeds the encoder.
         var arguments = new List<string>
         {
             "-i", Marker(ProfileIds.SideBySideHalf),
@@ -334,9 +339,10 @@ public class WrapperArgumentRewriterTests
                 "-view_ids", "-1",
                 "-i", SourcePath,
 
-                // Full SBS is the composed frame itself: subtitle streams switch off, but no
-                // profile-specific video map or filter competes with what the server mapped.
-                "-sn",
+                // Full SBS is the composed frame itself: the composed request is the only thing
+                // written. No profile-specific video map or filter competes with what the server
+                // mapped, and nothing switches the server's subtitle choice off - a conversion
+                // says nothing about the text on the picture.
 
                 // The command's ordinary video map is the profile's output carrier and stays,
                 // followed by everything else exactly where the server put it.
@@ -377,7 +383,6 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-sn",
                 "-map", "0:v", "-map", "0:a", "playlist.m3u8"
             },
             result.Arguments);
@@ -401,7 +406,7 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
+                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p",
                 "-map", "0:v", "playlist.m3u8"
             },
             result.Arguments);
@@ -425,7 +430,7 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids=-1",
                 "-i", SourcePath,
-                "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p",
                 "-map", "0:v", "playlist.m3u8"
             },
             result.Arguments);
@@ -483,7 +488,7 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
+                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p",
                 "-map", "0:7?", "-map", "0:1", "playlist.m3u8"
             },
             result.Arguments);
@@ -502,7 +507,7 @@ public class WrapperArgumentRewriterTests
                 "-hide_banner", "-loglevel", "warning",
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
+                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p",
                 "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
                 "-f", "hls", "-hls_time", "6", "playlist.m3u8"
             },
@@ -529,7 +534,6 @@ public class WrapperArgumentRewriterTests
                 "-hide_banner", "-loglevel", "warning",
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-sn",
 
                 // One -vf, comma-chained at the position the server wrote it, with the profile
                 // conversion first and the server's filters behind it. The server's ordinary
@@ -561,7 +565,6 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-sn",
                 "-vf", "scale=1920:1080",
                 "-vf", "stereo3d=sbsl:arcd,format=yuv420p,format=nv12",
                 "-map", "0:v", "playlist.m3u8"
@@ -658,10 +661,12 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
-    public void SubtitleStreamsAreSuppressedEvenWhenNothingIsBurnedIn()
+    public void AConvertedPictureWithoutABurnInLeavesTheSubtitleSelectionToTheServer()
     {
-        // A converted picture carries no subtitle of its own; leaving Jellyfin's mapped
-        // text track behind is double-rendered text wherever it is not dropped instead.
+        // Converting the picture is not an answer to the question of what text is on it. The
+        // server picked these subtitle streams, mapped them, and hands them to the client - and
+        // a wrapper that muted them anyway was the bug this rule retires: nothing double-renders
+        // the text, because nothing here renders it at all.
         var arguments = new List<string>
         {
             "-i", Marker(ProfileIds.SideBySideFull),
@@ -670,8 +675,16 @@ public class WrapperArgumentRewriterTests
 
         var result = _rewriter.Rewrite(arguments);
 
-        Assert.Contains("-sn", result.Arguments, StringComparer.Ordinal);
-        Assert.DoesNotContain("0:s", result.Arguments, StringComparer.Ordinal);
+        Assert.DoesNotContain("-sn", result.Arguments, StringComparer.Ordinal);
+        Assert.Contains("0:s", result.Arguments, StringComparer.Ordinal);
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-map", "0:v", "-map", "0:a", "-map", "0:s", "playlist.m3u8"
+            },
+            result.Arguments);
     }
 
     [Fact]
@@ -684,7 +697,7 @@ public class WrapperArgumentRewriterTests
         // is a stream the server did select, and still gives way.
         var arguments = new List<string>
         {
-            "-i", Marker(ProfileIds.SideBySideFull),
+            "-i", Marker(ProfileIds.SideBySideFull, subtitleOrdinal: 0),
             "-map", "0:v", "-map", "0:a", "-map", "0:s:0",
             "-map", "-0:s", "-map", "-0:a", "-map", "-0",
             "playlist.m3u8"
@@ -697,7 +710,7 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-sn",
+                "-vf", BurnInZero, "-sn",
                 "-map", "0:v", "-map", "0:a",
                 "-map", "-0:s", "-map", "-0:a", "-map", "-0",
                 "playlist.m3u8"
@@ -725,7 +738,6 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-sn",
                 "-map", "0:a", "-c:v", "libx264", "playlist.m3u8"
             },
             result.Arguments);
@@ -734,9 +746,11 @@ public class WrapperArgumentRewriterTests
     [Fact]
     public void AnSnAlreadyOnTheCommandIsNotDuplicated()
     {
+        // The burn-in asks for suppression, but the server had already said it: a second -sn
+        // on one output is a duplicate, not a second decision.
         var arguments = new List<string>
         {
-            "-i", Marker(ProfileIds.SideBySideFull), "-sn", "-map", "0:v", "-map", "0:a", "playlist.m3u8"
+            "-i", Marker(ProfileIds.SideBySideFull, subtitleOrdinal: 0), "-sn", "-map", "0:v", "-map", "0:a", "playlist.m3u8"
         };
 
         var result = _rewriter.Rewrite(arguments);
@@ -867,16 +881,13 @@ public class WrapperArgumentRewriterTests
 
         // A -map is how FFmpeg is told which streams an output carries. This profile converts
         // the composed picture delivered by the stream that selection already chose, so it
-        // writes no stream name at all and does not disturb the automatic video+audio pick.
+        // writes no stream name at all and does not disturb the automatic video+audio pick -
+        // and with no burn-in to render, not an output option at all.
         Assert.Equal(
             new[]
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-
-                // The only output-side argument a linear Full SBS rewrite needs on this shape
-                // is subtitle suppression.
-                "-sn",
 
                 // The server's encoder, muxer and output choices, untouched.
                 "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
@@ -896,11 +907,11 @@ public class WrapperArgumentRewriterTests
             .ToArray();
 
         // Exactly two maps: the graph output and the audio. The rewrite invents no third
-        // stream and no subtitle stream behind the burn-in.
+        // stream and, with no burn-in to render, no subtitle decision of its own.
         Assert.Equal(2, mapOptionIndexes.Length);
         Assert.Equal("[anaglyfin_custom]", result.Arguments[mapOptionIndexes[0] + 1]);
         Assert.Equal("0:a?", result.Arguments[mapOptionIndexes[1] + 1]);
-        Assert.Contains("-sn", result.Arguments, StringComparer.Ordinal);
+        Assert.DoesNotContain("-sn", result.Arguments, StringComparer.Ordinal);
     }
 
     [Theory]
@@ -917,7 +928,6 @@ public class WrapperArgumentRewriterTests
         // stream here would replace that pick, including its audio, and is not required by a
         // filter that runs on whatever video the output already has.
         Assert.DoesNotContain("-map", result.Arguments, StringComparer.Ordinal);
-        Assert.Contains("-sn", result.Arguments, StringComparer.Ordinal);
     }
 
     [Fact]
@@ -934,7 +944,7 @@ public class WrapperArgumentRewriterTests
                 "-view_ids", "-1",
                 "-i", SourcePath,
                 "-filter_complex", CustomGraph,
-                "-map", "[anaglyfin_custom]", "-map", "0:a?", "-sn",
+                "-map", "[anaglyfin_custom]", "-map", "0:a?",
                 "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
             },
             result.Arguments);
@@ -975,7 +985,6 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-sn",
                 "-map", "0:v", "-map", "0:a",
                 "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
             },
@@ -1003,7 +1012,7 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p",
                 "-map", "0:v",
                 "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
             },
@@ -1037,7 +1046,6 @@ public class WrapperArgumentRewriterTests
                 "-view_ids", "-1",
                 "-i", SourcePath,
                 "-f", "srt", "-i", "/movies/Movie (2010)/Movie.en.srt",
-                "-sn",
                 "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
             },
             result.Arguments);
@@ -1076,7 +1084,6 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-sn",
                 "-map", "0:v", "-map", "0:a:0", "-map", "0:V", "-map", "v",
                 "-map", "0", "-map", "-0",
                 "playlist.m3u8"
@@ -1104,7 +1111,7 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p",
                 "-map", "0:v", "-map", "0:a", "playlist.m3u8"
             },
             result.Arguments);
@@ -1116,7 +1123,7 @@ public class WrapperArgumentRewriterTests
         // A label is not a map of the marker input's ordinary stream, and a linear profile
         // inserts no competing video map. It is not the wrapper's job to guess whose label it
         // is without the graph that produced it; the profile only asks its input for the
-        // composed view and suppresses subtitles.
+        // composed view and converts the picture that stream carries.
         var arguments = new List<string>
         {
             "-i", Marker(ProfileIds.SideBySideFull),
@@ -1130,7 +1137,6 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-sn",
                 "-map", "[v]", "-map", "0:a", "playlist.m3u8"
             },
             result.Arguments);
@@ -1290,7 +1296,7 @@ public class WrapperArgumentRewriterTests
                 "-view_ids", "-1",
                 "-i", SourcePath,
                 "-filter_complex", CustomGraphStartingAt("[0:0]"),
-                "-map", "[anaglyfin_custom]", "-sn",
+                "-map", "[anaglyfin_custom]",
                 "-map", "0:1",
                 "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
             },
@@ -1317,7 +1323,7 @@ public class WrapperArgumentRewriterTests
                 "-view_ids", "-1",
                 "-i", SourcePath,
                 "-filter_complex", CustomGraphStartingAt("[0:3]"),
-                "-map", "[anaglyfin_custom]", "-sn",
+                "-map", "[anaglyfin_custom]",
                 "-map", "0:1", "playlist.m3u8"
             },
             result.Arguments);
@@ -1343,7 +1349,7 @@ public class WrapperArgumentRewriterTests
                 "-view_ids", "-1",
                 "-i", SourcePath,
                 "-filter_complex", CustomGraphStartingAt("[0:2]"),
-                "-map", "[anaglyfin_custom]", "-sn",
+                "-map", "[anaglyfin_custom]",
                 "-map", "0:0", "-map", "0:10", "-map", "1:2", "playlist.m3u8"
             },
             result.Arguments);
@@ -1369,7 +1375,6 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-sn",
                 "-map", "0:0", "-map", "0:1", "playlist.m3u8"
             },
             result.Arguments);
@@ -1396,7 +1401,7 @@ public class WrapperArgumentRewriterTests
                 "-view_ids", "-1",
                 "-i", SourcePath,
                 "-filter_complex", CustomGraphStartingAt("[0:0]"),
-                "-map", "[anaglyfin_custom]", "-sn",
+                "-map", "[anaglyfin_custom]",
                 "-c:v", "libx264", "playlist.m3u8"
             },
             result.Arguments);
@@ -1428,7 +1433,7 @@ public class WrapperArgumentRewriterTests
                 "-hide_banner", "-loglevel", "warning",
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
+                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p",
                 "-map", "0:0", "-map", "0:1",
                 "-codec:v:0", "libx264", "-preset:v", "medium", "-b:v", "8000k",
                 "-codec:a:0", "copy",
@@ -1448,7 +1453,434 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(ProfileIds.SideBySideHalf, result.ProfileId);
     }
 
+    // ----- the server's own filter graph ------------------------------------------------
+
+    [Fact]
+    public void ARedCyanConversionLandsAtTheHeadOfTheServersSubtitleGraph()
+    {
+        // The shape Jellyfin writes when it burns an image subtitle in itself: the subtitle
+        // stream scaled into [sub], the source video through its own colour and scale chain
+        // into [main], and the two overlaid. A profile that converts the picture joins this
+        // graph as one more chain in front of [main] - it does not refuse the command, and it
+        // does not touch the subtitle chain, the overlay, or the label the output maps.
+        var arguments = new List<string>
+        {
+            "-hide_banner", "-loglevel", "warning",
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 0),
+            "-filter_complex", ServersSubtitleBurnGraph,
+            "-map", "[out]", "-map", "0:1", "-map", "-0:s",
+            "-c:v", "libx264", "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Equal(
+            "[0:0]stereo3d=sbsl:arcd,format=yuv420p[anaglyfin_profile];"
+            + "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[anaglyfin_profile]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+            + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]",
+            ValueAfter(result.Arguments, WrapperArgumentRewriter.FilterComplexArgument));
+
+        Assert.Equal(
+            new[]
+            {
+                "-hide_banner", "-loglevel", "warning",
+                "-view_ids", "-1",
+                "-i", SourcePath,
+
+                // One -filter_complex, in the position the server wrote it, carrying the
+                // profile's chain ahead of the server's. No -vf beside it, and no -sn: the
+                // server renders these subtitles itself and the profile converts only the
+                // picture they ride on.
+                "-filter_complex",
+                "[0:0]stereo3d=sbsl:arcd,format=yuv420p[anaglyfin_profile];"
+                + "[0:10]scale=1920:1080:flags=area[sub];"
+                + "[anaglyfin_profile]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+                + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[main];"
+                + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]",
+                "-map", "[out]", "-map", "0:1", "-map", "-0:s",
+                "-c:v", "libx264", "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void AHalfSideBySideScaleRunsBeforeTheServersScaleInsideItsGraph()
+    {
+        // The reason the profile's chain goes at the head of the graph and not behind it: the
+        // server's scale is sized against the frame the version reports, which is the converted
+        // one. Behind, it would shrink the un-converted all-view frame into the box of a
+        // picture that has not been made yet.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 0),
+            "-filter_complex", ServersSubtitleBurnGraph,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        var graph = ValueAfter(result.Arguments, WrapperArgumentRewriter.FilterComplexArgument);
+
+        Assert.StartsWith(
+            "[0:0]scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p[anaglyfin_profile];",
+            graph,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            "[0:0]scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p[anaglyfin_profile];"
+            + "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[anaglyfin_profile]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+            + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]",
+            graph);
+
+        // Half SBS maps nothing of its own: the converted frames arrive on the stream the
+        // server's map already names.
+        Assert.DoesNotContain("[anaglyfin_profile]", result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void AFullSideBySideRewriteLeavesTheServersGraphByteForByteAlone()
+    {
+        // Full SBS converts nothing after the decode composes the eyes, so it has no chain to
+        // write into the server's graph: the composed frames simply arrive on the stream that
+        // graph already reads. The rewrite is the input request, the marker's replacement, and
+        // nothing else.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull, videoStreamIndex: 0),
+            "-filter_complex", ServersSubtitleBurnGraph,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex", ServersSubtitleBurnGraph,
+                "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void ASelectedSubtitleMapAndItsExclusionSurviveAMergedConversion()
+    {
+        // A server that carries a subtitle stream of its own said so twice - with the map that
+        // selects it and the exclusion that shapes what that selects - and a picture conversion
+        // has nothing to say to either. Both are on the command after the merge, and no -sn
+        // travels with a command that converts but renders no text.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 0),
+            "-filter_complex", ServersSubtitleBurnGraph,
+            "-map", "[out]", "-map", "0:1", "-map", "0:s:0", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex", MergedWith(
+                    "[0:0]stereo3d=sbsl:arcd,format=yuv420p[anaglyfin_profile]"),
+                "-map", "[out]", "-map", "0:1", "-map", "0:s:0", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void TheCustomGrayscaleGraphIsSplicedInFrontOfTheServersGraphAndMapsNothingNew()
+    {
+        // The one profile that carries a graph of its own merges too: its graph is already a
+        // chain ending in its own label, so the server's chains follow it and read that label.
+        // The label is then the picture the server's chains feed the encoder, and mapping it
+        // beside the output the server mapped would be a second video in the way of the first.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.CustomGrayscale, videoStreamIndex: 0),
+            "-filter_complex", ServersSubtitleBurnGraph,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex",
+                CustomGraphStartingAt("[0:0]")
+                + ";"
+                + ServersSubtitleBurnGraph.Replace("[0:0]", "[anaglyfin_custom]", StringComparison.Ordinal),
+                "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        // The profile's label is consumed by the graph, never mapped as an argument of its own,
+        // and no -vf stands behind it either: the burn-in this profile would put there is the
+        // one it was not asked for.
+        Assert.DoesNotContain("[anaglyfin_custom]", result.Arguments, StringComparer.Ordinal);
+        Assert.DoesNotContain(WrapperArgumentRewriter.VideoFilterArgument, result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void AGraphThatNeverReadsThisInputsVideoRefusesTheConversion()
+    {
+        // A graph that reads only audio has no place for the profile's picture, and the profile
+        // has nothing to feed: writing its chain into that text would leave a converted frame
+        // unreferenced and the server's own picture untouched.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 0),
+            "-filter_complex", "[0:1]volume=2.0[a]",
+            "-map", "0:0", "-map", "[a]", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.IncompatibleFilterGraph, result.Status);
+    }
+
+    [Fact]
+    public void AGraphThatAlreadyCarriesTheProfilesLabelRefusesTheMerge()
+    {
+        // Two producers on one pad is a graph FFmpeg reports as unparseable and a log line that
+        // says nothing about the wrapper. Refusing is what turns that into an explanation.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 0),
+            "-filter_complex", "[0:0]scale=1920:1080[anaglyfin_profile];[anaglyfin_profile]format=yuv420p[out]",
+            "-map", "[out]", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.IncompatibleFilterGraph, result.Status);
+    }
+
+    [Fact]
+    public void TwoGraphsRefuseTheMergeBecauseTheOutputPictureIsAmbiguous()
+    {
+        // The vector cannot say which of two graphs feeds the output, and merging into only the
+        // last one would leave the first reading the un-converted stream.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 0),
+            "-filter_complex", "[0:0]scale=960:540[a]",
+            "-filter_complex", "[0:0]scale=1920:1080[out]",
+            "-map", "[out]", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.IncompatibleFilterGraph, result.Status);
+    }
+
+    [Fact]
+    public void AProfileThatBurnsInLeavesSubtitleHandlingToAServerThatAlreadyRendersIt()
+    {
+        // The burn-in and the server's own renderer are two answers to one question, and the
+        // answer that is not taken twice is the one the maps are not taken away for. The
+        // profile still converts the picture; it just does not mute a server that is already
+        // drawing the text.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, subtitleOrdinal: 2),
+            "-vf", "subtitles=filename='/movies/Movie (2010)/Movie.en.srt'",
+            "-map", "0:v", "-map", "0:a", "-map", "0:s:0", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.DoesNotContain(WrapperArgumentRewriter.DisableSubtitlesArgument, result.Arguments, StringComparer.Ordinal);
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-vf",
+                "stereo3d=sbsl:arcd,format=yuv420p," + BurnInTwo
+                + ",subtitles=filename='/movies/Movie (2010)/Movie.en.srt'",
+                "-map", "0:v", "-map", "0:a", "-map", "0:s:0", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void AProfileThatBurnsInLeavesSubtitleHandlingToAServerGraphThatAlreadyRendersThem()
+    {
+        // A graph reading [0:s] of the marker's input is the same claim as a subtitles filter
+        // written on a chain: whoever wrote it has decided what the output's subtitles look
+        // like, and it was not this rewrite.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideHalf, subtitleOrdinal: 0, videoStreamIndex: 0),
+            "-filter_complex", "[0:s:0]ass[s];[0:0]scale=1920:1080[m];[m][s]overlay[out]",
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.DoesNotContain(WrapperArgumentRewriter.DisableSubtitlesArgument, result.Arguments, StringComparer.Ordinal);
+
+        var graph = ValueAfter(result.Arguments, WrapperArgumentRewriter.FilterComplexArgument);
+        Assert.Equal(
+            "[0:0]scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p,"
+            + "subtitles=filename='/movies/Movie (2010)/Movie.2010.3D.mkv':si=0[anaglyfin_profile];"
+            + "[0:s:0]ass[s];[anaglyfin_profile]scale=1920:1080[m];[m][s]overlay[out]",
+            graph);
+    }
+
+    [Fact]
+    public void AMarkerQuotedIntoTheServersSubtitleFilterBecomesTheSourcePath()
+    {
+        // The server builds its burn-in from the path of the file it is transcoding, and for an
+        // Anaglyfin version that file is the marker. A marker reaching FFmpeg in a filter would
+        // be opened as a subtitle file - so the sweep that keeps marker text out of the command
+        // has to reach inside a filter value, not only the -i value.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois),
+            "-vf", "subtitles=filename='" + Marker(ProfileIds.AnaglyphRedCyanDubois) + "'",
+            "-map", "0:v", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-vf",
+                "stereo3d=sbsl:arcd,format=yuv420p,subtitles=filename='/movies/Movie (2010)/Movie.2010.3D.mkv'",
+                "-map", "0:v", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Theory]
+    // The value as the graph pass would hand it to the option pass: the marker's own colons
+    // escaped once.
+    [InlineData(1)]
+
+    // The value meant to survive both decode passes: those escapes escaped again.
+    [InlineData(2)]
+    public void AMarkerEscapedForAFilterValueIsReplacedByThePathEscapedTheSameWay(int depth)
+    {
+        var marker = Marker(ProfileIds.AnaglyphRedCyanDubois);
+        var arguments = new List<string>
+        {
+            "-i", marker,
+            "-vf", "scale=1920:1080,subtitles=filename=" + EscapedForFilter(marker, depth),
+            "-map", "0:v", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        var chain = ValueAfter(result.Arguments, WrapperArgumentRewriter.VideoFilterArgument);
+
+        // The source path needs no escaping of its own, so it lands plain - and the marker's
+        // scheme colon, which is what the escaping was for, is gone with it.
+        Assert.Equal(
+            "stereo3d=sbsl:arcd,format=yuv420p,scale=1920:1080,subtitles=filename="
+            + EscapedForFilter(SourcePath, depth),
+            chain);
+        Assert.DoesNotContain("127.0.0.1", chain, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AMarkerThatTravelledThroughAUrlSlotIsReplacedWhole()
+    {
+        // A value written out of a URL slot carries the whole marker percent-encoded, colons and
+        // slashes included, and that encoding is what the wrapper has to match - not the marker
+        // text the server never wrote.
+        var marker = Marker(ProfileIds.SideBySideFull);
+        var arguments = new List<string>
+        {
+            "-i", marker,
+            "-metadata", "comment=" + Uri.EscapeDataString(marker),
+            "-map", "0:v", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            "comment=" + Uri.EscapeDataString(SourcePath),
+            result.Arguments[result.Arguments.ToList().IndexOf("-metadata") + 1]);
+        Assert.DoesNotContain("127.0.0.1", string.Join(' ', result.Arguments), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NoMarkerTextSurvivesAnywhereInTheRewrittenCommand()
+    {
+        // The one property every other rule here serves: after a rewrite, no argument handed to
+        // FFmpeg still says what the marker said - not in the -i, not in a filter, not in a
+        // value this rewriter never looked at.
+        var marker = Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 0);
+        var arguments = new List<string>
+        {
+            "-i", marker,
+            "-filter_complex",
+            ServersSubtitleBurnGraph + ",subtitles=filename=" + EscapedForFilter(marker, 2),
+            "-metadata", "title=" + marker,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        var joined = string.Join(' ', result.Arguments);
+        Assert.DoesNotContain("127.0.0.1", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("anaglyfin/profile", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain(Uri.EscapeDataString(marker), joined, StringComparison.Ordinal);
+        Assert.Contains(SourcePath, joined, StringComparison.Ordinal);
+    }
+
     // ----- fixture ------------------------------------------------------------------------
+
+    /// <summary>
+    /// The subtitle burn-in graph Jellyfin writes for an image subtitle: the subtitle stream
+    /// scaled into <c>[sub]</c>, the source video through its colour and scale chain into
+    /// <c>[main]</c>, the two overlaid into the label the output maps. Stream 10 is the burned
+    /// subtitle, stream 0 the video.
+    /// </summary>
+    private const string ServersSubtitleBurnGraph =
+        "[0:10]scale=1920:1080:flags=area[sub];"
+        + "[0:0]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+        + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[main];"
+        + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]";
+
+    /// <summary>
+    /// The burn-in graph above with its video source references retargeted onto the profile
+    /// label, behind the given profile chain - the merge the rewriter is expected to write.
+    /// </summary>
+    private static string MergedWith(string profileSegment)
+        => profileSegment + ";" + ServersSubtitleBurnGraph.Replace("[0:0]", "[anaglyfin_profile]", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Escapes a value the way a filter option value is written <paramref name="depth"/> FFmpeg
+    /// decode passes deep: one backslash per colon and backslash per pass.
+    /// </summary>
+    private static string EscapedForFilter(string value, int depth)
+    {
+        var escaped = value;
+
+        for (var pass = 0; pass < depth; pass++)
+        {
+            escaped = escaped.Replace("\\", "\\\\", StringComparison.Ordinal).Replace(":", "\\:", StringComparison.Ordinal);
+        }
+
+        return escaped;
+    }
 
     /// <summary>
     /// The command Jellyfin builds for an HLS transcode, with the given input token.
