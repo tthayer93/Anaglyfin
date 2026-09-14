@@ -259,7 +259,7 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
                         "Anaglyfin left {ItemName} ({ItemId}) alone: a profile version of {SourceName} needs that id.",
                         current.Name,
                         current.Id,
-                        wanted.Value.Path);
+                        wanted.Value.Source.Path);
                     result.Skipped++;
                     continue;
                 }
@@ -352,12 +352,21 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     /// <param name="scan">The files of that item a profile could convert.</param>
     /// <param name="enabled">The profiles an administrator has switched on.</param>
     /// <returns>The wanted versions, in source-then-profile order.</returns>
-    private Dictionary<Guid, MediaSourceInfo> BuildDesiredState(
+    /// <remarks>
+    /// A planned version is the source the client picks <em>and</em> the metadata the item behind it
+    /// has to carry, because those two come from different places: the source is a fact about the
+    /// file and the profile, and the metadata is a fact about the item the file belongs to - which
+    /// for the hidden MVC file of a stack is not the item the versions are offered under. Reading the
+    /// metadata once per file rather than once per version is deliberate: it is the same answer for
+    /// every profile that file converts, and a pass over a large library has no reason to ask for it
+    /// five times per movie.
+    /// </remarks>
+    private Dictionary<Guid, PlannedVersion> BuildDesiredState(
         Video root,
         MvcSourceScan scan,
         IReadOnlyList<StereoProfile> enabled)
     {
-        var desired = new Dictionary<Guid, MediaSourceInfo>();
+        var desired = new Dictionary<Guid, PlannedVersion>();
 
         if (enabled.Count == 0 || scan.Candidates.Count == 0)
         {
@@ -368,12 +377,19 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
 
         foreach (var source in scan.Candidates)
         {
+            // The metadata and the credits of the file, read once and shared by every profile this
+            // file converts: they are answers about the file, not about the conversion, and a pass
+            // over a library with five enabled profiles has no reason to ask five times.
+            var metadataSource = ResolveMetadataSource(root, source);
+            var metadata = VersionItemMetadata.FromSource(metadataSource);
+            var credits = _store.GetPeople(metadataSource.Id);
+
             foreach (var profile in enabled)
             {
                 var version = ProfileVersionSource.Build(root, source, profile, labelSources);
                 var id = ProfileVersionSource.GetVersionItemId(version.Id);
 
-                if (!desired.TryAdd(id, version))
+                if (!desired.TryAdd(id, new PlannedVersion(version, metadata, credits)))
                 {
                     // Two files of one item folding to one version id is the identity collision the
                     // derivation exists to avoid; the first answer wins, exactly as the provider's
@@ -387,6 +403,67 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         }
 
         return desired;
+    }
+
+    /// <summary>
+    /// The item whose metadata a version of one file carries.
+    /// </summary>
+    /// <param name="root">The item the versions are offered under.</param>
+    /// <param name="source">The file they convert.</param>
+    /// <returns>
+    /// The item that owns the file, when the library still has it; the root, when it does not.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The owner, not the root, because the owner is the item somebody scraped: on a stacked movie
+    /// the eligible file is the hidden MVC item beside the 1080p one, and it is that item's poster,
+    /// synopsis and cast that describe what the user is about to watch. Asking the root instead
+    /// would give a version the metadata of a different file of the same movie - which is the same
+    /// complaint the version items were filed for, only subtler.
+    /// </para>
+    /// <para>
+    /// The lookup goes through the store even when the answer is the root itself, because the item a
+    /// pass was handed is not always the whole of an item: the library list a full pass walks is a
+    /// list item, and the images are read with the item behind it. Nothing is failed over here
+    /// though: an owner that cannot be read (deleted between the scan and this moment, mid-refresh)
+    /// leaves the root as the only item Anaglyfin knows anything about, and a version wearing its
+    /// primary's metadata beats a version that was never created.
+    /// </para>
+    /// </remarks>
+    private BaseItem ResolveMetadataSource(Video root, MvcEligibleSource source)
+        => (source.MetadataSourceItemId is Guid itemId ? _store.FindItem(itemId) : null) ?? root;
+
+    /// <summary>
+    /// One version a pass wants: the source a client picks, and what the item behind it must say.
+    /// </summary>
+    private sealed class PlannedVersion
+    {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="PlannedVersion"/> class.
+        /// </summary>
+        /// <param name="source">The version as a media source.</param>
+        /// <param name="metadata">The metadata of the item whose file this version converts.</param>
+        /// <param name="sourceCredits">
+        /// The credits of that same item, read once for every profile the file converts. Credits are
+        /// the one part of an item's metadata that is not on the item, so they travel beside the
+        /// snapshot rather than inside it; each version gets its own copy of them, because a credit
+        /// names the item it is credited on.
+        /// </param>
+        public PlannedVersion(MediaSourceInfo source, VersionItemMetadata metadata, IReadOnlyList<PersonInfo> sourceCredits)
+        {
+            Source = source ?? throw new ArgumentNullException(nameof(source));
+            Metadata = metadata ?? throw new ArgumentNullException(nameof(metadata));
+            SourceCredits = sourceCredits ?? throw new ArgumentNullException(nameof(sourceCredits));
+        }
+
+        /// <summary>Gets the version as the media source a client picks.</summary>
+        public MediaSourceInfo Source { get; }
+
+        /// <summary>Gets the metadata the version item has to carry.</summary>
+        public VersionItemMetadata Metadata { get; }
+
+        /// <summary>Gets the credits the version carries, as the source item carries them.</summary>
+        public IReadOnlyList<PersonInfo> SourceCredits { get; }
     }
 
     /// <summary>
@@ -450,13 +527,15 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     }
 
     /// <summary>
-    /// Creates one version item, its streams and its link.
+    /// Creates one version item, its metadata, its streams and its link.
     /// </summary>
-    private async Task<bool> CreateVersionItemAsync(Video root, Guid versionId, MediaSourceInfo version, CancellationToken cancellationToken)
+    private async Task<bool> CreateVersionItemAsync(Video root, Guid versionId, PlannedVersion planned, CancellationToken cancellationToken)
     {
+        var version = planned.Source;
+
         try
         {
-            var item = BuildVersionItem(root, versionId, version);
+            var item = BuildVersionItem(root, versionId, planned);
 
             _store.CreateItem(item, _store.GetFolder(root));
 
@@ -464,6 +543,21 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             // source that appears before its tracks exist is a version a client can select and
             // cannot play.
             _store.SaveMediaStreams(versionId, version.MediaStreams, cancellationToken);
+
+            // Images and credits after the item: both are rows keyed by the item's id, and a row
+            // naming an item that does not exist yet is a write the server refuses. Both name the
+            // source item's own files and people rather than making new ones, and a brand-new item
+            // has nothing of either to clear, so an empty list is not written at all.
+            if (item.ImageInfos.Length > 0)
+            {
+                await _store.SaveImagesAsync(item, cancellationToken).ConfigureAwait(false);
+            }
+
+            var credits = VersionItemCredits.Clone(planned.SourceCredits, versionId);
+            if (credits.Count > 0)
+            {
+                _store.SavePeople(versionId, credits);
+            }
 
             _store.LinkAlternateVersion(root.Id, versionId);
 
@@ -490,48 +584,92 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     }
 
     /// <summary>
-    /// Rewrites a version item that has stopped matching what its profile says it should be.
+    /// Rewrites a version item that has stopped matching what its profile and its source say it
+    /// should be.
     /// </summary>
-    /// <returns><c>true</c> when the item itself was written back.</returns>
+    /// <returns><c>true</c> when anything about the version was written.</returns>
     /// <remarks>
-    /// Three independent facts are checked - the item's own fields, the streams it reports, and
-    /// whether anything still links it to this primary - and only the ones that are wrong are
-    /// repaired. An item that is right in all three is read and left alone, which is the common
-    /// case and the reason a pass can afford to run over the whole library.
+    /// <para>
+    /// Five independent facts are checked - the item's own fields, the metadata it is wearing, the
+    /// images it names, the credits it carries, the streams it reports, and whether anything still
+    /// links it to this primary - and only the ones that are wrong are repaired. An item that is
+    /// right in all of them is read and left alone, which is the common case and the reason a pass
+    /// can afford to run over the whole library.
+    /// </para>
+    /// <para>
+    /// <b>Why the metadata is checked at all.</b> A version's library metadata is copied, which
+    /// makes it a second copy of something that has an original: the original gets refreshed by a
+    /// scrape, a hand edit in the dashboard, a subtitle or artwork change, and until this comparison
+    /// runs the version is wearing the previous answer. Reconciling the fields a version was born
+    /// with and never noticing they stopped being the source's is the difference between a version
+    /// item and a screenshot of one.
+    /// </para>
+    /// <para>
+    /// <b>What is not repaired.</b> A name somebody changed. The version label is what the stock
+    /// version picker shows, so Anaglyfin keeps its own labels current - a label left behind by a
+    /// profile rename or by a file that started or stopped needing the file's name in the label is
+    /// rewritten - but a name that is not one of ours came from a user, and the version's identity
+    /// for that user is the label they typed, not the one the catalog would have written.
+    /// </para>
     /// </remarks>
     private async Task<bool> EnsureCurrentAsync(
         BaseItem current,
-        MediaSourceInfo version,
+        PlannedVersion planned,
         Video root,
         HashSet<Guid> linkedIds,
         CancellationToken cancellationToken)
     {
+        var version = planned.Source;
+
         var needsStreams = !ReportsSameStreams(_store.GetMediaStreams(current.Id), version.MediaStreams);
         var needsLink = !linkedIds.Contains(current.Id);
+        var needsName = NeedsName(current, version.Name);
+        var needsMetadata = !planned.Metadata.FieldsMatch(current);
+        var needsImages = !planned.Metadata.ImagesMatch(current);
 
-        var needsItem = !string.Equals(current.Name, version.Name, StringComparison.Ordinal)
+        // The lock is part of what the item is, not of what it copied: an unlocked item whose path
+        // is a marker URL is an item the server will keep trying to scrape and probe.
+        var needsLock = !current.IsLocked;
+
+        // The credits are compared against the source's, read once for this file, and written as
+        // their own copy: a credit names the item it is credited on, so the version cannot share the
+        // primary's rows, and neither can two versions of one file share one list with each other.
+        var wantedCredits = VersionItemCredits.Clone(planned.SourceCredits, current.Id);
+        var needsCredits = !VersionItemCredits.Matches(_store.GetPeople(current.Id), wantedCredits);
+
+        var needsItem = needsName
                         || !string.Equals(current.Path, version.Path, StringComparison.Ordinal)
                         || current.RunTimeTicks != version.RunTimeTicks
                         || current.Size != version.Size
                         || current.TotalBitrate != version.Bitrate
                         || !string.Equals(current.Container ?? string.Empty, version.Container ?? string.Empty, StringComparison.Ordinal)
                         || current.ParentId != root.ParentId
+                        || needsMetadata
+                        || needsImages
+                        || needsLock
                         || (current is Video currentVideo && currentVideo.PrimaryVersionId != root.Id);
 
-        if (!needsItem && !needsStreams && !needsLink)
+        if (!needsItem && !needsStreams && !needsLink && !needsCredits)
         {
             return false;
         }
 
         if (needsItem)
         {
-            current.Name = version.Name;
+            if (needsName)
+            {
+                current.Name = version.Name;
+            }
+
             current.Path = version.Path;
             current.RunTimeTicks = version.RunTimeTicks;
             current.Size = version.Size;
             current.TotalBitrate = version.Bitrate;
             current.Container = version.Container ?? string.Empty;
             current.ParentId = root.ParentId;
+            current.IsLocked = true;
+
+            planned.Metadata.ApplyTo(current);
 
             if (current is Video reOwnedVideo && reOwnedVideo.PrimaryVersionId != root.Id)
             {
@@ -548,13 +686,44 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             _store.SaveMediaStreams(current.Id, version.MediaStreams, cancellationToken);
         }
 
+        if (needsImages)
+        {
+            await _store.SaveImagesAsync(current, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (needsCredits)
+        {
+            // Written whole, not patched: the credit write replaces an item's credits, which is what
+            // lets a source that lost a credit lose it here too.
+            _store.SavePeople(current.Id, wantedCredits);
+        }
+
         if (needsLink)
         {
             _store.LinkAlternateVersion(root.Id, current.Id);
         }
 
-        return needsItem;
+        return needsItem || needsStreams || needsLink || needsCredits;
     }
+
+    /// <summary>
+    /// Whether an item's name is one Anaglyfin may write.
+    /// </summary>
+    /// <param name="current">The item as it stands.</param>
+    /// <param name="label">The label its version is built with.</param>
+    /// <returns><c>true</c> when the label should be put on the item.</returns>
+    /// <remarks>
+    /// A name that already is the label needs no writing whatever its provenance. Beyond that the
+    /// question is whose name this is: text the label builder could have produced (this profile's
+    /// label, another profile's, a label with a file name in front of it) is Anaglyfin's to keep
+    /// current, and an empty name is nothing to preserve. Anything else is a name a user gave this
+    /// version, and no version label outranks what somebody typed - the details panel reads
+    /// <c>OriginalTitle</c> for the movie, so a renamed version still says which movie it is.
+    /// </remarks>
+    private bool NeedsName(BaseItem current, string label)
+        => !string.Equals(current.Name, label, StringComparison.Ordinal)
+           && (string.IsNullOrWhiteSpace(current.Name)
+               || ProfileVersionSource.IsVersionLabel(current.Name, _profileCatalog.Profiles));
 
     /// <summary>
     /// Builds the library item one version becomes.
@@ -566,9 +735,18 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     /// same text the dynamic provider puts in <see cref="MediaSourceInfo.Path"/> and therefore the
     /// same text the FFmpeg wrapper recognises. The primary-version id is what keeps it out of browse
     /// and search - the server excludes items that name a primary from its general queries.
+    /// <para>
+    /// It is also born wearing its source's metadata and locked. The metadata is what the details
+    /// panel of a version would otherwise be missing; the lock is what tells the server that this
+    /// item has no file to scrape, probe or write metadata next to - its path is a marker URL, and
+    /// an item the size of a library that a pass has to keep re-locking would be an item the server
+    /// keeps trying to refresh.
+    /// </para>
     /// </remarks>
-    private Video BuildVersionItem(Video root, Guid versionId, MediaSourceInfo version)
+    private Video BuildVersionItem(Video root, Guid versionId, PlannedVersion planned)
     {
+        var version = planned.Source;
+
         var item = new Video
         {
             Id = versionId,
@@ -581,12 +759,21 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             TotalBitrate = version.Bitrate,
             DateCreated = root.DateCreated == default ? DateTime.UtcNow : root.DateCreated,
 
+            // Nobody scrapes a marker. See the remarks: this is the flag that keeps the server from
+            // treating the item's path as a media file it may probe and describe.
+            IsLocked = true,
+
             // Deliberately unset, and inherited from the type: no 3D format (the server would read
             // it as an instruction to convert the picture itself), no owner (this is a linked
             // version, not a file belonging to another item), no extra type, and no local alternate
             // versions of its own.
             Video3DFormat = null
         };
+
+        // The movie the version is a version of: title, synopsis, artwork and the rest, off the item
+        // that owns the file this version converts. The item's own Name stays the profile label,
+        // because that name is also the label the stock version picker shows.
+        planned.Metadata.ApplyTo(item);
 
         // The frame the profile encodes, on the item as well as on its stream report, so the item
         // describes the picture it can actually deliver rather than the one it was derived from.

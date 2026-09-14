@@ -9,8 +9,13 @@ using Anaglyfin.Detection;
 using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
 using Anaglyfin.VersionItems;
+using Jellyfin.Data.Enums;
+using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller;
+using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
@@ -22,12 +27,12 @@ namespace Anaglyfin.Tests.VersionItems;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The manager's contract is eleven reads and writes over <see cref="IProfileVersionItemStore"/>,
+/// The manager's contract is thirteen reads and writes over <see cref="IProfileVersionItemStore"/>,
 /// so a fake of that interface is a whole library for the purposes of a reconciliation test: items,
-/// the links between them, and the streams they report. Nothing here mimics server behaviour beyond
-/// those eleven calls - it is the state a reconcile reads and what it leaves behind, which is
-/// exactly what these tests need to see, including the state a real server can be in and a scan
-/// would not produce (an item that exists but is no longer linked).
+/// the links between them, and the streams, images and credits they report. Nothing here mimics
+/// server behaviour beyond those calls - it is the state a reconcile reads and what it leaves behind,
+/// which is exactly what these tests need to see, including the state a real server can be in and a
+/// scan would not produce (an item that exists but is no longer linked).
 /// </para>
 /// <para>
 /// It records the writes it received rather than only its own state, because "the second pass
@@ -42,6 +47,8 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     private readonly Dictionary<Guid, List<Guid>> _linkedVersions = new();
 
     private readonly Dictionary<Guid, List<MediaStream>> _streams = new();
+
+    private readonly Dictionary<Guid, List<PersonInfo>> _people = new();
 
     private readonly List<Video> _versionRoots = new();
 
@@ -64,6 +71,14 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
 
     /// <summary>Gets every stream save, in call order.</summary>
     public List<Guid> StreamsSaved { get; } = new();
+
+    /// <summary>Gets every credit save, in call order.</summary>
+    public List<Guid> PeopleSaved { get; } = new();
+
+    /// <summary>
+    /// Gets every image save: the item written and the files its rows name, in call order.
+    /// </summary>
+    public List<(Guid ItemId, IReadOnlyList<string> Paths)> ImagesSaved { get; } = new();
 
     /// <summary>Gets how many times the full-library list was read.</summary>
     public int RootsReadCount { get; private set; }
@@ -163,10 +178,12 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     /// <inheritdoc />
     public void DeleteItem(BaseItem item)
     {
-        // What the server does with it: the row, its streams and every link naming it.
+        // What the server does with it: the row, its streams, its credits, its images and every link
+        // naming it.
         Deleted.Add(item);
         _items.Remove(item.Id);
         _streams.Remove(item.Id);
+        _people.Remove(item.Id);
         _linkedVersions.Remove(item.Id);
 
         foreach (var links in _linkedVersions.Values)
@@ -203,6 +220,28 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
         _streams[itemId] = streams.ToList();
     }
 
+    /// <inheritdoc />
+    public IReadOnlyList<PersonInfo> GetPeople(Guid itemId)
+        => _people.TryGetValue(itemId, out var people) ? people : Array.Empty<PersonInfo>();
+
+    /// <inheritdoc />
+    public void SavePeople(Guid itemId, IReadOnlyList<PersonInfo> people)
+    {
+        PeopleSaved.Add(itemId);
+        _people[itemId] = people.ToList();
+    }
+
+    /// <inheritdoc />
+    public Task SaveImagesAsync(BaseItem item, CancellationToken cancellationToken)
+    {
+        // What the rows would name: the item they are keyed by and the files they point at. A test
+        // about artwork is a test about which files a version's image rows name, so that is what this
+        // keeps - and the fact that nothing had to exist on disk for it to be written.
+        ImagesSaved.Add((item.Id, item.ImageInfos.Select(image => image.Path).ToArray()));
+
+        return Task.CompletedTask;
+    }
+
     /// <summary>Puts an item in the library without linking or creating it.</summary>
     /// <param name="item">The item to file.</param>
     public void AddItem(BaseItem item)
@@ -227,6 +266,12 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     public void AddStreams(Guid itemId, IEnumerable<MediaStream> streams)
         => _streams[itemId] = streams.ToList();
 
+    /// <summary>Writes the credits an item carries, as a scrape or a merge would have left them.</summary>
+    /// <param name="itemId">The item the credits belong to.</param>
+    /// <param name="people">The credits to store.</param>
+    public void AddPeople(Guid itemId, IEnumerable<PersonInfo> people)
+        => _people[itemId] = people.ToList();
+
     /// <summary>Drops a link without removing the item it named.</summary>
     /// <param name="primaryId">The primary the version is linked to.</param>
     /// <param name="versionItemId">The version to unlink.</param>
@@ -244,6 +289,7 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     {
         _items.Remove(itemId);
         _streams.Remove(itemId);
+        _people.Remove(itemId);
     }
 
     /// <summary>Gets the version ids linked to one primary.</summary>
@@ -564,6 +610,14 @@ public sealed class FakeReconcileTrigger : IProfileVersionReconcileTrigger
 /// </remarks>
 public static class ProfileVersionFixtures
 {
+    static ProfileVersionFixtures()
+    {
+        // Some tests change an item's name after it is built, and the server's sort-name getter re-derives
+        // the sort name through this static in that case. A unit test has no server, but it still has to
+        // answer that getter the way the server would.
+        BaseItem.ConfigurationManager ??= new StubServerConfigurationManager();
+    }
+
     /// <summary>The folder both movies are filed under.</summary>
     public const string FolderPath = "/movies/Ready Player One (2018)";
 
@@ -610,6 +664,11 @@ public static class ProfileVersionFixtures
         {
             Id = id ?? MovieId,
             Name = "Ready Player One (2018)",
+
+            // What a library item always carries: the server derives a sort name when it files one
+            // and stores it with the row, so an item read back from the library has one. A test item
+            // without it would be an item the real server cannot produce.
+            SortName = "ready player one (2018)",
             Path = path,
             ParentId = FolderId,
             RunTimeTicks = RunTimeTicks,
@@ -691,5 +750,176 @@ public static class ProfileVersionFixtures
             source.Path,
             source.Id,
             source.Name,
-            MvcEligibleSourceScanner.SourceIdentityKey(source.Id, source.Path));
+            MvcEligibleSourceScanner.SourceIdentityKey(source.Id, source.Path),
+            MetadataSourceItemIdOf(source));
+
+    /// <summary>
+    /// The item a source report is keyed by, which is the item whose metadata describes that file.
+    /// </summary>
+    /// <param name="source">The source report.</param>
+    /// <returns>The owning item's id, or <c>null</c> when the source is keyed by something else.</returns>
+    public static Guid? MetadataSourceItemIdOf(MediaSourceInfo source)
+        => Guid.TryParse(source.Id, CultureInfo.InvariantCulture, out var itemId) && itemId != Guid.Empty
+            ? itemId
+            : null;
+
+    /// <summary>
+    /// Builds the hidden MVC item of the stacked movie: the file beside the primary, the one the
+    /// versions are built from and the one no client can list.
+    /// </summary>
+    /// <param name="scraped">
+    /// Whether to wear the metadata a scrape left on it - the movie's own title, synopsis, artwork and
+    /// cast, deliberately nothing like the 1080p root's. A version has to be wearing these, and not
+    /// the root's, for the details panel of a version to say anything.
+    /// </param>
+    /// <returns>The alternate-version item, filed where the movie is filed and claimed by it.</returns>
+    public static Video CreateMvcAlternateItem(bool scraped = true)
+    {
+        var item = new Video
+        {
+            Id = MvcVersionItemId,
+            Name = "Ready Player One (2018)",
+            SortName = "ready player one (2018)",
+            Path = MvcPath,
+            ParentId = FolderId,
+            RunTimeTicks = RunTimeTicks,
+            Container = "mkv",
+            Size = FileSize,
+            TotalBitrate = Bitrate,
+            VideoType = VideoType.VideoFile
+        };
+
+        item.SetPrimaryVersionId(MovieId);
+
+        if (scraped)
+        {
+            StampScrapedMetadata(item, title: "Ready Player One");
+        }
+
+        return item;
+    }
+
+    /// <summary>
+    /// Puts a full set of scraped movie metadata on an item - the values a metadata manager would
+    /// have written, none of which a version item would invent for itself.
+    /// </summary>
+    /// <param name="item">The item to describe.</param>
+    /// <param name="title">The original title to carry.</param>
+    public static void StampScrapedMetadata(BaseItem item, string title)
+    {
+        item.OriginalTitle = title;
+        item.Overview = "In 2045, the answer can be found in the OASIS.";
+        item.Tagline = "An adventure beyond degree.";
+        item.ForcedSortName = title;
+        item.SortName = title.ToLowerInvariant();
+        item.Genres = new[] { "Science Fiction", "Adventure" };
+        item.Tags = new[] { "3D", "Virtual reality" };
+        item.Studios = new[] { "Warner Bros." };
+        item.ProductionLocations = new[] { "London, England, USA" };
+        item.OfficialRating = "PG-13";
+        item.CustomRating = "Staff pick";
+        item.CommunityRating = 7.4f;
+        item.CriticRating = 69f;
+        item.ProductionYear = 2018;
+        item.PremiereDate = new DateTime(2018, 3, 29, 0, 0, 0, DateTimeKind.Utc);
+        item.EndDate = new DateTime(2018, 6, 15, 0, 0, 0, DateTimeKind.Utc);
+        item.HomePageUrl = "https://example.invalid/ready-player-one";
+        item.ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Imdb"] = "tt1677720",
+            ["Tmdb"] = "293167"
+        };
+
+        item.ImageInfos = new[]
+        {
+            CreateImage(FolderPath + "/poster-mvc.jpg", ImageType.Primary),
+            CreateImage(FolderPath + "/backdrop-mvc.jpg", ImageType.Backdrop)
+        };
+    }
+
+    /// <summary>
+    /// Builds one image row, pointing at a file the source item's library already has.
+    /// </summary>
+    /// <param name="path">The image file.</param>
+    /// <param name="type">What the image is.</param>
+    /// <returns>The image row.</returns>
+    public static ItemImageInfo CreateImage(string path, ImageType type)
+        => new()
+        {
+            Path = path,
+            Type = type,
+            DateModified = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            Width = 1000,
+            Height = 1500,
+            BlurHash = "UA9Ga}L2-p9O%1Vts,ae00ae00ae"
+        };
+
+    /// <summary>
+    /// Builds one credit, as the people repository would hand it back.
+    /// </summary>
+    /// <param name="name">Who is credited.</param>
+    /// <param name="role">What for.</param>
+    /// <param name="kind">What kind of credit it is.</param>
+    /// <param name="sortOrder">The item's own order for this credit.</param>
+    /// <returns>The credit.</returns>
+    public static PersonInfo CreatePerson(
+        string name,
+        string? role,
+        PersonKind kind,
+        int? sortOrder = null)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            Role = role,
+            Type = kind,
+            SortOrder = sortOrder,
+            ImageUrl = $"Persons/{name}"
+        };
+
+    private sealed class StubServerConfigurationManager : IServerConfigurationManager
+    {
+        private readonly ServerConfiguration _configuration = new();
+
+        public event EventHandler<ConfigurationUpdateEventArgs> NamedConfigurationUpdating = (_, _) => { };
+
+        public event EventHandler<EventArgs> ConfigurationUpdated = (_, _) => { };
+
+        public event EventHandler<ConfigurationUpdateEventArgs> NamedConfigurationUpdated = (_, _) => { };
+
+        public IServerApplicationPaths ApplicationPaths => null!;
+
+        public IApplicationPaths CommonApplicationPaths => null!;
+
+        public ServerConfiguration Configuration => _configuration;
+
+        public BaseApplicationConfiguration CommonConfiguration => _configuration;
+
+        public void AddParts(IEnumerable<IConfigurationFactory> factories)
+        {
+        }
+
+        public object GetConfiguration(string key) => _configuration;
+
+        public ConfigurationStore[] GetConfigurationStores() => Array.Empty<ConfigurationStore>();
+
+        public Type GetConfigurationType(string key) => typeof(ServerConfiguration);
+
+        public void RegisterConfiguration<T>()
+            where T : IConfigurationFactory
+        {
+        }
+
+        public void SaveConfiguration()
+        {
+        }
+
+        public void SaveConfiguration(string key, object configuration)
+        {
+        }
+
+        public void ReplaceConfiguration(BaseApplicationConfiguration newConfiguration)
+        {
+        }
+    }
 }

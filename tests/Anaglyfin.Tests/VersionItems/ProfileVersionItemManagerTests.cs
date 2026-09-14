@@ -353,7 +353,10 @@ public class ProfileVersionItemManagerTests
         await manager.ReconcileLibraryAsync(CancellationToken.None);
 
         var version = (Video)store.FindItem(versionId)!;
-        version.Name = "Renamed in the dashboard";
+
+        // A stale Anaglyfin label, not a user's rename: the manager keeps its own labels current, but
+        // leaves a name somebody chose in the dashboard alone.
+        version.Name = new ProfileCatalog().GetProfile(TwoDBase).DisplayName;
         store.AddStreams(versionId, new[]
         {
             new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "hevc", Width = 1920, Height = 1080 }

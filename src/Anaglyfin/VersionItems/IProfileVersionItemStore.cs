@@ -15,8 +15,8 @@ namespace Anaglyfin.VersionItems;
 /// This is the version-item manager's whole view of the library, and it is deliberately small.
 /// The server's own surface (<c>ILibraryManager</c>, <c>IItemRepository</c>,
 /// <c>IMediaStreamRepository</c>) spans a hundred members, most of them about scanning,
-/// security and virtual folders; reconciling versions needs seven reads and five writes. Naming
-/// those twelve is what makes the reconciliation logic testable without a server, and it is also
+/// security and virtual folders; reconciling versions needs six reads and seven writes. Naming
+/// those thirteen is what makes the reconciliation logic testable without a server, and it is also
 /// what keeps the manager from reaching for a library operation that would surprise the server -
 /// a reconcile that can only read, create, link, update and delete its own items cannot corrupt
 /// anything else.
@@ -122,4 +122,43 @@ public interface IProfileVersionItemStore
     /// subtitles, and nothing for the server to build a transcode from.
     /// </remarks>
     void SaveMediaStreams(Guid itemId, IReadOnlyList<MediaStream> streams, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads the credits persisted for one item.
+    /// </summary>
+    /// <param name="itemId">The item to read.</param>
+    /// <returns>The people credited on that item, in the item's own cast order.</returns>
+    /// <remarks>
+    /// Credits live in their own tables, not on the item, so the item an item manager resolves is not
+    /// yet the whole of its metadata: whoever copies a cast list has to ask for it separately - both
+    /// for the item it copies from and for the item it is about to write, which is how a missing or
+    /// out of date list is noticed without rewriting the item every pass.
+    /// </remarks>
+    IReadOnlyList<PersonInfo> GetPeople(Guid itemId);
+
+    /// <summary>
+    /// Writes the credits one item carries.
+    /// </summary>
+    /// <param name="itemId">The item to credit.</param>
+    /// <param name="people">The credits, in cast order.</param>
+    /// <remarks>
+    /// The write replaces the item's credits, so a version ends up naming exactly the people its
+    /// source does. The people themselves are shared: a credit for a version of a movie points at
+    /// the same person the movie credits, rather than starting a second one.
+    /// </remarks>
+    void SavePeople(Guid itemId, IReadOnlyList<PersonInfo> people);
+
+    /// <summary>
+    /// Persists the images an item carries.
+    /// </summary>
+    /// <param name="item">The item, already carrying the image list to store.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>A task that completes when the images are stored.</returns>
+    /// <remarks>
+    /// Images are rows of their own keyed by item id, and the item's <c>ImageInfos</c> are only a
+    /// copy of them until they are written, so a version that was told about its poster still has to
+    /// have that list put down under its own id. The rows name the same files as the source item's
+    /// rows do - nothing is copied on disk, and nothing is fetched.
+    /// </remarks>
+    Task SaveImagesAsync(BaseItem item, CancellationToken cancellationToken);
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Anaglyfin.Markers;
 using Anaglyfin.Profiles;
@@ -204,6 +205,44 @@ public static class ProfileVersionSource
         }
 
         return string.Concat(sourceName.Trim(), SourceNameSeparator, profile.DisplayName);
+    }
+
+    /// <summary>
+    /// Decides whether a name is a label this builder writes, so a caller can tell its own text
+    /// from somebody else's.
+    /// </summary>
+    /// <param name="name">The name an item carries.</param>
+    /// <param name="profiles">The profiles to test against - the catalog's, not the enabled ones.</param>
+    /// <returns>
+    /// <c>true</c> when the text is a profile's label, alone or behind the file name the label
+    /// builder puts in front of it.
+    /// </returns>
+    /// <remarks>
+    /// Tested against every profile the catalog knows rather than the one this version is built for,
+    /// because the name being asked about may have been written by a different profile - or by a
+    /// library that has since moved on to another one. Whatever wrote it, the text is Anaglyfin's to
+    /// rewrite; a name that matches none of them came from a user, and no version label is a reason
+    /// to overwrite what somebody typed.
+    /// </remarks>
+    public static bool IsVersionLabel(string? name, IEnumerable<StereoProfile> profiles)
+    {
+        ArgumentNullException.ThrowIfNull(profiles);
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        foreach (var profile in profiles)
+        {
+            if (string.Equals(name, profile.DisplayName, StringComparison.Ordinal)
+                || name.EndsWith(SourceNameSeparator + profile.DisplayName, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

@@ -104,7 +104,9 @@ public static class MvcEligibleSourceScanner
     /// <returns>
     /// The accepted sources, in the order the server reported them, together with the ids of every
     /// static source the item reported - which is what a caller needs to know whether a version of
-    /// one of those files already exists as something the server can see.
+    /// one of those files already exists as something the server can see. Each accepted source also
+    /// names the item its file belongs to, because that - and not the item asked about - is whose
+    /// scraped metadata describes the file.
     /// </returns>
     /// <remarks>
     /// Sources are read through the item's own media-source API with path substitution off, because
@@ -157,14 +159,27 @@ public static class MvcEligibleSourceScanner
             // metadata manager gave that file, which no media source repeats. Any other source is
             // a different file and may not be credited with those signals - which is the whole
             // reason the enumeration exists.
-            var candidate = NamesTheItem(item, source)
+            var namesTheItem = NamesTheItem(item, source);
+            var candidate = namesTheItem
                 ? MvcSourceCandidate.FromItem(item)
                 : MvcSourceCandidate.FromMediaSource(source);
 
             var decision = detector.Detect(candidate);
             if (decision.IsEligible)
             {
-                candidates.Add(new MvcEligibleSource(item, source, source.Path, source.Id, source.Name, identityKey));
+                // A static source is keyed by the id of the item its file belongs to, so that id -
+                // and not the item the enumeration was asked of - names whose metadata describes
+                // this file. Whoever materialises versions off this file has to copy the title,
+                // the artwork and the credits of the item that owns it (the hidden MVC alternate of
+                // a stack, for one) and not of the item the versions are offered under.
+                candidates.Add(new MvcEligibleSource(
+                    item,
+                    source,
+                    source.Path,
+                    source.Id,
+                    source.Name,
+                    identityKey,
+                    namesTheItem ? item.Id : ReadItemId(source.Id)));
             }
             else
             {
@@ -191,7 +206,8 @@ public static class MvcEligibleSourceScanner
                     sourcePath: item.Path,
                     sourceId: item.Id.ToString("N", CultureInfo.InvariantCulture),
                     sourceName: item.Name,
-                    identityKey: SourceIdentityKey(item.Id.ToString("N", CultureInfo.InvariantCulture), item.Path)));
+                    identityKey: SourceIdentityKey(item.Id.ToString("N", CultureInfo.InvariantCulture), item.Path),
+                    metadataSourceItemId: item.Id));
             }
         }
 
@@ -344,6 +360,21 @@ public static class MvcEligibleSourceScanner
 
         return string.Equals(source.Path, item.Path, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// The item a source is keyed by, when its id names one.
+    /// </summary>
+    /// <param name="mediaSourceId">The id the source is addressed by.</param>
+    /// <returns>The item id, or <c>null</c> when the source is keyed by anything else.</returns>
+    /// <remarks>
+    /// A source keyed by something that is not an item id (a hand-built report, an older server)
+    /// names no owner, and a caller then has no metadata source to ask but the item it already
+    /// holds - which is what a <c>null</c> means here rather than an error.
+    /// </remarks>
+    private static Guid? ReadItemId(string? mediaSourceId)
+        => Guid.TryParse(mediaSourceId, CultureInfo.InvariantCulture, out var parsed) && parsed != Guid.Empty
+            ? parsed
+            : null;
 }
 
 /// <summary>
@@ -369,7 +400,19 @@ public sealed class MvcEligibleSource
     /// <param name="sourceId">The id the source is addressed by, the seed of the version's id.</param>
     /// <param name="sourceName">The label the source (or the item, alone) carries.</param>
     /// <param name="identityKey">The identity this file is treated as; see <see cref="MvcEligibleSourceScanner.SourceIdentityKey"/>.</param>
-    public MvcEligibleSource(BaseItem item, MediaSourceInfo? original, string sourcePath, string sourceId, string? sourceName, string identityKey)
+    /// <param name="metadataSourceItemId">
+    /// The item whose library metadata describes this file - the item owning the media source, which
+    /// is the item that was scraped and has artwork, credits and a title. Null when the file names no
+    /// such item, in which case a caller has nothing better to copy from than <paramref name="item"/>.
+    /// </param>
+    public MvcEligibleSource(
+        BaseItem item,
+        MediaSourceInfo? original,
+        string sourcePath,
+        string sourceId,
+        string? sourceName,
+        string identityKey,
+        Guid? metadataSourceItemId = null)
     {
         Item = item ?? throw new ArgumentNullException(nameof(item));
         SourcePath = sourcePath;
@@ -377,6 +420,7 @@ public sealed class MvcEligibleSource
         SourceName = sourceName;
         IdentityKey = identityKey;
         Original = original;
+        MetadataSourceItemId = metadataSourceItemId;
     }
 
     /// <summary>Gets the item the file was reached through.</summary>
@@ -396,6 +440,18 @@ public sealed class MvcEligibleSource
 
     /// <summary>Gets the identity this file is treated as for id derivation and deduplication.</summary>
     public string IdentityKey { get; }
+
+    /// <summary>
+    /// Gets the item whose library metadata this file's versions carry, or <c>null</c> when the file
+    /// names no item to take it from.
+    /// </summary>
+    /// <remarks>
+    /// Not always the item the versions are offered under: the eligible file of a stack is usually a
+    /// hidden alternate-version item, and its metadata - the scraped poster, the cast, the original
+    /// title - describes the version the user is watching, not the 1080p root the stack is filed
+    /// under.
+    /// </remarks>
+    public Guid? MetadataSourceItemId { get; }
 }
 
 /// <summary>
