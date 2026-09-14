@@ -613,16 +613,16 @@ sbs_full
 Expected inserted fragments:
 
 ```text
--map 0:v:view:all
+-view_ids -1  (immediately before the marker input's -i)
 -sn
 ```
 
 Expected behavior:
 
-- native all-view output is selected
+- the composed all-view picture is selected before the input is opened
 - no Anaglyfin `-vf` filter is inserted for full SBS itself
 - a server-owned existing `-vf` chain is not removed
-- audio maps chosen by Jellyfin remain intact
+- ordinary video and audio maps chosen by Jellyfin remain intact
 
 This is the profile the geometry fix was found on, so it is also the one where a wrong answer is
 visible without any filter of ours in the command: the profile inserts no scaling at all, so
@@ -631,7 +631,7 @@ whatever the server's `scale` does to the frame is what the segment ends up bein
 Example shape:
 
 ```text
--i <real source path> -map 0:v:view:all -sn -map 0:a ...
+-view_ids -1 -i <real source path> -sn -map 0:v -map 0:a ...
 ```
 
 ### 7.2 Half SBS
@@ -645,7 +645,7 @@ sbs_half
 Expected inserted fragments:
 
 ```text
--map 0:v:view:all
+-view_ids -1  (immediately before the marker input's -i)
 -vf scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p
 -sn
 ```
@@ -676,7 +676,7 @@ anaglyph_arcd
 Expected inserted fragments:
 
 ```text
--map 0:v:view:all
+-view_ids -1  (immediately before the marker input's -i)
 -vf stereo3d=sbsl:arcd,format=yuv420p
 -sn
 ```
@@ -701,7 +701,7 @@ two_d_base
 Expected behavior:
 
 - marker is replaced by the real source path
-- no Anaglyfin `-map`, `-vf`, `-filter_complex`, or `-sn` is inserted
+- no Anaglyfin `-view_ids`, `-map`, `-vf`, `-filter_complex`, or `-sn` is inserted
 - Jellyfin's own maps and filters remain untouched
 
 This is expected to be the least intrusive profile.
@@ -714,13 +714,18 @@ Profile id:
 custom_grayscale
 ```
 
-With the shipped default colors, the inserted filter graph should be:
+With the shipped default colors, the inserted composed-view input and filter graph should be:
 
 ```text
--filter_complex [0:v:view:all]split=2[anaglyfin_cg_left_in][anaglyfin_cg_right_in];[anaglyfin_cg_left_in]crop=iw/2:ih:0:0,format=gray,format=rgb24,colorchannelmixer=rr=1:gg=0:bb=0[anaglyfin_cg_left];[anaglyfin_cg_right_in]crop=iw/2:ih:iw/2:0,format=gray,format=rgb24,colorchannelmixer=rr=0:gg=1:bb=1[anaglyfin_cg_right];[anaglyfin_cg_left][anaglyfin_cg_right]blend=all_mode=screen,format=yuv420p[anaglyfin_custom]
+-view_ids -1  (immediately before the marker input's -i)
+-filter_complex [0:v]split=2[anaglyfin_cg_left_in][anaglyfin_cg_right_in];[anaglyfin_cg_left_in]crop=iw/2:ih:0:0,format=gray,format=rgb24,colorchannelmixer=rr=1:gg=0:bb=0[anaglyfin_cg_left];[anaglyfin_cg_right_in]crop=iw/2:ih:iw/2:0,format=gray,format=rgb24,colorchannelmixer=rr=0:gg=1:bb=1[anaglyfin_cg_right];[anaglyfin_cg_left][anaglyfin_cg_right]blend=all_mode=screen,format=yuv420p[anaglyfin_custom]
 -map [anaglyfin_custom]
 -sn
 ```
+
+When the marker carries `video=<index>`, the graph's source label is `[0:<index>]` rather than
+`[0:v]`. The command must not contain `0:v:view` in any form: the composed request replaces the
+view-selector route.
 
 - [ ] Left/right colors from the admin page become numeric `colorchannelmixer` coefficients,
   not arbitrary text.
@@ -742,40 +747,46 @@ server's `-vf` value, is the evidence the next runtime task needs.
 
 ### 7.6 Map-less commands
 
-Some Jellyfin transcode commands carry no `-map`. When a profile inserts a video map, the
-rewriter also inserts:
+Some Jellyfin transcode commands carry no `-map`. A linear profile still inserts no map: it
+converts the composed picture delivered by whatever video stream FFmpeg selects automatically.
+Only the custom graph profile names a new output stream; when it does so on a map-less command,
+the rewriter also inserts:
 
 ```text
 -map 0:a?
 ```
 
-Expected shape:
+Expected custom-grayscale shape:
 
 ```text
--i <real source path> -map 0:v:view:all -map 0:a? -sn ...
+-view_ids -1 -i <real source path> -filter_complex <Anaglyfin graph> -map [anaglyfin_custom] -map 0:a? -sn ...
 ```
 
-- [ ] Map-less full SBS, half SBS, red-cyan, and custom grayscale commands keep audio.
+- [ ] Map-less full SBS, half SBS, and red-cyan commands insert no Anaglyfin stream map and keep FFmpeg's automatic audio selection.
+- [ ] Map-less custom grayscale keeps audio through the explicit optional audio map.
 - [ ] A command that already had audio maps is not given an extra optional audio map.
 - [ ] 2D base does not invent stream maps.
 
 ### 7.7 The server's numbered maps
 
 Jellyfin's HLS commands name the streams they chose by number: `-map 0:<index>`, the number
-being that stream's index inside the file. When a profile owns the video pipeline, the map the
-marker's `video=<index>` names is the server's video map, and the wrapper removes it; every
-other map is somebody else's stream.
+being that stream's index inside the file. For a linear profile, the map the marker's
+`video=<index>` names is the stream the profile converts, so the wrapper preserves it. Only the
+custom graph profile replaces that source map with its graph label; every other map remains
+somebody else's stream.
 
-- [ ] The rewritten command carries exactly one video map, the profile's own.
-- [ ] The server's `-map 0:<index>` for the video is gone, including the optional
-      `-map 0:<index>?` spelling.
+- [ ] A linear profile's rewritten command carries the server's ordinary or numbered video map
+      unchanged; it does not add a second Anaglyfin video map.
+- [ ] A custom-grayscale rewrite removes the server's `-map 0:<index>` for the marker's video,
+      including the optional `-map 0:<index>?` spelling, and maps only `[anaglyfin_custom]`.
 - [ ] The server's numbered audio and subtitle maps are still there, in the order the server
-      wrote them.
+      wrote them, except subtitle maps under a profile that suppresses subtitle streams.
 - [ ] Exclusion maps survive: `-map -0:a`, `-map -0:s` and a bare `-map -0` are the server
       taking streams out of the output, and removing one would put the stream back -
       subtitles under a profile that burns its own in being the case that matters.
-      (`-map -0:v` is the one exclusion the profile does take away: written after the
-      profile's own video map it would subtract that map and leave an output with no picture.)
+      (`-map -0:v` is the one video exclusion the wrapper takes away: on a linear profile it
+      would delete the stream being converted, and on the graph profile it would subtract the
+      graph output.)
 - [ ] A 2D base command keeps every map the server wrote: that profile owns no video pipeline
       and takes nothing away.
 
@@ -783,7 +794,7 @@ Expected shape for a red-cyan version of a source whose video is stream 0 and au
 stream 1:
 
 ```text
--i <real source path> -map 0:v:view:all -vf stereo3d=sbsl:arcd,format=yuv420p -sn -map 0:1 -codec:v libx264 ...
+-view_ids -1 -i <real source path> -vf stereo3d=sbsl:arcd,format=yuv420p -sn -map 0:0 -map 0:1 -codec:v libx264 ...
 ```
 
 ### 7.8 Segment dimensions: the geometry the whole chain agrees on
@@ -838,7 +849,7 @@ Play a non-MVC item that will be transcoded, or force transcoding.
 
 - [ ] The wrapper starts the real FFmpeg binary with the received arguments unchanged.
 - [ ] Jellyfin hardware decode options from the server remain present if configured.
-- [ ] No Anaglyfin `-map 0:v:view:all` is inserted for a non-marker command.
+- [ ] No Anaglyfin `-view_ids` option is inserted for a non-marker command.
 - [ ] No Anaglyfin `-vf`, `-filter_complex`, or `-sn` is inserted for a non-marker command.
 - [ ] Ordinary playback does not create an Anaglyfin concurrency slot file.
 - [ ] No wrapper refusal line appears for ordinary playback.
