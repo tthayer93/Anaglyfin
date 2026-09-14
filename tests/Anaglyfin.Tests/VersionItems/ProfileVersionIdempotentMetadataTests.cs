@@ -191,7 +191,7 @@ public class ProfileVersionIdempotentMetadataTests
             {
                 source.ImageInfos[0],
                 source.ImageInfos[1],
-                ProfileVersionFixtures.CreateImage("/movies/Ready Player One (2018)/stranger.jpg", ImageType.Still)
+                ProfileVersionFixtures.CreateImage("/movies/Ready Player One (2018)/stranger.jpg", ImageType.Thumb)
             },
 
             // A row the version lost.
@@ -427,7 +427,7 @@ public class ProfileVersionIdempotentMetadataTests
         // the item every pass would be the bug this one is fixing, only smaller.
         var settled = await manager.ReconcileLibraryAsync(CancellationToken.None);
         Assert.False(settled.Changed);
-        Assert.Equal(1, store.Updated.Count);
+        Assert.Single(store.Updated);
     }
 
     [Fact]
@@ -476,7 +476,7 @@ public class ProfileVersionIdempotentMetadataTests
         // Gained: a row naming a file the source does not name. The mirror of the loss - the same
         // comparison answers it the same way, and the repair is the same write.
         version.ImageInfos = version.ImageInfos
-            .Append(ProfileVersionFixtures.CreateImage("/movies/Ready Player One (2018)/stranger.jpg", ImageType.Still))
+            .Append(ProfileVersionFixtures.CreateImage("/movies/Ready Player One (2018)/stranger.jpg", ImageType.Thumb))
             .ToArray();
 
         var gained = await manager.ReconcileLibraryAsync(CancellationToken.None);
