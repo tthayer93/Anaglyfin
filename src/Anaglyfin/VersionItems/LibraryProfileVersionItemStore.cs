@@ -22,14 +22,22 @@ namespace Anaglyfin.VersionItems;
 /// <c>SaveMediaStreams</c> on <see cref="IMediaStreamRepository"/>) - the same calls the stock
 /// "Merge versions" REST endpoint performs in-process - so Anaglyfin writes versions the way the
 /// server writes them and gets the server's guarantees with them: linked children are stored once
-/// per pair, deleting an item takes its streams and its links with it, and a scan never removes a
-/// child whose path is not a file.
+/// per pair, deleting an item takes its streams, its credits and its images with it, and a scan
+/// never removes a child whose path is not a file.
 /// </para>
 /// <para>
 /// There is deliberately no direct database access: nothing here reaches past
-/// <see cref="ILibraryManager"/> into repositories beyond the stream repository the item model
-/// itself uses, so a server upgrade that moves the schema under these interfaces moves Anaglyfin
-/// with it rather than leaving it behind.
+/// <see cref="ILibraryManager"/> into repositories beyond the ones the item model itself uses -
+/// the stream repository, the people repository and the item persistence service - so a server
+/// upgrade that moves the schema under these interfaces moves Anaglyfin with it rather than
+/// leaving it behind.
+/// </para>
+/// <para>
+/// The three metadata-bearing writes go to the tables that own the metadata rather than through a
+/// refresh: <see cref="IMediaStreamRepository"/> for the streams a version reports,
+/// <see cref="IPeopleRepository"/> for its credits and <see cref="IItemPersistenceService"/> for
+/// its image rows. That is what keeps a version's metadata a database fact. Nothing here opens a
+/// metadata saver, and none of these APIs can write a file: a version has no file to describe.
 /// </para>
 /// </remarks>
 public sealed class LibraryProfileVersionItemStore : IProfileVersionItemStore
@@ -38,16 +46,28 @@ public sealed class LibraryProfileVersionItemStore : IProfileVersionItemStore
 
     private readonly IMediaStreamRepository _mediaStreamRepository;
 
+    private readonly IPeopleRepository _peopleRepository;
+
+    private readonly IItemPersistenceService _itemPersistenceService;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="LibraryProfileVersionItemStore"/> class.
     /// </summary>
     /// <param name="libraryManager">The server's library manager.</param>
     /// <param name="mediaStreamRepository">The repository a item's reported streams live in.</param>
+    /// <param name="peopleRepository">The repository an item's credits live in.</param>
+    /// <param name="itemPersistenceService">The service an item's image rows live behind.</param>
     /// <exception cref="ArgumentNullException">Any argument is <c>null</c>.</exception>
-    public LibraryProfileVersionItemStore(ILibraryManager libraryManager, IMediaStreamRepository mediaStreamRepository)
+    public LibraryProfileVersionItemStore(
+        ILibraryManager libraryManager,
+        IMediaStreamRepository mediaStreamRepository,
+        IPeopleRepository peopleRepository,
+        IItemPersistenceService itemPersistenceService)
     {
         _libraryManager = libraryManager ?? throw new ArgumentNullException(nameof(libraryManager));
         _mediaStreamRepository = mediaStreamRepository ?? throw new ArgumentNullException(nameof(mediaStreamRepository));
+        _peopleRepository = peopleRepository ?? throw new ArgumentNullException(nameof(peopleRepository));
+        _itemPersistenceService = itemPersistenceService ?? throw new ArgumentNullException(nameof(itemPersistenceService));
     }
 
     /// <inheritdoc />
@@ -136,5 +156,42 @@ public sealed class LibraryProfileVersionItemStore : IProfileVersionItemStore
         ArgumentNullException.ThrowIfNull(streams);
 
         _mediaStreamRepository.SaveMediaStreams(itemId, streams, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<PersonInfo> GetPeople(Guid itemId)
+    {
+        if (itemId == Guid.Empty)
+        {
+            return Array.Empty<PersonInfo>();
+        }
+
+        // The credits of one item, in the order the item lists them (the repository sorts by the
+        // mapping's list order when the query names an item). The record count is not asked for:
+        // nobody pages through a movie's cast from here, and counting is the expensive half of the
+        // query when a library is behind an access filter.
+        return _peopleRepository.GetPeople(new InternalPeopleQuery { ItemId = itemId, EnableTotalRecordCount = false }).Items;
+    }
+
+    /// <inheritdoc />
+    public void SavePeople(Guid itemId, IReadOnlyList<PersonInfo> people)
+    {
+        ArgumentNullException.ThrowIfNull(people);
+
+        // The server's own credit write, keyed by item id: it reuses the person rows that already
+        // exist by name and kind, so crediting a version does not start a second Halle Berry, and
+        // it replaces the item's credit list wholesale, so nothing of the previous answer survives.
+        _peopleRepository.UpdatePeople(itemId, people);
+    }
+
+    /// <inheritdoc />
+    public Task SaveImagesAsync(BaseItem item, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+
+        // Writes the item's image rows as they stand on the item: the same files, under the version's
+        // own id. The server's own refresh path would size and hash each file again and fetch any
+        // remote one, which is work on files a version does not own; this writes the rows and stops.
+        return _itemPersistenceService.SaveImagesAsync(item, cancellationToken);
     }
 }
