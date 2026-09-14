@@ -389,7 +389,7 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
                 var version = ProfileVersionSource.Build(root, source, profile, labelSources);
                 var id = ProfileVersionSource.GetVersionItemId(version.Id);
 
-                if (!desired.TryAdd(id, new PlannedVersion(version, metadata, credits)))
+                if (!desired.TryAdd(id, new PlannedVersion(version, profile.Id, metadata, credits)))
                 {
                     // Two files of one item folding to one version id is the identity collision the
                     // derivation exists to avoid; the first answer wins, exactly as the provider's
@@ -442,6 +442,11 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         /// Initializes a new instance of the <see cref="PlannedVersion"/> class.
         /// </summary>
         /// <param name="source">The version as a media source.</param>
+        /// <param name="profileId">
+        /// The profile this version offers. Carried beside the source because the item a plan
+        /// materialises into does not name its profile anywhere of its own once it exists, and a
+        /// diagnostic that says which version was rewritten wants to say which profile it is for.
+        /// </param>
         /// <param name="metadata">The metadata of the item whose file this version converts.</param>
         /// <param name="sourceCredits">
         /// The credits of that same item, read once for every profile the file converts. Credits are
@@ -449,15 +454,19 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         /// snapshot rather than inside it; each version gets its own copy of them, because a credit
         /// names the item it is credited on.
         /// </param>
-        public PlannedVersion(MediaSourceInfo source, VersionItemMetadata metadata, IReadOnlyList<PersonInfo> sourceCredits)
+        public PlannedVersion(MediaSourceInfo source, string profileId, VersionItemMetadata metadata, IReadOnlyList<PersonInfo> sourceCredits)
         {
             Source = source ?? throw new ArgumentNullException(nameof(source));
+            ProfileId = profileId ?? throw new ArgumentNullException(nameof(profileId));
             Metadata = metadata ?? throw new ArgumentNullException(nameof(metadata));
             SourceCredits = sourceCredits ?? throw new ArgumentNullException(nameof(sourceCredits));
         }
 
         /// <summary>Gets the version as the media source a client picks.</summary>
         public MediaSourceInfo Source { get; }
+
+        /// <summary>Gets the profile this version offers.</summary>
+        public string ProfileId { get; }
 
         /// <summary>Gets the metadata the version item has to carry.</summary>
         public VersionItemMetadata Metadata { get; }
@@ -590,11 +599,25 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     /// <returns><c>true</c> when anything about the version was written.</returns>
     /// <remarks>
     /// <para>
-    /// Five independent facts are checked - the item's own fields, the metadata it is wearing, the
-    /// images it names, the credits it carries, the streams it reports, and whether anything still
-    /// links it to this primary - and only the ones that are wrong are repaired. An item that is
-    /// right in all of them is read and left alone, which is the common case and the reason a pass
-    /// can afford to run over the whole library.
+    /// Every fact about the item is checked - the streams it reports, the link that puts it in the
+    /// picker, its own fields (label, marker, duration, size, bitrate, container, parent, the frame
+    /// it describes), the metadata it is wearing, the images it names, the credits it carries,
+    /// whether it is still locked, and whether anything still links it to this primary - and only
+    /// the ones that are wrong are repaired. An item that is right in all of them is read and left
+    /// alone, which is the common case and the reason a pass can afford to run over the whole
+    /// library.
+    /// </para>
+    /// <para>
+    /// <b>Every comparison must answer the same way the database answers it.</b> A check that reads
+    /// a difference the storage did not write - a list handed back in another order, a number the
+    /// server recomputed from a file - is a rewrite on every start-up, forever, and on a library of
+    /// versions that is a pass that never settles. That is why the image and credit comparisons work
+    /// on sorted identities rather than on list positions (see
+    /// <see cref="VersionItemMetadata.ImagesMatch"/> and <see cref="VersionItemCredits.Matches"/>),
+    /// why the file-derived halves of an image row stay out of the comparison, and why every field
+    /// this method compares is also a field it writes: compared-but-not-written is drift nobody
+    /// repairs, and written-but-not-compared drifts unnoticed - the frame the profile encodes is
+    /// compared here and written here precisely because the create path has always written it.
     /// </para>
     /// <para>
     /// <b>Why the metadata is checked at all.</b> A version's library metadata is copied, which
@@ -631,27 +654,87 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         // is a marker URL is an item the server will keep trying to scrape and probe.
         var needsLock = !current.IsLocked;
 
+        // The frame the profile encodes is written onto the item when it is created, so it has to be
+        // compared here too: an item describing a picture its stream report does not report - or
+        // the other way round - is a version that promises one frame and delivers another, and a
+        // drift no pass ever repairs is a drift that outlives every repair around it.
+        var currentVideo = current as Video;
+        var frame = PlannedFrame(version);
+        var needsFrame = frame.HasValue
+                         && currentVideo is not null
+                         && (currentVideo.Width != frame.Value.Width
+                             || currentVideo.Height != frame.Value.Height);
+
         // The credits are compared against the source's, read once for this file, and written as
         // their own copy: a credit names the item it is credited on, so the version cannot share the
         // primary's rows, and neither can two versions of one file share one list with each other.
         var wantedCredits = VersionItemCredits.Clone(planned.SourceCredits, current.Id);
         var needsCredits = !VersionItemCredits.Matches(_store.GetPeople(current.Id), wantedCredits);
 
+        var needsPath = !string.Equals(current.Path, version.Path, StringComparison.Ordinal);
+        var needsDuration = current.RunTimeTicks != version.RunTimeTicks;
+        var needsSize = current.Size != version.Size;
+        var needsBitrate = current.TotalBitrate != version.Bitrate;
+        var needsContainer = !string.Equals(current.Container ?? string.Empty, version.Container ?? string.Empty, StringComparison.Ordinal);
+        var needsParent = current.ParentId != root.ParentId;
+        var needsPrimary = currentVideo is not null && currentVideo.PrimaryVersionId != root.Id;
+
         var needsItem = needsName
-                        || !string.Equals(current.Path, version.Path, StringComparison.Ordinal)
-                        || current.RunTimeTicks != version.RunTimeTicks
-                        || current.Size != version.Size
-                        || current.TotalBitrate != version.Bitrate
-                        || !string.Equals(current.Container ?? string.Empty, version.Container ?? string.Empty, StringComparison.Ordinal)
-                        || current.ParentId != root.ParentId
+                        || needsPath
+                        || needsDuration
+                        || needsSize
+                        || needsBitrate
+                        || needsContainer
+                        || needsParent
                         || needsMetadata
                         || needsImages
+                        || needsFrame
                         || needsLock
-                        || (current is Video currentVideo && currentVideo.PrimaryVersionId != root.Id);
+                        || needsPrimary;
 
         if (!needsItem && !needsStreams && !needsLink && !needsCredits)
         {
             return false;
+        }
+
+        // The counts in the pass summary say a version was rewritten; on a library that logs one on
+        // every start-up they are also the whole story, which is not enough to find out why. The
+        // reasons name the field, not the values: an item id, a profile id and a list of short
+        // field names carry nothing a user would call private, and they are enough to point the
+        // next look straight at the row that drifted.
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            var reasons = new List<string>();
+
+            void AddIf(string reason, bool needed)
+            {
+                if (needed)
+                {
+                    reasons.Add(reason);
+                }
+            }
+
+            AddIf("streams", needsStreams);
+            AddIf("link", needsLink);
+            AddIf("credits", needsCredits);
+            AddIf("name", needsName);
+            AddIf("path", needsPath);
+            AddIf("duration", needsDuration);
+            AddIf("size", needsSize);
+            AddIf("bitrate", needsBitrate);
+            AddIf("container", needsContainer);
+            AddIf("parent", needsParent);
+            AddIf("metadata", needsMetadata);
+            AddIf("images", needsImages);
+            AddIf("frame", needsFrame);
+            AddIf("lock", needsLock);
+            AddIf("primary", needsPrimary);
+
+            _logger.LogDebug(
+                "Anaglyfin is rewriting the version item {VersionItemId} of profile {ProfileId}: {Reasons}.",
+                current.Id,
+                planned.ProfileId,
+                string.Join(", ", reasons));
         }
 
         if (needsItem)
@@ -671,11 +754,20 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
 
             planned.Metadata.ApplyTo(current);
 
-            if (current is Video reOwnedVideo && reOwnedVideo.PrimaryVersionId != root.Id)
+            if (needsFrame && currentVideo is not null && frame.HasValue)
+            {
+                // The same numbers the create path writes on the day the item is born: what the
+                // version's video stream reports is what the item describes - the comparison and
+                // this write read one PlannedFrame, or a settled item would never settle.
+                currentVideo.Width = frame.Value.Width;
+                currentVideo.Height = frame.Value.Height;
+            }
+
+            if (needsPrimary && currentVideo is not null)
             {
                 // It is ours and it converts this item's file, whatever it was told to belong to
                 // before. Leaving the claim on another primary would leave it invisible here.
-                reOwnedVideo.SetPrimaryVersionId(root.Id);
+                currentVideo.SetPrimaryVersionId(root.Id);
             }
 
             await _store.UpdateItemAsync(current, cancellationToken).ConfigureAwait(false);
@@ -704,6 +796,32 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         }
 
         return needsItem || needsStreams || needsLink || needsCredits;
+    }
+
+    /// <summary>
+    /// The frame the profile encodes, in the form the version's item describes it with.
+    /// </summary>
+    /// <param name="version">The version as a media source.</param>
+    /// <returns>
+    /// The size the version's video stream reports, or <c>null</c> when the version has no video
+    /// stream to name one.
+    /// </returns>
+    /// <remarks>
+    /// The one definition of the item's geometry, read off the one place that decides it: the
+    /// version's own video stream, sized by the profile that converts the picture. A stream that
+    /// reports no side counts as zero, which is the number the create path has always written.
+    /// </remarks>
+    private static (int Width, int Height)? PlannedFrame(MediaSourceInfo version)
+    {
+        foreach (var stream in version.MediaStreams)
+        {
+            if (stream.Type == MediaStreamType.Video)
+            {
+                return (stream.Width ?? 0, stream.Height ?? 0);
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -777,14 +895,13 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
 
         // The frame the profile encodes, on the item as well as on its stream report, so the item
         // describes the picture it can actually deliver rather than the one it was derived from.
-        foreach (var stream in version.MediaStreams)
+        // The same read <see cref="EnsureCurrentAsync"/> compares against: one definition of the
+        // geometry, written and checked by the same two lines.
+        var frame = PlannedFrame(version);
+        if (frame.HasValue)
         {
-            if (stream.Type == MediaStreamType.Video)
-            {
-                item.Width = stream.Width ?? 0;
-                item.Height = stream.Height ?? 0;
-                break;
-            }
+            item.Width = frame.Value.Width;
+            item.Height = frame.Value.Height;
         }
 
         item.SetPrimaryVersionId(root.Id);
