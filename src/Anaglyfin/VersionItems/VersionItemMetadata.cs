@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using MediaBrowser.Controller.Entities;
 
@@ -36,13 +37,25 @@ namespace Anaglyfin.VersionItems;
 /// file, it is not that file), its dates of its own making (<c>DateCreated</c>, when this item came
 /// to exist), and the file-derived halves of an image row. An image entry is copied whole - same
 /// file, same size, same blurhash, same modified time - but a version's image rows are compared on
-/// which images they name and in what order, not on those derived numbers: the server recomputes
-/// them from the file whenever it touches an item, and a copy that insisted on its own stale copy
-/// of a number the server had just refreshed would be rewritten on every pass forever.
+/// the set of images they name, in no particular order, and not on those derived numbers: the server
+/// recomputes them from the file whenever it touches an item, and a copy that insisted on its own
+/// stale copy of a number the server had just refreshed would be rewritten on every pass forever.
 /// </para>
 /// </remarks>
 public sealed class VersionItemMetadata
 {
+    /// <summary>
+    /// The character an image identity is joined with. No file path and no spelled-out number
+    /// carries a unit separator, so a joined identity can never spell another row's identity.
+    /// </summary>
+    private const char IdentitySeparator = '\u001F';
+
+    /// <summary>
+    /// The identity a hole in an image list answers with. A real row's identity always begins with
+    /// the decimal form of its (non-negative) image type, so nothing real collides with this.
+    /// </summary>
+    private const string MissingImageIdentity = "\u001F";
+
     private readonly string? _overview;
 
     private readonly string? _originalTitle;
@@ -239,15 +252,29 @@ public sealed class VersionItemMetadata
     }
 
     /// <summary>
-    /// Whether an item already names the same images, in the same order.
+    /// Whether an item already names the same images, whatever order it names them in.
     /// </summary>
     /// <param name="current">The item to read.</param>
-    /// <returns><c>true</c> when the item's image list is the snapshot's list.</returns>
+    /// <returns><c>true</c> when the item's image list names the snapshot's set of images.</returns>
     /// <remarks>
+    /// <para>
     /// Compared on what the list points at rather than on everything the row records: width, height,
     /// blurhash and modified time travel with the copy but belong to the file, and the server
     /// recomputes them from it. Insisting on the copied numbers would make every pass find a
     /// difference the server had just corrected, and rewrite the same rows forever.
+    /// </para>
+    /// <para>
+    /// <b>A set, not a sequence.</b> Image rows are keyed by what they name, not by a position - the
+    /// item model carries no list index on the row, and the database hands them back in whatever
+    /// order its query happens to produce. A comparison that walked the two lists index by index
+    /// would therefore call the same set of images different on every read the engine chose a new
+    /// order for, and rewrite the item on every pass forever. What is compared is the multiset of
+    /// what the rows name - kind of image and file - sorted into a canonical order first, which is
+    /// deterministic whatever order either list arrived in. Two rows naming the same kind of image
+    /// at the same file are indistinguishable to the multiset (that is what makes the answer
+    /// order-independent), and a row that is missing, added, or pointed at another file still
+    /// changes the multiset and is repaired.
+    /// </para>
     /// </remarks>
     public bool ImagesMatch(BaseItem current)
     {
@@ -260,20 +287,7 @@ public sealed class VersionItemMetadata
             return false;
         }
 
-        for (var index = 0; index < _images.Length; index++)
-        {
-            var haveImage = have[index];
-            var wanted = _images[index];
-
-            if (haveImage is null
-                || !string.Equals(haveImage.Path ?? string.Empty, wanted.Path ?? string.Empty, StringComparison.Ordinal)
-                || haveImage.Type != wanted.Type)
-            {
-                return false;
-            }
-        }
-
-        return true;
+        return SortedImageIdentities(have).SequenceEqual(SortedImageIdentities(_images), StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -347,6 +361,40 @@ public sealed class VersionItemMetadata
         return clones.ToArray();
     }
 
+    /// <summary>
+    /// The identities of a list's images, sorted: the canonical form of the multiset, which two
+    /// lists naming the same images answer with whatever order they hold them in.
+    /// </summary>
+    /// <remarks>
+    /// An ordinal sort over a key that begins with the numeric image type is a total, deterministic
+    /// order, so no tiebreak on the file-derived numbers is needed to make the comparison
+    /// reproducible - and those numbers must stay out of the identity anyway, because the server
+    /// recomputes them from the file and a copy cannot insist on its own stale copy of them.
+    /// </remarks>
+    private static List<string> SortedImageIdentities(ItemImageInfo[] images)
+    {
+        var identities = new List<string>(images.Length);
+
+        foreach (var image in images)
+        {
+            identities.Add(image is null ? MissingImageIdentity : ImageIdentity(image));
+        }
+
+        identities.Sort(StringComparer.Ordinal);
+
+        return identities;
+    }
+
+    /// <summary>
+    /// What one image row names: the kind of image and the file it points at - the whole of what
+    /// the row is written to say, and none of what the server derives from the file.
+    /// </summary>
+    private static string ImageIdentity(ItemImageInfo image)
+        => string.Concat(
+            ((int)image.Type).ToString(CultureInfo.InvariantCulture),
+            IdentitySeparator.ToString(),
+            image.Path ?? string.Empty);
+
     private static bool SameProviderIds(IDictionary<string, string>? current, Dictionary<string, string> wanted)
     {
         var have = current ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -403,6 +451,19 @@ public sealed class VersionItemMetadata
 public static class VersionItemCredits
 {
     /// <summary>
+    /// The character a credit identity is joined with. Names and roles arrive trimmed and the
+    /// numeric fields are spelled in the invariant culture, so no stored value carries a unit
+    /// separator and no combination of fields can spell another credit's identity.
+    /// </summary>
+    private const char IdentitySeparator = '\u001F';
+
+    /// <summary>
+    /// The identity a hole in a credit list answers with. A real credit's identity always begins
+    /// with the decimal form of its (non-negative) kind, so nothing real collides with this.
+    /// </summary>
+    private const string MissingCreditIdentity = "\u001F";
+
+    /// <summary>
     /// Copies one item's credits onto another item.
     /// </summary>
     /// <param name="source">The credits as the source item carries them.</param>
@@ -448,17 +509,30 @@ public static class VersionItemCredits
     }
 
     /// <summary>
-    /// Whether an item is already credited with exactly these credits, in this order.
+    /// Whether an item is already credited with exactly these credits, in any read order.
     /// </summary>
     /// <param name="current">The credits the item carries.</param>
     /// <param name="wanted">The credits it should carry.</param>
     /// <returns><c>true</c> when nothing would change.</returns>
     /// <remarks>
+    /// <para>
     /// Compared on the four values a credit is stored with - who, in what role, of what kind, and
     /// where in the item's list - because those are what a client is shown and what the credit write
     /// puts down. An image or a provider id on a person belongs to the person and not to this
     /// item's credit, and the credit write does not store either, so comparing them would find a
     /// difference no write could settle.
+    /// </para>
+    /// <para>
+    /// <b>A multiset, not a sequence.</b> The order a credit sits in is carried by the credit itself
+    /// - <c>SortOrder</c> is one of the four values - and not by the order the people repository
+    /// happens to hand the rows back in; that repository owes nobody a row order. Compared index by
+    /// index, one read in a new order would look like every credit moving at once, and the item
+    /// would be rewritten on every pass forever. So each side is reduced to a sorted canonical form of its
+    /// deterministic identities (kind, name, role and sort order joined with a separator none of the
+    /// text fields can carry) and the two forms are compared elementwise: same rows in any read
+    /// order answers <c>true</c>, and a credit that is missing, added, renamed, re-roled or
+    /// re-ordered still changes the form and is repaired.
+    /// </para>
     /// </remarks>
     public static bool Matches(IReadOnlyList<PersonInfo>? current, IReadOnlyList<PersonInfo>? wanted)
     {
@@ -470,30 +544,40 @@ public static class VersionItemCredits
             return false;
         }
 
-        for (var index = 0; index < want.Count; index++)
+        return SortedCreditIdentities(have).SequenceEqual(SortedCreditIdentities(want), StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// The identities of a credit list, sorted: the canonical form of the multiset, which two lists
+    /// crediting the same people answer with whatever order they were read back in.
+    /// </summary>
+    private static List<string> SortedCreditIdentities(IReadOnlyList<PersonInfo> people)
+    {
+        var identities = new List<string>(people.Count);
+
+        foreach (var person in people)
         {
-            var expected = want[index];
-            var actual = have[index];
-
-            if (actual is null || expected is null)
-            {
-                if (!ReferenceEquals(actual, expected))
-                {
-                    return false;
-                }
-
-                continue;
-            }
-
-            if (!string.Equals(actual.Name ?? string.Empty, expected.Name ?? string.Empty, StringComparison.Ordinal)
-                || !string.Equals(actual.Role ?? string.Empty, expected.Role ?? string.Empty, StringComparison.Ordinal)
-                || actual.Type != expected.Type
-                || actual.SortOrder != expected.SortOrder)
-            {
-                return false;
-            }
+            // A hole in the list answers with a text no real credit can produce - the identity of a
+            // real one always begins with the decimal form of its (non-negative) kind - so a hole
+            // matches only another hole and never quietly matches a person.
+            identities.Add(person is null ? MissingCreditIdentity : CreditIdentity(person));
         }
 
-        return true;
+        identities.Sort(StringComparer.Ordinal);
+
+        return identities;
     }
+
+    /// <summary>
+    /// What one credit row says, in the form its stored values answer with: the text fields exactly
+    /// as the credit write stores them (it trims, and a blank travels as no text), so a padded
+    /// source credit and the trimmed row it produces stay the distinguishable pair they are.
+    /// </summary>
+    private static string CreditIdentity(PersonInfo person)
+        => string.Join(
+            IdentitySeparator,
+            ((int)person.Type).ToString(CultureInfo.InvariantCulture),
+            person.Name ?? string.Empty,
+            person.Role ?? string.Empty,
+            person.SortOrder?.ToString(CultureInfo.InvariantCulture) ?? string.Empty);
 }
