@@ -102,7 +102,9 @@ PASS  the binary executes in this image (missing-real-FFmpeg refusal reached)
 PASS  pass-through kept -hwaccel vaapi
 PASS  the child received the decoded source path
 PASS  no marker text reached the child process
-PASS  the sbs_full rewrite inserted -map 0:v:view:all
+PASS  the sbs_full rewrite inserted -view_ids -1
+PASS  the sbs_full rewrite inserted -sn
+PASS  the sbs_full rewrite left no view specifier beside -view_ids
 PASS  an unknown profile is refused with exit 65
 PASS  pass-through reached the image's FFmpeg at /usr/lib/jellyfin-ffmpeg/ffmpeg
 OK: the wrapper artifact runs and decides correctly in this image (0 check(s) skipped)
@@ -350,7 +352,7 @@ Expected shape, and this is the pass condition:
 ```text
 jellyfin
   /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg ... -i http://127.0.0.1/anaglyfin/profile/sbs_full?source=%2Fmedia%2F... ...
-    <ANAGLYFIN_REAL_FFMPEG> ... -i /media/Movie.2010.3D.1080p.MVC.mkv -map 0:v:view:all -sn ...
+    <ANAGLYFIN_REAL_FFMPEG> ... -view_ids -1 -i /media/Movie.2010.3D.1080p.MVC.mkv -sn -map 0:v ...
 ```
 
 - the wrapper received the marker as **one** argument - not split, not decoded, not
@@ -363,12 +365,14 @@ jellyfin
   the copy form of a Jellyfin command carries no encoder stack to write into, so the wrapper
   refuses it and says `refused: the command was not started (ServerChoseVideoCopy)` in the
   log rather than passing a command through that would have played the raw MVC track;
-- no numbered map names the marker's video index. `-map 0:3` in the command the wrapper
-  received is removed from the child's when the marker said `video=3`, because argv alone
-  cannot tell that `3` from an audio stream - the marker's index is what identifies it. Audio
-  and subtitle maps, exclusion maps (`-map -0:a`, `-map -0:s`, `-map -0`) and maps of other
-  inputs survive untouched; the one exclusion that does not is `-map -0:v`, which would
-  subtract the picture the profile had just mapped.
+- for the custom grayscale profile, no numbered map names the marker's video index:
+  `-map 0:3` in the command the wrapper received is removed from the child's when the marker
+  said `video=3`, because the graph output has to be the only mapped picture and argv alone
+  cannot tell that `3` from an audio stream. For a linear profile, `-map 0:3` is the stream
+  the profile converts and survives unchanged; the composed request is input-side, so it does
+  not need a competing map. Audio and subtitle maps, exclusion maps (`-map -0:a`,
+  `-map -0:s`, `-map -0`) and maps of other inputs survive untouched; the one exclusion that
+  does not is `-map -0:v`, which would delete or subtract the picture being produced.
 
 The same command lines are written to the server's transcode logs, which is the artifact
 to capture rather than a screenshot:
@@ -391,7 +395,7 @@ drop the quality setting - and repeat step 8. Pass condition:
 
 - the child's arguments are the arguments the wrapper received, character for character,
   including `-hwaccel`/`-vaapi_device`/`-qsv` options the server chose;
-- no `-map 0:v:view:all`, no `-vf`, no `-filter_complex`, no `-sn` appeared;
+- no `-view_ids`, no `-map`, no `-vf`, no `-filter_complex`, no `-sn` appeared;
 - no slot file exists under `ANAGLYFIN_LOCK_DIR` for the ordinary job;
 - no `anaglyfin-wrapper:` line in any log.
 

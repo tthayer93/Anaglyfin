@@ -41,12 +41,8 @@ public class WrapperArgumentRewriterTests
 
     private const string BurnInTwo = "subtitles=filename='/movies/Movie (2010)/Movie.2010.3D.mkv':si=2";
 
-    /// <summary>The custom grayscale graph, verbatim from the profile command builder's contract.</summary>
-    private const string CustomGraph =
-        "[0:v:view:all]split=2[anaglyfin_cg_left_in][anaglyfin_cg_right_in];"
-        + "[anaglyfin_cg_left_in]crop=iw/2:ih:0:0,format=gray,format=rgb24,colorchannelmixer=rr=1:gg=0:bb=0[anaglyfin_cg_left];"
-        + "[anaglyfin_cg_right_in]crop=iw/2:ih:iw/2:0,format=gray,format=rgb24,colorchannelmixer=rr=0:gg=1:bb=1[anaglyfin_cg_right];"
-        + "[anaglyfin_cg_left][anaglyfin_cg_right]blend=all_mode=screen,format=yuv420p[anaglyfin_custom]";
+    /// <summary>The custom grayscale graph reading the unnamed first-input video stream.</summary>
+    private static string CustomGraph => CustomGraphStartingAt("[0:v]");
 
     /// <summary>A filtergraph the wrapper did not write, in the shape Jellyfin builds for a two-pin half-SBS chain.</summary>
     private const string ForeignGraph =
@@ -268,8 +264,8 @@ public class WrapperArgumentRewriterTests
     [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
     public void TheSameGraphRefusesTheLinearProfilesToo(string profileId)
     {
-        // A linear profile looks like the easy case, but its all-view map still competes
-        // with the graph's labelled output, and leaving that graph unreferenced is a
+        // A linear profile looks like the easy case, but it still owns the video pipeline and
+        // cannot be merged into a graph it did not write; leaving that graph unreferenced is a
         // command FFmpeg rejects anyway.
         var arguments = new List<string>
         {
@@ -321,7 +317,7 @@ public class WrapperArgumentRewriterTests
     // ----- full side-by-side -------------------------------------------------------
 
     [Fact]
-    public void FullSideBySideReplacesTheMarkerAndTheConflictingVideoMap()
+    public void FullSideBySideAsksTheInputForEveryViewAndKeepsTheServersVideoMap()
     {
         var result = _rewriter.Rewrite(JellyfinLikeCommand(Marker(ProfileIds.SideBySideFull)));
 
@@ -331,16 +327,20 @@ public class WrapperArgumentRewriterTests
             new[]
             {
                 "-hide_banner", "-loglevel", "warning",
+
+                // The composed all-view request belongs to the input it configures, so it is
+                // written in front of the option that opens this file rather than as a map in
+                // the output segment.
+                "-view_ids", "-1",
                 "-i", SourcePath,
 
-                // The profile's own all-view map, with subtitle streams switched off for
-                // the whole output; inserted after the last input, where FFmpeg reads
-                // output options.
-                "-map", "0:v:view:all", "-sn",
+                // Full SBS is the composed frame itself: subtitle streams switch off, but no
+                // profile-specific video map or filter competes with what the server mapped.
+                "-sn",
 
-                // The command's own "-map 0:v" is gone, and everything that was not video
-                // is exactly where the server put it.
-                "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
+                // The command's ordinary video map is the profile's output carrier and stays,
+                // followed by everything else exactly where the server put it.
+                "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
                 "-f", "hls", "-hls_time", "6", "playlist.m3u8"
             },
             result.Arguments);
@@ -358,6 +358,137 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(SourcePath, InputOf(result.Arguments));
     }
 
+    // ----- composed view input ---------------------------------------------------------
+
+    [Fact]
+    public void AnExistingCorrectComposedViewRequestIsLeftAloneAndNotDuplicated()
+    {
+        var arguments = new List<string>
+        {
+            "-view_ids", "-1",
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "0:v", "-map", "0:a", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-sn",
+                "-map", "0:v", "-map", "0:a", "playlist.m3u8"
+            },
+            result.Arguments);
+        Assert.Single(result.Arguments, token => token == "-view_ids");
+    }
+
+    [Fact]
+    public void AnExistingWrongComposedViewRequestIsRepairedInPlace()
+    {
+        var arguments = new List<string>
+        {
+            "-view_ids", "0",
+            "-i", Marker(ProfileIds.SideBySideHalf),
+            "-map", "0:v", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
+                "-map", "0:v", "playlist.m3u8"
+            },
+            result.Arguments);
+        Assert.Single(result.Arguments, token => token == "-view_ids");
+    }
+
+    [Fact]
+    public void AComposedViewRequestGluedToItsOptionIsRepairedInPlace()
+    {
+        var arguments = new List<string>
+        {
+            "-view_ids=2",
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois),
+            "-map", "0:v", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids=-1",
+                "-i", SourcePath,
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-map", "0:v", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void AComposedViewOptionWithoutAValueRefusesTheRewriteRatherThanGuess()
+    {
+        var arguments = new List<string>
+        {
+            "-view_ids",
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "0:v", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.UnsupportedCommandShape, result.Status);
+        Assert.Empty(result.Arguments);
+    }
+
+    [Theory]
+    [InlineData(ProfileIds.SideBySideFull)]
+    [InlineData(ProfileIds.SideBySideHalf)]
+    [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
+    [InlineData(ProfileIds.CustomGrayscale)]
+    public void ARewrittenCommandNeverCarriesAViewSpecifierAlongsideTheComposedInput(string profileId)
+    {
+        var arguments = new List<string>
+        {
+            "-i", Marker(profileId),
+            "-map", "0:v:view:all", "-map", "0:a", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Contains("-view_ids", result.Arguments, StringComparer.Ordinal);
+        Assert.DoesNotContain("0:v:view", string.Join(' ', result.Arguments), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AViewSpecifierOptionalMapKeepsItsOptionalSuffixOnTheMarkerVideoStream()
+    {
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 7),
+            "-map", "0:v:vidx:1?", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
+                "-map", "0:7?", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
     // ----- linear profile filters ----------------------------------------------------
 
     [Fact]
@@ -369,10 +500,10 @@ public class WrapperArgumentRewriterTests
             new[]
             {
                 "-hide_banner", "-loglevel", "warning",
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all",
                 "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
-                "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
+                "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
                 "-f", "hls", "-hls_time", "6", "playlist.m3u8"
             },
             result.Arguments);
@@ -396,15 +527,16 @@ public class WrapperArgumentRewriterTests
             new[]
             {
                 "-hide_banner", "-loglevel", "warning",
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all", "-sn",
+                "-sn",
 
-                // One -vf, comma-chained, with the profile conversion first and the server's
-                // filters behind it: replacing the chain would silently drop server-side
-                // filtering, and putting the conversion last would have the server scale the
-                // frame the profile has not converted yet.
+                // One -vf, comma-chained at the position the server wrote it, with the profile
+                // conversion first and the server's filters behind it. The server's ordinary
+                // video map stays: the conversion runs on the composed frames delivered by that
+                // stream, so it is the profile's output carrier rather than a competing map.
                 "-vf", "stereo3d=sbsl:arcd,format=yuv420p,scale=1920:1080",
-                "-map", "0:a", "-c:v", "libx264",
+                "-map", "0:v", "-map", "0:a", "-c:v", "libx264",
                 "-f", "hls", "-hls_time", "6", "playlist.m3u8"
             },
             result.Arguments);
@@ -427,11 +559,12 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all", "-sn",
+                "-sn",
                 "-vf", "scale=1920:1080",
                 "-vf", "stereo3d=sbsl:arcd,format=yuv420p,format=nv12",
-                "playlist.m3u8"
+                "-map", "0:v", "playlist.m3u8"
             },
             result.Arguments);
     }
@@ -515,10 +648,10 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all",
                 "-vf", "stereo3d=sbsl:arcd,format=yuv420p," + BurnInTwo, "-sn",
-                "-map", "0:a", "-c:v", "libx264", "-c:s", "copy",
+                "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-c:s", "copy",
                 "-f", "hls", "playlist.m3u8"
             },
             result.Arguments);
@@ -562,9 +695,10 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all", "-sn",
-                "-map", "0:a",
+                "-sn",
+                "-map", "0:v", "-map", "0:a",
                 "-map", "-0:s", "-map", "-0:a", "-map", "-0",
                 "playlist.m3u8"
             },
@@ -589,8 +723,9 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all", "-sn",
+                "-sn",
                 "-map", "0:a", "-c:v", "libx264", "playlist.m3u8"
             },
             result.Arguments);
@@ -626,12 +761,14 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
                 "-filter_complex", CustomGraph,
                 "-map", "[anaglyfin_custom]",
 
                 // The graph output is its own mapped stream, so the burn-in is a plain
-                // -vf behind the map instead of another stage inside the graph.
+                // -vf behind the map instead of another stage inside the graph. The server's
+                // video map gives way to the label; audio remains the server's choice.
                 "-vf", BurnInZero, "-sn",
                 "-map", "0:a", "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
             },
@@ -724,23 +861,22 @@ public class WrapperArgumentRewriterTests
     // ----- stream selection on a map-less command ------------------------------------------
 
     [Fact]
-    public void AMapLessTranscodeGainsTheProfileVideoMapAndAnAudioMapBesideIt()
+    public void AMapLessLinearProfileCommandKeepsFFmpegsAutomaticStreamSelection()
     {
         var result = _rewriter.Rewrite(MapLessTranscode(Marker(ProfileIds.SideBySideFull)));
 
-        // A -map is how FFmpeg is told which streams an output carries. With none on the
-        // command, FFmpeg picks a video *and* an audio by itself; the moment this rewriter
-        // names the profile's own video, that automatic pick is replaced by the single
-        // stream named. The audio has to be named too here, or the 3D version of a film
-        // plays silent and nothing reports it.
+        // A -map is how FFmpeg is told which streams an output carries. This profile converts
+        // the composed picture delivered by the stream that selection already chose, so it
+        // writes no stream name at all and does not disturb the automatic video+audio pick.
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
 
-                // The profile's view map and the optional audio map: optional so that a
-                // source with no audio track at all is still a source this profile converts.
-                "-map", "0:v:view:all", "-map", "0:a?", "-sn",
+                // The only output-side argument a linear Full SBS rewrite needs on this shape
+                // is subtitle suppression.
+                "-sn",
 
                 // The server's encoder, muxer and output choices, untouched.
                 "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
@@ -748,14 +884,10 @@ public class WrapperArgumentRewriterTests
             result.Arguments);
     }
 
-    [Theory]
-    [InlineData(ProfileIds.SideBySideFull)]
-    [InlineData(ProfileIds.SideBySideHalf)]
-    [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
-    [InlineData(ProfileIds.CustomGrayscale)]
-    public void EveryProfileThatOwnsTheVideoPipelineAlsoNamesTheAudioItWouldLeaveBehind(string profileId)
+    [Fact]
+    public void AMapLessGraphProfileAlsoNamesTheAudioItWouldLeaveBehind()
     {
-        var result = _rewriter.Rewrite(MapLessTranscode(Marker(profileId)));
+        var result = _rewriter.Rewrite(MapLessTranscode(Marker(ProfileIds.CustomGrayscale)));
 
         Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
 
@@ -763,10 +895,28 @@ public class WrapperArgumentRewriterTests
             .Where(index => result.Arguments[index] == "-map")
             .ToArray();
 
-        // Exactly two maps: the profile's own stream and the audio. The rewrite invents no
-        // third stream and no subtitle stream behind the burn-in.
+        // Exactly two maps: the graph output and the audio. The rewrite invents no third
+        // stream and no subtitle stream behind the burn-in.
         Assert.Equal(2, mapOptionIndexes.Length);
+        Assert.Equal("[anaglyfin_custom]", result.Arguments[mapOptionIndexes[0] + 1]);
         Assert.Equal("0:a?", result.Arguments[mapOptionIndexes[1] + 1]);
+        Assert.Contains("-sn", result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(ProfileIds.SideBySideFull)]
+    [InlineData(ProfileIds.SideBySideHalf)]
+    [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
+    public void AMapLessLinearProfileInventsNoMapForFFmpegsAutomaticSelection(string profileId)
+    {
+        var result = _rewriter.Rewrite(MapLessTranscode(Marker(profileId)));
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+
+        // A linear conversion rides the stream that FFmpeg picked automatically. Naming any
+        // stream here would replace that pick, including its audio, and is not required by a
+        // filter that runs on whatever video the output already has.
+        Assert.DoesNotContain("-map", result.Arguments, StringComparer.Ordinal);
         Assert.Contains("-sn", result.Arguments, StringComparer.Ordinal);
     }
 
@@ -781,6 +931,7 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
                 "-filter_complex", CustomGraph,
                 "-map", "[anaglyfin_custom]", "-map", "0:a?", "-sn",
@@ -815,16 +966,17 @@ public class WrapperArgumentRewriterTests
 
         var result = _rewriter.Rewrite(arguments);
 
-        // Maps on the command are the server's own stream selection. The video map is
-        // replaced because the profile competes with it; the audio map stays exactly where
-        // and as it was written, and no optional audio map is invented next to it - the
-        // command already said what audio it wants.
+        // Maps on the command are the server's own stream selection. This linear profile runs
+        // on the stream the server named and therefore keeps the video map too; no optional
+        // audio map is invented next to the server's own - the command already said which
+        // streams it wants.
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all", "-sn",
-                "-map", "0:a",
+                "-sn",
+                "-map", "0:v", "-map", "0:a",
                 "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
             },
             result.Arguments);
@@ -843,15 +995,16 @@ public class WrapperArgumentRewriterTests
         var result = _rewriter.Rewrite(arguments);
 
         // A map carrying no audio is a command that already chose a video-only output. The
-        // profile map still replaces the competing one; undoing that choice is not this
-        // rewriter's call, so inventing "-map 0:a?" here would change what the server asked
-        // to mux.
+        // linear profile rides that same stream rather than naming another one; undoing the
+        // server's choice is not this rewriter's call, so inventing "-map 0:a?" here would
+        // change what the server asked to mux.
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all",
                 "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-map", "0:v",
                 "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
             },
             result.Arguments);
@@ -881,10 +1034,11 @@ public class WrapperArgumentRewriterTests
             new[]
             {
                 "-hide_banner",
+                "-view_ids", "-1",
                 "-i", SourcePath,
                 "-f", "srt", "-i", "/movies/Movie (2010)/Movie.en.srt",
-                "-map", "0:v:view:all", "-sn",
-                "-map", "0:a", "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
+                "-sn",
+                "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
             },
             result.Arguments);
     }
@@ -913,25 +1067,30 @@ public class WrapperArgumentRewriterTests
 
         var result = _rewriter.Rewrite(arguments);
 
-        // Only video specifiers and labelled outputs are the profile's competition. A
-        // whole-file map ("0") and its exclusion ("-0") name no stream type at all, so
-        // removing them would drop audio as readily as video.
+        // A linear profile maps no video of its own, so the server's ordinary video map and
+        // its other stream choices stay exactly as written. A whole-file map ("0") and its
+        // exclusion ("-0") name no stream type at all, so removing them would drop audio as
+        // readily as video.
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all", "-sn",
-                "-map", "0:a:0", "-map", "0", "-map", "-0",
+                "-sn",
+                "-map", "0:v", "-map", "0:a:0", "-map", "0:V", "-map", "v",
+                "-map", "0", "-map", "-0",
                 "playlist.m3u8"
             },
             result.Arguments);
     }
 
     [Fact]
-    public void AViewSpecifierVideoMapIsConflictEnoughForTheProfileOwnMap()
+    public void AViewSpecifierVideoMapBecomesTheOrdinaryStreamTheComposedDecoderFills()
     {
-        // A command already carrying a view selection is somebody's 3D attempt; the
-        // profile replaces it rather than mapping a second video next to it.
+        // FFmpeg-mvc refuses a view specifier on an input configured through -view_ids, so the
+        // map left behind after the composed input is written cannot keep its view selection.
+        // The marker named no stream index, so the rewrite keeps the same video type without
+        // the detail.
         var arguments = new List<string>
         {
             "-i", Marker(ProfileIds.AnaglyphRedCyanDubois),
@@ -941,17 +1100,23 @@ public class WrapperArgumentRewriterTests
         var result = _rewriter.Rewrite(arguments);
 
         Assert.Equal(
-            new[] { "-i", SourcePath, "-map", "0:v:view:all", "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn", "-map", "0:a", "playlist.m3u8" },
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-map", "0:v", "-map", "0:a", "playlist.m3u8"
+            },
             result.Arguments);
     }
 
     [Fact]
-    public void ALabelledVideoMapIsRemovedWhereTheProfileHasNoGraphToMerge()
+    public void ALinearProfileLeavesASomebodyElsesLabelledVideoMapToTheServer()
     {
-        // A labelled map only means anything together with a graph, and a command that
-        // carries both is refused outright (see the filter-graph refusals above). The rule
-        // still has to hold on its own: as far as this rewriter goes a label is video, and
-        // after a rewrite the only label the output may map is the profile's own.
+        // A label is not a map of the marker input's ordinary stream, and a linear profile
+        // inserts no competing video map. It is not the wrapper's job to guess whose label it
+        // is without the graph that produced it; the profile only asks its input for the
+        // composed view and suppresses subtitles.
         var arguments = new List<string>
         {
             "-i", Marker(ProfileIds.SideBySideFull),
@@ -963,9 +1128,10 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all", "-sn",
-                "-map", "0:a", "playlist.m3u8"
+                "-sn",
+                "-map", "[v]", "-map", "0:a", "playlist.m3u8"
             },
             result.Arguments);
     }
@@ -998,7 +1164,7 @@ public class WrapperArgumentRewriterTests
     public void AProfileThatOwnsThePipelineRefusesACommandThatCopiesItsVideo(string option, string value)
     {
         // Every spelling of "do not encode this" reaches the same decision. Running the
-        // command anyway would put "-map 0:v:view:all" and a stereo3d chain onto a command
+        // command anyway would put "-view_ids -1" and a profile filter chain onto a command
         // whose video is streamed through the muxer untouched - a player would be shown the
         // plain base view of the film under a version label that promised an anaglyph, and
         // nothing in the log would say so.
@@ -1102,16 +1268,16 @@ public class WrapperArgumentRewriterTests
     // ----- the server's numbered video map -----------------------------------------------
 
     [Fact]
-    public void TheServersNumberedVideoMapMakesWayForTheProfilesOwn()
+    public void TheServersNumberedVideoMapMakesWayForTheGraphProfilesOwn()
     {
-        // "-map 0:0" is Jellyfin naming the video stream by position, and a profile that maps
-        // its own all-view video cannot share the output with a second picture: the base view
-        // next to the converted one would be an output FFmpeg either refuses or fills with
-        // two videos. The marker said which numbered stream is this source's video, so the
+        // "-map 0:0" is Jellyfin naming the video stream by position, and the one profile that
+        // maps a graph output cannot share the output with that source picture: the input
+        // stream beside the graph's label would be an output FFmpeg either refuses or fills
+        // with two videos. The marker said which numbered stream is this source's video, so the
         // audio map beside it - numbered too - stays.
         var arguments = new List<string>
         {
-            "-i", Marker(ProfileIds.SideBySideFull, videoStreamIndex: 0),
+            "-i", Marker(ProfileIds.CustomGrayscale, videoStreamIndex: 0),
             "-map", "0:0", "-map", "0:1",
             "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
         };
@@ -1121,8 +1287,10 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all", "-sn",
+                "-filter_complex", CustomGraphStartingAt("[0:0]"),
+                "-map", "[anaglyfin_custom]", "-sn",
                 "-map", "0:1",
                 "-c:v", "libx264", "-c:a", "copy", "-f", "hls", "playlist.m3u8"
             },
@@ -1130,12 +1298,14 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
-    public void ANumberedVideoMapTheServerWroteAsOptionalIsRemovedLikeAnyOther()
+    public void ANumberedVideoMapTheGraphProfileWroteAsOptionalIsRemovedLikeAnyOther()
     {
-        // The trailing '?' means "if this file has one", not "this is a different stream".
+        // The trailing '?' means "if this file has one", not "this is a different stream". The
+        // graph profile still has to remove that source video so its label is the only mapped
+        // picture.
         var arguments = new List<string>
         {
-            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 3),
+            "-i", Marker(ProfileIds.CustomGrayscale, videoStreamIndex: 3),
             "-map", "0:3?", "-map", "0:1", "playlist.m3u8"
         };
 
@@ -1144,23 +1314,24 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all",
-                "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-filter_complex", CustomGraphStartingAt("[0:3]"),
+                "-map", "[anaglyfin_custom]", "-sn",
                 "-map", "0:1", "playlist.m3u8"
             },
             result.Arguments);
     }
 
     [Fact]
-    public void ANumberedMapIsOnlyRemovedWhenItIsTheStreamTheMarkerNamed()
+    public void ANumberedMapIsOnlyRemovedWhenItIsTheStreamTheGraphProfileNamed()
     {
         // A numbered map of another stream is somebody else's stream: audio, subtitles, or a
         // second video that is not this version's business. Guessing from the number alone
         // would drop the audio out of the playlist.
         var arguments = new List<string>
         {
-            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 2),
+            "-i", Marker(ProfileIds.CustomGrayscale, videoStreamIndex: 2),
             "-map", "0:0", "-map", "0:2", "-map", "0:10", "-map", "1:2", "playlist.m3u8"
         };
 
@@ -1169,9 +1340,10 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all",
-                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
+                "-filter_complex", CustomGraphStartingAt("[0:2]"),
+                "-map", "[anaglyfin_custom]", "-sn",
                 "-map", "0:0", "-map", "0:10", "-map", "1:2", "playlist.m3u8"
             },
             result.Arguments);
@@ -1195,23 +1367,24 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all", "-sn",
+                "-sn",
                 "-map", "0:0", "-map", "0:1", "playlist.m3u8"
             },
             result.Arguments);
     }
 
     [Fact]
-    public void DroppingTheServersNumberedVideoMapDoesNotInventAnAudioMap()
+    public void DroppingTheServersNumberedVideoMapForAGraphOutputDoesNotInventAnAudioMap()
     {
-        // A command that mapped only video had already chosen a video-only output. Removing
-        // that map is a replacement of one video choice by another, not a return to FFmpeg's
-        // automatic selection, so the optional audio map this rewriter writes only for a
-        // command that never named a stream still does not belong here.
+        // A command that mapped only video had already chosen a video-only output. Replacing
+        // that map with the graph label is not a return to FFmpeg's automatic selection, so the
+        // optional audio map this rewriter writes only for a command that never named a stream
+        // still does not belong here.
         var arguments = new List<string>
         {
-            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 0),
+            "-i", Marker(ProfileIds.CustomGrayscale, videoStreamIndex: 0),
             "-map", "0:0", "-c:v", "libx264", "playlist.m3u8"
         };
 
@@ -1220,9 +1393,10 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all",
-                "-vf", "stereo3d=sbsl:arcd,format=yuv420p", "-sn",
+                "-filter_complex", CustomGraphStartingAt("[0:0]"),
+                "-map", "[anaglyfin_custom]", "-sn",
                 "-c:v", "libx264", "playlist.m3u8"
             },
             result.Arguments);
@@ -1230,11 +1404,12 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
-    public void ANumberedMapAndItsProfileRewriteSurviveTogetherInOnePass()
+    public void ANumberedMapAndItsLinearProfileRewriteSurviveTogetherInOnePass()
     {
         // The realistic Jellyfin shape after the provider reports an un-copyable codec: a real
-        // encoder stack, numeric maps for both streams, and the profile's conversion slotted in
-        // where the server's video map used to be.
+        // encoder stack, numeric maps for both streams, and the profile's linear filter added
+        // without disturbing the streams the server already named. The composed request sits in
+        // front of the input, not beside the server's map.
         var arguments = new List<string>
         {
             "-hide_banner", "-loglevel", "warning",
@@ -1251,10 +1426,10 @@ public class WrapperArgumentRewriterTests
             new[]
             {
                 "-hide_banner", "-loglevel", "warning",
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all",
                 "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", "-sn",
-                "-map", "0:1",
+                "-map", "0:0", "-map", "0:1",
                 "-codec:v:0", "libx264", "-preset:v", "medium", "-b:v", "8000k",
                 "-codec:a:0", "copy",
                 "-f", "hls", "-hls_time", "6", "playlist.m3u8"
@@ -1390,6 +1565,16 @@ public class WrapperArgumentRewriterTests
             "hls",
             "playlist.m3u8"
         };
+
+    /// <summary>
+    /// The custom grayscale graph verbatim from the profile command builder's contract, written
+    /// in front of the stream label it reads.
+    /// </summary>
+    private static string CustomGraphStartingAt(string sourceLabel)
+        => $"{sourceLabel}split=2[anaglyfin_cg_left_in][anaglyfin_cg_right_in];"
+           + "[anaglyfin_cg_left_in]crop=iw/2:ih:0:0,format=gray,format=rgb24,colorchannelmixer=rr=1:gg=0:bb=0[anaglyfin_cg_left];"
+           + "[anaglyfin_cg_right_in]crop=iw/2:ih:iw/2:0,format=gray,format=rgb24,colorchannelmixer=rr=0:gg=1:bb=1[anaglyfin_cg_right];"
+           + "[anaglyfin_cg_left][anaglyfin_cg_right]blend=all_mode=screen,format=yuv420p[anaglyfin_custom]";
 
     private static string InputOf(IReadOnlyList<string> arguments)
         => arguments[arguments.ToList().IndexOf(WrapperArgumentRewriter.InputFileArgument) + 1];

@@ -18,30 +18,39 @@ namespace Anaglyfin.Ffmpeg;
 /// command (the FFmpeg wrapper in production, a fake collector in tests).
 /// </para>
 /// <para>
-/// Command semantics, one decode per playback:
+/// Command semantics, one decode per playback. Every stereo profile is served by the same
+/// composed decode: the caller asks the input for it with
+/// <see cref="ComposedViewInputOption"/> <see cref="ComposedViewInputValue"/> immediately
+/// before <c>-i</c>, which is the one place the all-view picture can be requested from -
+/// the option is in the decoder's context before decoding starts, while a view specifier is
+/// only resolved after the decoder has reported its view list. In exchange, no argument the
+/// builder emits names a view, because a decode configured through that option refuses a
+/// view specifier on the same input.
 /// </para>
 /// <list type="bullet">
 /// <item>
-/// 2D base inserts nothing: FFmpeg-mvc defaults to the base view, so the profile is
-/// the untouched default command.
+/// 2D base inserts nothing and asks for nothing: FFmpeg-mvc defaults to the base view, so
+/// the profile is the untouched default command.
 /// </item>
 /// <item>
-/// Full SBS is the native all-view output: <c>-map 0:v:view:all</c> and no filter.
+/// Full SBS is the composed output itself, so it needs no filter and no map: the server's
+/// own video map already names the stream the composed frames arrive on.
 /// </item>
 /// <item>
-/// Half SBS derives from that same all-view output by scaling the combined frame
+/// Half SBS derives from that same composed frame by scaling it to half width
 /// (<c>scale=iw/2:ih</c>) and then declaring the result square-pixel
 /// (<c>setsar=sar=1</c>), not by decoding eyes separately and not by a stereo3d
 /// re-tag, which only changes the pixel aspect ratio.
 /// </item>
 /// <item>
-/// A built-in anaglyph preset is the all-view output through
+/// A built-in anaglyph preset is the composed frame through
 /// <c>stereo3d=sbsl:&lt;code&gt;</c> for an official output code.
 /// </item>
 /// <item>
-/// The custom grayscale anaglyph is one filter graph over the all-view output: split,
-/// grayscale each eye, tint each eye via <c>colorchannelmixer</c> with the validated
-/// colour's channel coefficients, and screen-combine the two eyes.
+/// The custom grayscale anaglyph is one filter graph over the composed stream, read by its
+/// stream index: split, grayscale each eye, tint each eye via <c>colorchannelmixer</c> with
+/// the validated colour's channel coefficients, and screen-combine the two eyes. Its result
+/// is a new stream, so this profile - and only this profile - maps a label of its own.
 /// </item>
 /// </list>
 /// <para>
@@ -61,11 +70,41 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     /// <summary>The <c>-filter_complex</c> option token.</summary>
     public const string FilterComplexArgument = "-filter_complex";
 
-    /// <summary>The FFmpeg-mvc stream specifier selecting all views as native SBS.</summary>
-    public const string AllViewsMapValue = "0:v:view:all";
+    /// <summary>
+    /// The FFmpeg-mvc decoder option that asks an input for every view it carries.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It is a per-input option, so it belongs immediately before the <c>-i</c> of the file
+    /// being opened, and it is the composed route this product documents as the reliable
+    /// one: the value is in the decoder's context before decoding starts, whereas a view
+    /// specifier names its view only after the decoder has exported its view list.
+    /// </para>
+    /// <para>
+    /// Asking this way is also exclusive: the same decoder refuses a view specifier
+    /// (<c>0:v:view:&#42;</c> in a map, <c>[0:v:view:&#42;]</c> in a filtergraph) once
+    /// <c>-view_ids</c> has configured it, which is why nothing this builder emits carries
+    /// one and why the composed picture is requested here rather than selected downstream.
+    /// </para>
+    /// </remarks>
+    public const string ComposedViewInputOption = "-view_ids";
 
-    /// <summary>The filter graph input label for the all-view native SBS stream.</summary>
-    public const string AllViewsFilterInput = "[0:v:view:all]";
+    /// <summary>
+    /// The single value of <see cref="ComposedViewInputOption"/> that means "every view,
+    /// composed into one frame": the whole view list, which FFmpeg-mvc assembles into the
+    /// native side-by-side picture every Anaglyfin stereo profile starts from.
+    /// </summary>
+    public const string ComposedViewInputValue = "-1";
+
+    /// <summary>
+    /// The filtergraph input label used when the source video stream is not named by index.
+    /// </summary>
+    /// <remarks>
+    /// The video type of the first input, which is what the composed decode delivers when
+    /// the caller has no stream index to hand over. Still not a view specifier: under
+    /// <see cref="ComposedViewInputOption"/> a view specifier would be refused outright.
+    /// </remarks>
+    public const string UnnamedVideoStreamFilterInput = "[0:v]";
 
     /// <summary>Pix_fmt normalisation appended to every profile conversion chain.</summary>
     public const string FormatYuv420PFilter = "format=yuv420p";
@@ -145,7 +184,7 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     public static FfmpegProfileArgumentBuilder Shared { get; } = new FfmpegProfileArgumentBuilder();
 
     /// <inheritdoc />
-    public ProfileRewrite Build(StereoProfile profile, SubtitleBurnIn? subtitleBurnIn = null)
+    public ProfileRewrite Build(StereoProfile profile, SubtitleBurnIn? subtitleBurnIn = null, int? videoStreamIndex = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
 
@@ -157,25 +196,26 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
             case ProfileKind.TwoDimensional:
                 // The plain 2D version is what the FFmpeg-mvc binary already produces
                 // for the command as written, and its subtitle handling is the stock
-                // pipeline's, so a burn-in request cannot make this rewrite busier.
+                // pipeline's, so a burn-in request cannot make this rewrite busier. Nor is
+                // the composed picture asked for: the base view is this profile.
                 return BuildTwoDimensional(profileId);
 
             case ProfileKind.SideBySideFull:
-                return BuildAllViewFiltered(profileId, ProfileKind.SideBySideFull, profileFilter: null, burnIn);
+                return BuildComposedFiltered(profileId, ProfileKind.SideBySideFull, profileFilter: null, burnIn);
 
             case ProfileKind.SideBySideHalf:
-                return BuildAllViewFiltered(profileId, ProfileKind.SideBySideHalf, HalfSideBySideScaleFilter, burnIn);
+                return BuildComposedFiltered(profileId, ProfileKind.SideBySideHalf, HalfSideBySideScaleFilter, burnIn);
 
             case ProfileKind.Stereo3DAnaglyph:
                 {
                     var code = RequireOutputCode(profile);
-                    return BuildAllViewFiltered(profileId, ProfileKind.Stereo3DAnaglyph, Stereo3DAnaglyphFilter(code), burnIn);
+                    return BuildComposedFiltered(profileId, ProfileKind.Stereo3DAnaglyph, Stereo3DAnaglyphFilter(code), burnIn);
                 }
 
             case ProfileKind.CustomGrayscaleAnaglyph:
                 {
                     var (left, right) = RequireEyeColors(profile);
-                    return BuildCustomGrayscaleAnaglyphCore(profileId, left, right, burnIn);
+                    return BuildCustomGrayscaleAnaglyphCore(profileId, left, right, burnIn, videoStreamIndex);
                 }
 
             default:
@@ -192,18 +232,18 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
 
     /// <inheritdoc />
     public ProfileRewrite BuildSideBySideFull(SubtitleBurnIn? subtitleBurnIn = null)
-        => BuildAllViewFiltered(ProfileIds.SideBySideFull, ProfileKind.SideBySideFull, profileFilter: null, subtitleBurnIn);
+        => BuildComposedFiltered(ProfileIds.SideBySideFull, ProfileKind.SideBySideFull, profileFilter: null, subtitleBurnIn);
 
     /// <inheritdoc />
     public ProfileRewrite BuildSideBySideHalf(SubtitleBurnIn? subtitleBurnIn = null)
-        => BuildAllViewFiltered(ProfileIds.SideBySideHalf, ProfileKind.SideBySideHalf, HalfSideBySideScaleFilter, subtitleBurnIn);
+        => BuildComposedFiltered(ProfileIds.SideBySideHalf, ProfileKind.SideBySideHalf, HalfSideBySideScaleFilter, subtitleBurnIn);
 
     /// <inheritdoc />
     public ProfileRewrite BuildStereo3DAnaglyph(string stereo3DOutputCode, SubtitleBurnIn? subtitleBurnIn = null)
     {
         var code = RequireAllowedOutputCode(stereo3DOutputCode, nameof(stereo3DOutputCode));
 
-        return BuildAllViewFiltered(
+        return BuildComposedFiltered(
             ProfileIds.BuildAnaglyphProfileId(code),
             ProfileKind.Stereo3DAnaglyph,
             Stereo3DAnaglyphFilter(code),
@@ -211,12 +251,16 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     }
 
     /// <inheritdoc />
-    public ProfileRewrite BuildCustomGrayscaleAnaglyph(RgbColor leftEyeColor, RgbColor rightEyeColor, SubtitleBurnIn? subtitleBurnIn = null)
-        => BuildCustomGrayscaleAnaglyphCore(ProfileIds.CustomGrayscale, leftEyeColor, rightEyeColor, subtitleBurnIn);
+    public ProfileRewrite BuildCustomGrayscaleAnaglyph(
+        RgbColor leftEyeColor,
+        RgbColor rightEyeColor,
+        SubtitleBurnIn? subtitleBurnIn = null,
+        int? videoStreamIndex = null)
+        => BuildCustomGrayscaleAnaglyphCore(ProfileIds.CustomGrayscale, leftEyeColor, rightEyeColor, subtitleBurnIn, videoStreamIndex);
 
     /// <summary>
-    /// The plain 2D rewrite: no insertion, no map override, subtitle handling kept by
-    /// the caller.
+    /// The plain 2D rewrite: nothing inserted, nothing asked of the decode, subtitle
+    /// handling kept by the caller.
     /// </summary>
     private static ProfileRewrite BuildTwoDimensional(string profileId)
         => new()
@@ -224,18 +268,25 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
             ProfileId = profileId,
             Kind = ProfileKind.TwoDimensional,
             InsertArguments = Array.Empty<string>()
+
+            // OwnsVideoPipeline and RequiresComposedViewInput both stay false: the decoder's
+            // own base-view default is the profile, and with nothing of ours in the pipeline
+            // there is nothing to defend on the output.
         };
 
     /// <summary>
-    /// Builds a rewrite over the all-view native SBS output, with an optional linear
+    /// Builds a rewrite over the composed all-view picture, with an optional linear
     /// conversion filter and an optional subtitle burn-in appended after it.
     /// </summary>
     /// <remarks>
-    /// Shared by full SBS (no conversion filter at all), half SBS (the full-frame
-    /// scale) and the stereo3d presets: they differ only in the chain they put behind
-    /// the all-view map, so the view selection - the one decode pivot - is written once.
+    /// Shared by full SBS (no conversion filter at all), half SBS (the full-frame scale) and
+    /// the stereo3d presets: they differ only in the chain they put behind the composed
+    /// frame, while the composed decode - the one pivot - and the stream that carries it are
+    /// the same question for all three. That shared answer is an empty insertion for full SBS:
+    /// the composed frame needs neither a filter nor a map of its own, only the input the
+    /// caller composed.
     /// </remarks>
-    private static ProfileRewrite BuildAllViewFiltered(
+    private static ProfileRewrite BuildComposedFiltered(
         string profileId,
         ProfileKind kind,
         string? profileFilter,
@@ -253,26 +304,24 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
             (not null, not null) => profileFilter + "," + subtitleFilter
         };
 
-        var args = new List<string>(finalFilter is null ? 2 : 4)
-        {
-            MapArgument,
-            AllViewsMapValue
-        };
-
-        if (finalFilter is not null)
-        {
-            args.Add(VideoFilterArgument);
-            args.Add(finalFilter);
-        }
+        IReadOnlyList<string> args = finalFilter is null
+            ? Array.Empty<string>()
+            : new[] { VideoFilterArgument, finalFilter };
 
         return new ProfileRewrite
         {
             ProfileId = profileId,
             Kind = kind,
             InsertArguments = args,
-            VideoMap = AllViewsMapValue,
+            OwnsVideoPipeline = true,
+            RequiresComposedViewInput = true,
+
+            // VideoMap stays null: the composed frames arrive on the stream the server already
+            // named, so this profile has no map to insert and no server map to displace.
+            VideoMap = null,
             VideoFilter = profileFilter,
             FilterComplex = null,
+            FilterComplexInput = null,
             SubtitleFilter = subtitleFilter,
             ShouldSuppressSubtitleStreams = true,
             ShouldAppendSubtitlesToProfileFilter = profileFilter is not null && subtitleFilter is not null
@@ -280,16 +329,18 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     }
 
     /// <summary>
-    /// Builds the custom grayscale rewrite: one filter graph over the all-view output
-    /// plus the map of its labelled result.
+    /// Builds the custom grayscale rewrite: one filter graph over the composed stream plus
+    /// the map of its labelled result.
     /// </summary>
     private static ProfileRewrite BuildCustomGrayscaleAnaglyphCore(
         string profileId,
         RgbColor leftEyeColor,
         RgbColor rightEyeColor,
-        SubtitleBurnIn? subtitleBurnIn)
+        SubtitleBurnIn? subtitleBurnIn,
+        int? videoStreamIndex)
     {
-        var filterComplex = BuildCustomGrayscaleFilterGraph(leftEyeColor, rightEyeColor);
+        var filterInput = ComposedStreamInput(videoStreamIndex);
+        var filterComplex = BuildCustomGrayscaleFilterGraph(filterInput, leftEyeColor, rightEyeColor);
         var subtitleFilter = subtitleBurnIn is null ? null : BuildSubtitleFilter(subtitleBurnIn);
 
         var args = new List<string>(subtitleFilter is null ? 4 : 6)
@@ -313,9 +364,16 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
             ProfileId = profileId,
             Kind = ProfileKind.CustomGrayscaleAnaglyph,
             InsertArguments = args,
+            OwnsVideoPipeline = true,
+            RequiresComposedViewInput = true,
+
+            // This profile is the one that does own the output's video map: a graph output is
+            // a new stream, unnamed until it is mapped, and the composed stream it was made
+            // from must not travel to the output beside it.
             VideoMap = CustomAnaglyphOutputLabel,
             VideoFilter = null,
             FilterComplex = filterComplex,
+            FilterComplexInput = filterInput,
             SubtitleFilter = subtitleFilter,
             ShouldSuppressSubtitleStreams = true
 
@@ -326,20 +384,39 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     }
 
     /// <summary>
+    /// The filtergraph label of the composed video stream: the marker input's video stream
+    /// named by index, or by its stream type when no index was named.
+    /// </summary>
+    /// <remarks>
+    /// Named by index wherever the index is known, because that is the one spelling that
+    /// addresses exactly the stream the caller composed: a bare <c>0:v</c> means "every video
+    /// stream of this input", which is a second picture in the graph's way as soon as a file
+    /// carries one (an attached cover track is enough). Neither spelling selects a view, so
+    /// both survive the <see cref="ComposedViewInputOption"/> the caller set on this input.
+    /// </remarks>
+    private static string ComposedStreamInput(int? videoStreamIndex)
+        => videoStreamIndex is int index
+            ? string.Concat("[0:", index.ToString(CultureInfo.InvariantCulture), "]")
+            : UnnamedVideoStreamFilterInput;
+
+    /// <summary>
     /// Assembles the custom grayscale filter graph.
     /// </summary>
     /// <remarks>
-    /// The chain reads, left to right: take the all-view native SBS frames (one
-    /// decode), split each combined frame, crop out each eye, reduce it to grayscale
-    /// and expand it back to RGB (which replicates the luma into all three channels),
-    /// multiply each channel by the eye colour's coefficient, and screen-combine the
-    /// eyes into the anaglyph. Colours only ever enter as coefficients derived from
+    /// The chain reads, left to right: take the composed native SBS frames off the one
+    /// decoded stream (one decode), split each combined frame, crop out each eye, reduce it
+    /// to grayscale and expand it back to RGB (which replicates the luma into all three
+    /// channels), multiply each channel by the eye colour's coefficient, and screen-combine
+    /// the eyes into the anaglyph. Colours only ever enter as coefficients derived from
     /// <see cref="RgbColor"/> byte values, never as text.
     /// </remarks>
-    private static string BuildCustomGrayscaleFilterGraph(RgbColor leftEyeColor, RgbColor rightEyeColor)
+    private static string BuildCustomGrayscaleFilterGraph(
+        string filterInput,
+        RgbColor leftEyeColor,
+        RgbColor rightEyeColor)
         => string.Join(
             ";",
-            AllViewsFilterInput + "split=2" + CustomLeftInput + CustomRightInput,
+            filterInput + "split=2" + CustomLeftInput + CustomRightInput,
             CustomLeftInput + LeftEyeCrop + "," + GrayscaleTintFilter(leftEyeColor) + CustomLeftEye,
             CustomRightInput + RightEyeCrop + "," + GrayscaleTintFilter(rightEyeColor) + CustomRightEye,
             CustomLeftEye + CustomRightEye + ScreenCombineFilter + "," + FormatYuv420PFilter + CustomAnaglyphOutputLabel);

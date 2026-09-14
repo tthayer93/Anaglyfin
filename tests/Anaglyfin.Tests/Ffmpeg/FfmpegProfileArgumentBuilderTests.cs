@@ -15,9 +15,22 @@ namespace Anaglyfin.Tests.Ffmpeg;
 /// FFmpeg-mvc will run, so a change to a generated argument must be an explicit,
 /// reviewed edit here rather than a silent drift. No FFmpeg is executed.
 /// </remarks>
+/// <remarks>
+/// <para>
+/// What the builder emits is the output side of a profile - filters, and for one profile a
+/// graph plus the map of its label. The composed all-view picture the stereo profiles need is
+/// an input-time request the caller writes in front of <c>-i</c>
+/// (<see cref="FfmpegProfileArgumentBuilder.ComposedViewInputOption"/>), which is why it is
+/// asserted here as a flag on the rewrite and never as an argument in the list, and why
+/// nothing in these lists names a view at all.
+/// </para>
+/// </remarks>
 public class FfmpegProfileArgumentBuilderTests
 {
     private const string MoviePath = "/movies/Movie (2010)/Movie.2010.3D.mkv";
+
+    /// <summary>The video stream index a caller names when it has one, used by the graph profile.</summary>
+    private const int VideoStreamIndex = 0;
 
     private static readonly ProfileCatalog Catalog = new();
     private static readonly SubtitleBurnIn BurnIn = new(MoviePath, 0);
@@ -42,6 +55,14 @@ public class FfmpegProfileArgumentBuilderTests
         Assert.Null(rewrite.SubtitleFilter);
         Assert.False(rewrite.ShouldSuppressSubtitleStreams);
         Assert.False(rewrite.ShouldAppendSubtitlesToProfileFilter);
+
+        // The base view IS this profile, so it must not be handed the composed picture -
+        // that request would replace the 2D output with a double-width SBS frame.
+        Assert.False(rewrite.RequiresComposedViewInput);
+
+        // Nothing of the output belongs to it either, which is what keeps a server-side
+        // filter graph or stream copy legal for this one profile.
+        Assert.False(rewrite.OwnsVideoPipeline);
     }
 
     [Fact]
@@ -59,20 +80,25 @@ public class FfmpegProfileArgumentBuilderTests
     // ----- Full SBS ----------------------------------------------------------------
 
     [Fact]
-    public void FullSideBySideMapsAllViewsAndAddsNoFilter()
+    public void FullSideBySideNeedsTheComposedInputAndCarriesNoArgumentOfItsOwn()
     {
         var rewrite = _builder.BuildSideBySideFull();
 
         Assert.Equal(ProfileIds.SideBySideFull, rewrite.ProfileId);
-        Assert.Equal(
-            new[] { "-map", "0:v:view:all" },
-            rewrite.InsertArguments);
-        Assert.Equal("0:v:view:all", rewrite.VideoMap);
+
+        // The composed frame IS full SBS: neither a re-tag nor a resize, and no map either -
+        // the composed frames arrive on the stream the caller's own video map already names,
+        // so this profile has nothing to add to the output segment.
+        Assert.Empty(rewrite.InsertArguments);
+        Assert.Null(rewrite.VideoMap);
         Assert.Null(rewrite.VideoFilter);
         Assert.Null(rewrite.FilterComplex);
         Assert.True(rewrite.ShouldSuppressSubtitleStreams);
 
-        // The native all-view frame IS full SBS: neither a re-tag nor a resize.
+        // What it does need is asked at the input, which the flags say rather than leaving a
+        // caller to infer it from an argument list that is empty here.
+        Assert.True(rewrite.RequiresComposedViewInput);
+        Assert.True(rewrite.OwnsVideoPipeline);
         Assert.DoesNotContain("stereo3d", string.Join(" ", rewrite.InsertArguments));
         Assert.DoesNotContain("scale", string.Join(" ", rewrite.InsertArguments));
     }
@@ -86,11 +112,16 @@ public class FfmpegProfileArgumentBuilderTests
 
         Assert.Equal(ProfileIds.SideBySideHalf, rewrite.ProfileId);
         Assert.Equal(
-            new[] { "-map", "0:v:view:all", "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p" },
+            new[] { "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p" },
             rewrite.InsertArguments);
-        Assert.Equal("0:v:view:all", rewrite.VideoMap);
+
+        // No map: the scale runs on the composed frames wherever the command maps them, and a
+        // second video map beside the server's own would export two pictures.
+        Assert.Null(rewrite.VideoMap);
         Assert.Equal("scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p", rewrite.VideoFilter);
         Assert.Null(rewrite.FilterComplex);
+        Assert.True(rewrite.RequiresComposedViewInput);
+        Assert.True(rewrite.OwnsVideoPipeline);
     }
 
     [Fact]
@@ -131,33 +162,39 @@ public class FfmpegProfileArgumentBuilderTests
     }
 
     [Fact]
-    public void HalfSideBySideIsDerivedFromTheAllViewOutputNotSeparateEyeTranscodes()
+    public void HalfSideBySideIsDerivedFromTheComposedOutputNotSeparateEyeTranscodes()
     {
         var rewrite = _builder.BuildSideBySideHalf();
 
-        // One all-view map, no filter_complex, no second input, and real scaling -
-        // a stereo3d re-tag would keep the frame size and only halve the PAR.
-        Assert.Equal("0:v:view:all", rewrite.VideoMap);
+        // One composed decode (the flag, not a map), no filter_complex, no second input, and
+        // real scaling - a stereo3d re-tag would keep the frame size and only halve the PAR.
+        Assert.True(rewrite.RequiresComposedViewInput);
         Assert.Null(rewrite.FilterComplex);
         Assert.Contains("scale=iw/2:ih", rewrite.VideoFilter);
         Assert.DoesNotContain("stereo3d", string.Join(" ", rewrite.InsertArguments));
+
+        // Two pins feeding an hstack is the other way to express this profile, and the one the
+        // composed route replaced: no graph here means no second decode and no second pin.
+        Assert.DoesNotContain("hstack", string.Join(" ", rewrite.InsertArguments));
     }
 
     // ----- Stereo3D anaglyph presets -----------------------------------------------
 
     [Theory]
     [MemberData(nameof(BuiltInAnaglyphCodes))]
-    public void EachBuiltInAnaglyphPresetMapsAllViewsAndAppliesItsOfficialCode(string outputCode)
+    public void EachBuiltInAnaglyphPresetConvertsTheComposedFrameWithItsOfficialCode(string outputCode)
     {
         var rewrite = _builder.BuildStereo3DAnaglyph(outputCode);
 
         Assert.Equal(ProfileIds.BuildAnaglyphProfileId(outputCode), rewrite.ProfileId);
         Assert.Equal(
-            new[] { "-map", "0:v:view:all", "-vf", $"stereo3d=sbsl:{outputCode},format=yuv420p" },
+            new[] { "-vf", $"stereo3d=sbsl:{outputCode},format=yuv420p" },
             rewrite.InsertArguments);
-        Assert.Equal("0:v:view:all", rewrite.VideoMap);
+        Assert.Null(rewrite.VideoMap);
         Assert.Equal($"stereo3d=sbsl:{outputCode},format=yuv420p", rewrite.VideoFilter);
         Assert.True(rewrite.ShouldSuppressSubtitleStreams);
+        Assert.True(rewrite.RequiresComposedViewInput);
+        Assert.True(rewrite.OwnsVideoPipeline);
     }
 
     [Fact]
@@ -168,7 +205,7 @@ public class FfmpegProfileArgumentBuilderTests
         var rewrite = _builder.Build(profile);
 
         Assert.Equal(
-            new[] { "-map", "0:v:view:all", "-vf", "stereo3d=sbsl:arcd,format=yuv420p" },
+            new[] { "-vf", "stereo3d=sbsl:arcd,format=yuv420p" },
             rewrite.InsertArguments);
     }
 
@@ -242,7 +279,7 @@ public class FfmpegProfileArgumentBuilderTests
         var rewrite = _builder.BuildCustomGrayscaleAnaglyph(new RgbColor(255, 0, 0), new RgbColor(0, 255, 255));
 
         const string ExpectedGraph =
-            "[0:v:view:all]split=2[anaglyfin_cg_left_in][anaglyfin_cg_right_in];"
+            "[0:v]split=2[anaglyfin_cg_left_in][anaglyfin_cg_right_in];"
             + "[anaglyfin_cg_left_in]crop=iw/2:ih:0:0,format=gray,format=rgb24,colorchannelmixer=rr=1:gg=0:bb=0[anaglyfin_cg_left];"
             + "[anaglyfin_cg_right_in]crop=iw/2:ih:iw/2:0,format=gray,format=rgb24,colorchannelmixer=rr=0:gg=1:bb=1[anaglyfin_cg_right];"
             + "[anaglyfin_cg_left][anaglyfin_cg_right]blend=all_mode=screen,format=yuv420p[anaglyfin_custom]";
@@ -254,25 +291,66 @@ public class FfmpegProfileArgumentBuilderTests
         Assert.Equal("[anaglyfin_custom]", rewrite.VideoMap);
         Assert.Null(rewrite.VideoFilter);
         Assert.Equal(ExpectedGraph, rewrite.FilterComplex);
+        Assert.Equal("[0:v]", rewrite.FilterComplexInput);
         Assert.True(rewrite.ShouldSuppressSubtitleStreams);
         Assert.False(rewrite.ShouldAppendSubtitlesToProfileFilter);
+        Assert.True(rewrite.RequiresComposedViewInput);
+
+        // The one profile with a map of its own, because its graph output is a new stream: the
+        // label has to be named, and the stream it was made from has to be left out.
+        Assert.True(rewrite.OwnsVideoPipeline);
     }
 
     [Fact]
-    public void CustomGrayscaleGraphStartsFromASingleAllViewInput()
+    public void CustomGrayscaleGraphReadsTheVideoStreamTheCallerNamed()
     {
-        var rewrite = _builder.BuildCustomGrayscaleAnaglyph(new RgbColor(255, 0, 0), new RgbColor(0, 255, 255));
+        var rewrite = _builder.BuildCustomGrayscaleAnaglyph(
+            new RgbColor(255, 0, 0),
+            new RgbColor(0, 255, 255),
+            videoStreamIndex: 2);
 
-        // One all-view input label means one decode: the eyes are cropped out of the
-        // shared native SBS frames, not decoded separately.
+        // The composed picture arrives on the source's own video stream, which the caller names
+        // by index. Naming it is what stops the graph from reading every video stream the file
+        // carries - an attached cover track would otherwise be a second, wrong input to the
+        // split - and it is not a view selection, which is what the composed request forbids.
+        Assert.StartsWith("[0:2]split=2", rewrite.FilterComplex, StringComparison.Ordinal);
+        Assert.Equal("[0:2]", rewrite.FilterComplexInput);
+        Assert.DoesNotContain("view", rewrite.FilterComplex, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CustomGrayscaleGraphFallsBackToTheVideoTypeWhenNoStreamWasNamed()
+    {
+        var rewrite = _builder.BuildCustomGrayscaleAnaglyph(
+            new RgbColor(255, 0, 0),
+            new RgbColor(0, 255, 255),
+            videoStreamIndex: null);
+
+        // Still no view specifier: the fallback addresses the stream type of the first input,
+        // which is what the composed decode delivers.
+        Assert.StartsWith("[0:v]split=2", rewrite.FilterComplex, StringComparison.Ordinal);
+        Assert.DoesNotContain("view:", rewrite.FilterComplex, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CustomGrayscaleGraphStartsFromOneComposedInput()
+    {
+        var rewrite = _builder.BuildCustomGrayscaleAnaglyph(
+            new RgbColor(255, 0, 0),
+            new RgbColor(0, 255, 255),
+            videoStreamIndex: 0);
+
+        // One input label means one decode: the eyes are cropped out of the shared composed
+        // frames, not decoded separately, and no second pin is opened by a view specifier.
         Assert.NotNull(rewrite.FilterComplex);
         var graph = rewrite.FilterComplex!;
-        var allViewInputs = graph
-            .Split("0:v:view:all", StringSplitOptions.None)
+        var sourceLabels = graph
+            .Split("[0:0]", StringSplitOptions.None)
             .Length - 1;
 
-        Assert.Equal(1, allViewInputs);
-        Assert.StartsWith("[0:v:view:all]", rewrite.FilterComplex);
+        Assert.Equal(1, sourceLabels);
+        Assert.StartsWith("[0:0]", rewrite.FilterComplex);
+        Assert.DoesNotContain("hstack", graph, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -340,8 +418,6 @@ public class FfmpegProfileArgumentBuilderTests
         Assert.Equal(
             new[]
             {
-                "-map",
-                "0:v:view:all",
                 "-vf",
                 "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p,subtitles=filename='" + MoviePath + "':si=1"
             },
@@ -359,11 +435,16 @@ public class FfmpegProfileArgumentBuilderTests
     {
         var rewrite = _builder.BuildSideBySideFull(BurnIn);
 
+        // Full SBS still converts nothing: the burn-in is the only -vf this profile writes,
+        // and it is still the whole argument list, because the composed picture it draws on is
+        // requested at the input and not here.
         Assert.Equal(
-            new[] { "-map", "0:v:view:all", "-vf", "subtitles=filename='" + MoviePath + "':si=0" },
+            new[] { "-vf", "subtitles=filename='" + MoviePath + "':si=0" },
             rewrite.InsertArguments);
         Assert.Null(rewrite.VideoFilter);
+        Assert.Null(rewrite.VideoMap);
         Assert.False(rewrite.ShouldAppendSubtitlesToProfileFilter);
+        Assert.True(rewrite.RequiresComposedViewInput);
     }
 
     [Fact]
@@ -531,7 +612,7 @@ public class FfmpegProfileArgumentBuilderTests
         var rewrite = _builder.Build(recased);
 
         Assert.Equal("SBS_Full", rewrite.ProfileId);
-        Assert.Equal(new[] { "-map", "0:v:view:all" }, rewrite.InsertArguments);
+        Assert.Empty(rewrite.InsertArguments);
     }
 
     [Fact]
@@ -557,38 +638,69 @@ public class FfmpegProfileArgumentBuilderTests
     // ----- Whole-catalog invariants ----------------------------------------------------
 
     [Fact]
-    public void EveryCatalogProfileBuildsAndMatchesTheAllViewRequirement()
+    public void EveryCatalogProfileBuildsAndMatchesTheComposedViewRequirement()
     {
         foreach (var profile in Catalog.Profiles)
         {
             var rewrite = _builder.Build(profile, BurnIn);
 
-            // Subtitle suppression follows the all-view pivot: everything that
-            // converts owns its subtitles; 2D keeps the stock pipeline.
+            // Subtitle suppression, pipeline ownership and the composed input all follow the
+            // same line: everything that converts owns its output and its decode; 2D keeps the
+            // stock pipeline and the decoder's own base view.
             Assert.Equal(profile.RequiresAllViews, rewrite.ShouldSuppressSubtitleStreams);
+            Assert.Equal(profile.RequiresAllViews, rewrite.RequiresComposedViewInput);
+            Assert.Equal(profile.RequiresAllViews, rewrite.OwnsVideoPipeline);
             Assert.Equal(profile.Id, rewrite.ProfileId);
             Assert.Equal(profile.Kind, rewrite.Kind);
 
+            // Only the graph profile maps anything: a graph output is a new stream that has to
+            // be named. The linear conversions ride the caller's own video map.
+            Assert.Equal(profile.Kind == ProfileKind.CustomGrayscaleAnaglyph, rewrite.VideoMap is not null);
+
             if (profile.RequiresAllViews)
             {
-                Assert.Contains(rewrite.InsertArguments, argument => argument == "0:v:view:all" || argument == "[anaglyfin_custom]");
+                // The composed picture is asked for in front of the input, which no argument in
+                // this list can be.
+                Assert.DoesNotContain(FfmpegProfileArgumentBuilder.ComposedViewInputOption, rewrite.InsertArguments);
             }
         }
     }
 
     [Fact]
-    public void GeneratedArgumentsNeverAskForHardwareDecodingOrLegacyViewSelection()
+    public void GeneratedArgumentsNeverAskForHardwareDecodingOrSelectAViewBySpecifier()
     {
         foreach (var profile in Catalog.Profiles)
         {
-            var rewrite = _builder.Build(profile, BurnIn);
+            var rewrite = _builder.Build(profile, BurnIn, videoStreamIndex: 0);
+            var rendered = string.Join(' ', rewrite.InsertArguments);
 
-            foreach (var argument in rewrite.InsertArguments)
-            {
-                Assert.DoesNotContain("hwaccel", argument);
-                Assert.DoesNotContain("view_ids", argument);
-            }
+            // MVC decode is software-only, and the encoder stays the caller's choice.
+            Assert.DoesNotContain("hwaccel", rendered, StringComparison.Ordinal);
+
+            // The composed request is an input option the caller writes before -i; nothing the
+            // builder produces carries it, because everything it produces is output-side.
+            Assert.DoesNotContain("view_ids", rendered, StringComparison.Ordinal);
+
+            // The guard that matters for the composed decode: FFmpeg-mvc refuses a view
+            // specifier on an input configured through -view_ids, so no generated argument may
+            // contain one. This is asserted on the whole argument list rather than only on the
+            // maps, because a filtergraph input label is spelled the same way.
+            Assert.DoesNotContain("0:v:view", rendered, StringComparison.Ordinal);
+            Assert.DoesNotContain("v:view:", rendered, StringComparison.Ordinal);
+            Assert.DoesNotContain("vidx:", rendered, StringComparison.Ordinal);
+            Assert.DoesNotContain("vpos:", rendered, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void TheComposedViewRequestIsTheOneSpellingTheDecoderAccepts()
+    {
+        // The option and its value are stated by the builder so that the wrapper writes exactly
+        // what the pinned FFmpeg-mvc documents as the composed route: view_ids set to the single
+        // value -1, which is the whole view list assembled into one native SBS frame. Anything
+        // else on the command line - any view specifier - is the other, refused way of asking.
+        Assert.Equal("-view_ids", FfmpegProfileArgumentBuilder.ComposedViewInputOption);
+        Assert.Equal("-1", FfmpegProfileArgumentBuilder.ComposedViewInputValue);
     }
 
     [Fact]
@@ -596,8 +708,8 @@ public class FfmpegProfileArgumentBuilderTests
     {
         foreach (var profile in Catalog.Profiles)
         {
-            var first = _builder.Build(profile, BurnIn);
-            var second = _builder.Build(profile, BurnIn);
+            var first = _builder.Build(profile, BurnIn, videoStreamIndex: 0);
+            var second = _builder.Build(profile, BurnIn, videoStreamIndex: 0);
 
             // Compared piece by piece: the argument lists are sequences, and the
             // record's own equality would compare them by reference.
@@ -607,7 +719,10 @@ public class FfmpegProfileArgumentBuilderTests
             Assert.Equal(first.VideoMap, second.VideoMap);
             Assert.Equal(first.VideoFilter, second.VideoFilter);
             Assert.Equal(first.FilterComplex, second.FilterComplex);
+            Assert.Equal(first.FilterComplexInput, second.FilterComplexInput);
             Assert.Equal(first.SubtitleFilter, second.SubtitleFilter);
+            Assert.Equal(first.OwnsVideoPipeline, second.OwnsVideoPipeline);
+            Assert.Equal(first.RequiresComposedViewInput, second.RequiresComposedViewInput);
             Assert.Equal(first.ShouldSuppressSubtitleStreams, second.ShouldSuppressSubtitleStreams);
             Assert.Equal(first.ShouldAppendSubtitlesToProfileFilter, second.ShouldAppendSubtitlesToProfileFilter);
         }

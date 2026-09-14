@@ -115,11 +115,17 @@ which is the opposite of what a source that has already converted the picture wa
 
 | Profile | Required fragments |
 | --- | --- |
-| `sbs_full` | `-map 0:v:view:all`, `-sn` |
-| `sbs_half` | `-map 0:v:view:all`, `-vf scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p`, `-sn` |
-| `anaglyph_arcd` | `-map 0:v:view:all`, `-vf stereo3d=sbsl:arcd,format=yuv420p`, `-sn` |
-| `two_d_base` | marker replacement only |
-| `custom_grayscale` | `-filter_complex <Anaglyfin graph>`, `-map [anaglyfin_custom]`, `-sn` |
+| `sbs_full` | `-view_ids -1` immediately before the marker input's `-i`, `-sn` |
+| `sbs_half` | `-view_ids -1` immediately before the marker input's `-i`, `-vf scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p`, `-sn` |
+| `anaglyph_arcd` | `-view_ids -1` immediately before the marker input's `-i`, `-vf stereo3d=sbsl:arcd,format=yuv420p`, `-sn` |
+| `two_d_base` | marker replacement only; no `-view_ids` |
+| `custom_grayscale` | `-view_ids -1` immediately before the marker input's `-i`, `-filter_complex <Anaglyfin graph>`, `-map [anaglyfin_custom]`, `-sn` |
+
+The composed all-view request is an input option: FFmpeg reads `-view_ids` when it opens the
+input, so it is written in front of that input's `-i`. A view specifier such as `0:v:view:all`
+is the other, post-open route and is refused by FFmpeg-mvc on an input configured this way, so
+no generated command carries one. The custom graph's source label addresses the marker's own
+video stream (`[0:<index>]`, with `[0:v]` only when no index was carried), not a view selector.
 
 The half-SBS chain's `setsar=sar=1` is not decoration: `scale` keeps the display aspect by
 adjusting the sample aspect ratio it hands on, so halving the width of a square-pixel frame hands
@@ -138,13 +144,19 @@ graph is not a stage of somebody else's chain, and a profile that owns the video
 a command that already carries one.
 
 The only audio argument the rewriter adds is `-map 0:a?` when the server command had no maps at
-all and the profile inserted a video map. Of the server's own maps, a profile that owns the video
-pipeline takes away three shapes: a map that names the video type (`0:v`, `0:v:0`, a graph label),
-the exclusion of that type (`-map -0:v`, which would take the profile's own picture back out of
-the output), and the numbered map the marker's `video=<index>` identifies (`-map 0:<index>`,
-`-map 0:<index>?`), which no argv reader can tell video from audio. A map that names any other
-stream stays, and so does any exclusion that does not name video: `-map -0:s` under a profile
-suppressing subtitles is the server agreeing with the profile, and deleting it would put
+all and the profile inserted a video map of its own. Linear profiles ride the stream the server
+already named, so they insert no map and therefore need no replacement audio map.
+
+For the one custom graph profile, which maps a new labelled output, the server's video maps give
+way to that label: a video-type map (`0:v`, `0:v:0`, a graph label), the exclusion of that type,
+and the numbered map identified by the marker's `video=<index>` are removed, while other stream
+maps stay. For a linear profile, the server's ordinary video map is the converted picture's
+carrier and is preserved; subtitle maps still give way to `-sn`, and a marker-input video-type
+exclusion is removed because it would delete the stream the profile is about to convert. Any
+positive marker-input view-specifier map (`0:v:view:all`, `0:v:vidx:<n>`, or `0:v:vpos:<pos>`)
+is rewritten to the marker's ordinary video stream because a view specifier cannot stand beside
+the input's `-view_ids` request. An exclusion that does not name video stays: `-map -0:s` under a
+profile suppressing subtitles is the server agreeing with the profile, and deleting it would put
 subtitles back.
 
 ## Security boundaries

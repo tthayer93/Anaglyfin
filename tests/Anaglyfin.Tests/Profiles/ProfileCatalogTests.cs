@@ -365,7 +365,7 @@ public class ProfileCatalogTests
         var configuration = new PluginConfiguration
         {
             DefaultProfileId = "stereo3d=sbsl:arcd",
-            FallbackProfileId = "-map 0:v:view:all"
+            FallbackProfileId = "-view_ids -1"
         };
         configuration.EnabledProfileIds.Add("an arbitrary string");
 

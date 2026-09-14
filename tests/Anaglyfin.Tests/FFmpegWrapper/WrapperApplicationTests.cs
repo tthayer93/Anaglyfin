@@ -189,15 +189,17 @@ public sealed class WrapperApplicationTests : IDisposable
 
         Assert.Equal(WrapperApplication.ExitCodeSuccess, exitCode);
 
-        // The marker is gone, the profile's all-view map and -sn are in the output segment,
-        // and everything the server chose is where the server put it.
+        // The marker is gone, the composed-view request sits in front of its input, the profile's
+        // -sn is in the output segment, and everything the server chose is where the server put
+        // it.
         Assert.Equal(
             new[]
             {
                 "-hide_banner", "-loglevel", "warning",
+                "-view_ids", "-1",
                 "-i", SourcePath,
-                "-map", "0:v:view:all", "-sn",
-                "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
+                "-sn",
+                "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
                 "-f", "hls", "-hls_time", "6", "playlist.m3u8"
             },
             Assert.Single(launcher.Launches).Arguments);

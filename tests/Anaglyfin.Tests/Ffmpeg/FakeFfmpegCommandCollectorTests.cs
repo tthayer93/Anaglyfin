@@ -25,8 +25,16 @@ public class FakeFfmpegCommandCollectorTests
 
         var rendered = collector.Render();
 
-        Assert.Contains("-map 0:v:view:all", rendered);
+        Assert.Contains("-view_ids -1", rendered);
         Assert.Contains(" -sn ", rendered);
+
+        // The composed request is an input option, not a map in the output segment.
+        var viewOption = collector.IndexOf("-view_ids");
+        Assert.True(viewOption >= 0 && viewOption < collector.IndexOf("-i"), rendered);
+        Assert.DoesNotContain("0:v:view", rendered);
+
+        // The linear profile rides the server's ordinary video map instead of naming another.
+        Assert.Contains("-map 0:v", rendered);
 
         // The rewrite took subtitles off the stream level...
         Assert.DoesNotContain("0:s:0", rendered);
@@ -47,6 +55,8 @@ public class FakeFfmpegCommandCollectorTests
 
         var rendered = collector.Render();
 
+        Assert.Contains("-view_ids -1", rendered);
+        Assert.DoesNotContain("0:v:view", rendered);
         Assert.Contains("-vf stereo3d=sbsl:arcd,format=yuv420p,subtitles=filename='" + Input + "':si=1", rendered);
 
         // The profile filter chain ends with the burn-in, so text is rendered onto
@@ -68,6 +78,11 @@ public class FakeFfmpegCommandCollectorTests
             .WithJellyfinStyleBase(Input, Output)
             .Apply(rewrite);
 
+        var rendered = collector.Render();
+
+        Assert.Contains("-view_ids -1", rendered);
+        Assert.DoesNotContain("0:v:view", rendered);
+        Assert.DoesNotContain("-map 0:v ", rendered);
         Assert.True(collector.IndexOf("-filter_complex") >= 0);
         Assert.True(collector.IndexOf("[anaglyfin_custom]") < collector.IndexOf("-vf"));
         Assert.Equal("subtitles=filename='" + Input + "':si=0", collector.Arguments[collector.IndexOf("-vf") + 1]);

@@ -135,13 +135,18 @@ else
     else
         ok 'no marker text reached the child process'
     fi
-    for fragment in '-map 0:v:view:all' '-sn'; do
+    for fragment in '-view_ids -1' '-sn'; do
         if printf '%s' "$out" | grep -qF -- "$fragment"; then
             ok "the ${PROFILE} rewrite inserted ${fragment}"
         else
             bad "the ${PROFILE} rewrite did not insert ${fragment}: $(printf '%s' "$out" | head -n 3)"
         fi
     done
+    if printf '%s' "$out" | grep -q '0:v:view\|vidx:\|vpos:'; then
+        bad "the ${PROFILE} rewrite left a view specifier in the command: $(printf '%s' "$out" | head -n 3)"
+    else
+        ok "the ${PROFILE} rewrite left no view specifier beside -view_ids"
+    fi
     if printf '%s' "$out" | grep -qF -- '-c:v libx264'; then
         ok 'the rewrite kept the server-owned encoder arguments'
     else
