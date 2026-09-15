@@ -694,6 +694,42 @@ public class ProfileVersionIdempotentMetadataTests
     }
 
     [Fact]
+    public async Task AVersionClaimingADiscIsBroughtBackToItsVideoFileAndThenSettles()
+    {
+        var store = new FakeProfileVersionItemStore();
+        var movie = store.AddVersionRoot(ProfileVersionFixtures.CreateSingleFileMvcMovie());
+        store.AddItem(ProfileVersionFixtures.CreateFolder());
+        var manager = CreateManager(store);
+
+        await manager.ReconcileLibraryAsync(CancellationToken.None);
+
+        var versionId = VersionIdOf(movie.StaticSources[0], SideBySideFull);
+        var version = (Video)store.FindItem(versionId)!;
+
+        Assert.Equal(VideoType.VideoFile, version.VideoType);
+
+        // A claim that describes something else. This cannot arrive by omission: Jellyfin 12's
+        // VideoType has no "unspecified" member, so an item nobody ever wrote answers VideoFile on
+        // its own. What does arrive is a value - a resolver that read the name, a hand edit, an item
+        // merged in from elsewhere - and a version claiming a disc is a version the picker lists as
+        // an ISO, that sorts behind the file it converts, and that the server's encoder gate sends to
+        // libx264.
+        version.VideoType = VideoType.Iso;
+
+        var repaired = await manager.ReconcileLibraryAsync(CancellationToken.None);
+
+        Assert.Equal(1, repaired.Updated);
+        Assert.Equal(ProfileVersionSource.VersionVideoType, version.VideoType);
+        Assert.Single(store.Updated);
+
+        // Repaired once and quiet afterwards, because the value the repair writes is the value the
+        // comparison compares, and the item carries it as a plain field of its own.
+        var settled = await manager.ReconcileLibraryAsync(CancellationToken.None);
+        Assert.False(settled.Changed);
+        Assert.Single(store.Updated);
+    }
+
+    [Fact]
     public async Task AMatchingFrameIsNoReasonToWriteAnItem()
     {
         var store = new FakeProfileVersionItemStore();
