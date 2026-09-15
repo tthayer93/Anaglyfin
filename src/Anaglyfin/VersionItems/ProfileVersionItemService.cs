@@ -30,16 +30,18 @@ namespace Anaglyfin.VersionItems;
 /// (<see cref="ItemUpdateType.None"/>) says less than the events below do.
 /// </para>
 /// <para>
-/// <b>What it refuses.</b> An item event is a request about one item, and the cheap half of the
+/// <b>What it asks about.</b> An item event is a request about one item, and the cheap half of the
 /// eligibility question (<see cref="MvcEligibilityPrefilter.IsCheapCandidate"/>) answers whether that
-/// item could carry a version at all before anything is queued: a track, a folder, one of Anaglyfin's
-/// own marker items, and the ordinary movie whose name, tags and declared format say nothing about 3D
-/// are refused on the spot. The refusal is the whole point of listening to a library at all - a
+/// item is worth a request before anything is queued. Non-videos, structural non-files and ordinary
+/// movies whose name, tags, declared format and version links say nothing about 3D or Anaglyfin's own
+/// janitor path are refused on the spot. Anaglyfin marker items and items that name alternate versions
+/// are not refused: marker items go to the manager's janitor path, which either reconciles the healthy
+/// primary or removes the orphan, while version-naming roots stay eligible so stale versions attached
+/// to them can be removed. The filtering is the whole point of listening to a library at all - a
 /// refresh announces every item it touched, most of them several times, and a queue that kept all of
 /// them would be reconciling a ten-thousand-item library one movie at a time to change nothing in any
 /// of them.
 /// </para>
-
 /// <para>
 /// <b>Why it debounces.</b> A folder refresh is not one change; it is an item, then its images, then
 /// its metadata, then its parent, each an event. Reconciling after each one would run the same diff
@@ -235,7 +237,8 @@ public sealed class ProfileVersionItemService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// The library noticed an item, and it is only worth asking about if it could carry a version.
+    /// The library noticed an item, and it is worth asking about only if it could carry a version or is
+    /// one of the version items the janitor has to look after.
     /// </summary>
     /// <param name="sender">The event source.</param>
     /// <param name="args">The item that changed.</param>
@@ -245,8 +248,9 @@ public sealed class ProfileVersionItemService : IHostedService, IDisposable
     /// nothing the item does not already carry and writes nothing anywhere. What it decides is the
     /// cheap half of the eligibility question - the same half a full pass asks, from the same
     /// detector, so an item cannot be refused by one and reconciled by the other - and everything it
-    /// cannot decide cheaply is asked about: an item that names other versions of itself may hold its
-    /// MVC file in one of them, and that is the case the whole feature exists for.
+    /// cannot decide cheaply is asked about: a marker item goes to the manager's janitor, and an item
+    /// that names other versions of itself may hold its MVC file or a stale Anaglyfin version in one of
+    /// them.
     /// </para>
     /// <para>
     /// <b>What arrives here at all.</b> Only the three item events this service subscribes to, which

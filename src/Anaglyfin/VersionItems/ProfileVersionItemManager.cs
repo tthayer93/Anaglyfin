@@ -94,7 +94,7 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     }
 
     /// <summary>
-    /// Reconciles every video a library query can name as possibly carrying an MVC file.
+    /// Reconciles every library video the full version-item walk can list.
     /// </summary>
     /// <param name="cancellationToken">Stops the pass between items.</param>
     /// <returns>What the pass changed.</returns>
@@ -177,12 +177,12 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
                         continue;
                     }
 
-                    // The item a query named is not always the item the versions belong to: an
+                    // The item the walk reached is not always the item the versions belong to: an
                     // alternate version of something else - the MVC file beside a stack's primary -
-                    // carries the signals a query can read, and its versions have to be filed where a
-                    // client can reach them. Nothing to reach is nothing to reconcile: an alternate
-                    // whose primary is gone is left to the pass over the file that was removed, which
-                    // takes its versions with it.
+                    // carries the signals the detector can read, and its versions have to be filed
+                    // where a client can reach them. Nothing to reach is nothing to reconcile: an
+                    // alternate whose primary is gone is left to the pass over the file that was
+                    // removed, which takes its versions with it.
                     var root = ResolveRoot(candidate);
                     if (root is null || !reconciled.Add(root.Id))
                     {
@@ -208,7 +208,7 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             }
 
             // The two numbers that say what a pass cost, in one line per pass and with no title in
-            // either of them: the queries named these items, the cheap question refused these of them
+            // either of them: the walk reached these items, the cheap question refused these of them
             // outright, and only the rest were read as media. A library that stopped costing scans is
             // visible here; a library that did not is, too.
             _logger.LogDebug(

@@ -53,12 +53,11 @@ public class ProfileVersionReconcileCheapPassTests
         store.AddOrdinaryLibraryVideo();
 
         // Nothing here says this item was returned by a narrow query. It is only a video in the fake
-        // library whose file name carries the detector's vocabulary, and the full pass has to ask the
-        // detector about it anyway.
+        // library whose file name carries the detector's vocabulary, with no stereo format on the item
+        // and nothing else to lean on, and the full pass has to ask the detector about it anyway.
         var mvc = AddNamedVideo(
             store,
-            "/movies/Ready Player One (2018)/Ready Player One (2018) 3DMVC.mkv",
-            Video3DFormat.MVC);
+            "/movies/Ready Player One (2018)/Ready Player One (2018) 3DMVC.mkv");
 
         var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
             .ReconcileLibraryAsync(CancellationToken.None);
