@@ -111,7 +111,7 @@ is involved, and a source that named no width gets no invented one. `Video3DForm
 a version: the server reads a stereo format as an instruction to convert that format to 2D itself,
 which is the opposite of what a source that has already converted the picture wants.
 
-## Hardware encode, software decode
+## Hardware acceleration passes through
 
 Every Anaglyfin version declares its media as a **video file** (`ProfileVersionSource.VersionVideoType`,
 written on the dynamic source and on the materialised item, and repaired on any item that has drifted
@@ -139,30 +139,39 @@ with the hardware encoders compiled in, not a field on the media source. Anaglyf
 never forces `libx264`, and takes whatever the server's settings select out of whatever binary the
 server was handed.
 
-A hardware **decode** is a separate decision, and that one the plugin actively takes back. A marker
-input is decoded by FFmpeg-mvc's own software MVC decoder - that decoder is what
-composes the eyes for `-view_ids -1`, and it is what hands the 2D profile its base view; no hardware
-accelerator decodes this stream at all. So the rewrite removes the accelerator-selection options from
-the marker input's scope, whatever profile the marker names:
+Nothing at all is taken off a command for a **decode**. The server attaches an accelerator to an input
+per reported codec, writing that choice in front of the input's `-i` (`-hwaccel`,
+`-hwaccel_output_format`, `-hwaccel_device`, `-hwaccel_args`, `-hwaccel_flags`), and it opens the
+device an encoder or a filter graph runs on with `-init_hw_device`, `-filter_hw_device` and, in the
+VA-API spelling, `-vaapi_device`. Every one of those arguments passes through the rewrite unchanged, in
+the marker input's scope and in every other one. The wrapper names no decoder and no encoder of its own
+and rewrites no hardware filter chain; the only argument it writes on the input side of a marker is
+`-view_ids -1`, immediately before that input's `-i`.
 
-| Removed from the marker input's scope | Kept |
+The fallback those options would need is already made further down the pipeline, by the component that
+chooses the decoder. FFmpeg-mvc gates hardware decoding on the stream a decoder context is opening: once
+a multiview SPS has been seen (`h->mvc_sps`, `libavcodec/h264_slice.c`) and an accelerator is attached
+to that context, it drops the hardware pixel formats and goes on decoding in software, printing
+`H.264/MVC: hardware acceleration is not supported, falling back to software decoding` once. A plain 2D
+stream never sets that flag, so its hardware decode is untouched, and the hardware encode is a separate
+path that works whichever decoder produced the frame. The gate is per decoder context, which is the
+distinction that makes it usable: the marker's own input falls back even for its base view - the frame
+the `two_d_base` profile plays - while an ordinary stream in the same command keeps its accelerator.
+
+| Decode side, left where the server wrote it | Encode side, left where the server wrote it |
 | --- | --- |
-| `-hwaccel <value>` | `-init_hw_device <name>:<type>[:<device>]` |
-| `-hwaccel_output_format <value>` | `-filter_hw_device <name>` |
-| `-hwaccel_device <value>` | `-vaapi_device <path>` (a VAAPI encode's device selection) |
-| `-hwaccel_args <value>` | the encoder and its options (`-c:v h264_qsv`, `-global_quality`, …) |
-| `-hwaccel_flags <value>` | the upload and mapping filters (`hwupload`, `hwmap`, `vpp_qsv`, `format=nv12`) |
+| `-hwaccel <value>`, `-hwaccel_output_format <value>`, `-hwaccel_device <value>`, `-hwaccel_args <value>`, `-hwaccel_flags <value>` | `-init_hw_device <name>:<type>[:<device>]`, `-filter_hw_device <name>`, `-vaapi_device <path>` |
+| a forced input decoder (`-c:v <decoder>`), `-threads`, and every other option the server wrote in that scope | the encoder and its options (`-c:v h264_qsv`, `-global_quality`, …), and the upload and mapping filters (`hwupload`, `hwmap`, `vpp_qsv`, `format=nv12`) |
 
-The result is the command Jellyfin itself builds for a software decode with a hardware encode: the
-picture decoded in memory, converted by the profile, uploaded to the device the server opened, and
-encoded there. Two boundaries are deliberate. The removal is scoped to the arguments in front of the
-marker's `-i`, because that is the only scope in which an option can be a decision about this input.
-And the list of removed names is closed rather than a prefix match, because `-init_hw_device` and
-`-filter_hw_device` open the device the encoder and the filter graph run on - removing them would
-take the hardware encode away with the hardware decode - and a bare `-vaapi_device` is what a
-VA-API encode uses for its device. A command that carries no hardware argument is unchanged by this
-rule, which is what keeps an ordinary hardware-disabled server byte-for-byte in the commands it
-already ran; a command whose input is not a marker is never looked at, decode options included.
+Preempting that fallback from the wrapper was cp17's correction, and it was wrong in both directions. A
+marker URL names a file and a profile, which is not the information a decoder is about to weigh when it
+picks a hardware path, and the removal was scoped to an input rather than to a stream - so the same
+rule that "protected" an MVC input would also have taken the hardware decode away from an ordinary
+stream carrying the server's setting. Two facts are worth holding on to. A command that carries no
+hardware argument at all is unchanged by any of this, which is what keeps an ordinary hardware-disabled
+server byte-for-byte in the commands it already ran. And a command whose input is not a marker is never
+looked at: stock playback keeps the server's decode choices, which is the wrapper's pass-through rule
+and not a special case of this one.
 
 ## Profile command rules
 
@@ -174,9 +183,10 @@ already ran; a command whose input is not a marker is never looked at, decode op
 | `two_d_base` | marker replacement only; no `-view_ids` |
 | `custom_grayscale` | `-view_ids -1` immediately before the marker input's `-i`, `-filter_complex <Anaglyfin graph>`, `-map [anaglyfin_custom]` (the map only when the server's own graph does not consume the label) |
 
-Every one of those rows is also a command the server's hardware **decode** has been taken out of,
-and `two_d_base` is no exception: it writes no filter and no view request, and it is still a marker
-input that must be decoded in software. See "Hardware encode, software decode" above.
+Every one of those rows is also a command whose hardware arguments the server wrote are left where the
+server wrote them - decode selection, device initialisation, encoder and upload filters alike - and
+`two_d_base` is no exception: it writes no filter and no view request, so on that row the rewrite is
+the marker replacement and nothing else. See "Hardware acceleration passes through" above.
 
 A profile whose marker names a subtitle ordinal burns that track in - the `subtitles=` filter
 lands as the last stage of the profile's chain, and only then does the rewrite add `-sn` and take

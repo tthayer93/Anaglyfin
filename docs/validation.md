@@ -962,50 +962,61 @@ graph that reaches it through a view specifier (`[0:v:view:all]`), which a compo
 outright; several graphs in one command; or a graph already carrying `[anaglyfin_profile]` or
 `[anaglyfin_custom]`.
 
-### 7.10 A hardware-accelerated server: hardware encode, software decode
+### 7.10 A hardware-accelerated server: the server's hardware arguments pass through
 
 Run one profile with the server's `HardwareAccelerationType` set to `qsv`, `nvenc` or `vaapi` and
-hardware encoding on, and capture the child command the way V7 describes. This is what a version's
-command looks like on a host where the FFmpeg the server runs has that encoder compiled in - which is
-the part a plugin cannot arrange, since a marker input has to be decoded by the FFmpeg-mvc build and
-that build's encoder list is the ceiling. A command that comes out with no device options and
-`-codec:v libx264` on such a server is that case, not a rewrite failure; check the binary's
-`-encoders` list before checking anything here:
+hardware encoding on, and capture the child command the way V7 describes. Compare it token by token
+against the command the server built for that item; the difference has to be the profile's own
+fragments plus the marker replacement, and nothing else. This is what a version's command looks like on
+a host where the FFmpeg the server runs has that encoder compiled in - which is the part a plugin
+cannot arrange, since a marker input has to be decoded by the FFmpeg-mvc build and that build's encoder
+list is the ceiling. A command that comes out with no device options and `-codec:v libx264` on such a
+server is that case, not a rewrite failure; check the binary's `-encoders` list before checking
+anything here:
 
 ```text
--init_hw_device qsv=qsv:/dev/dri/renderD128 -filter_hw_device qsv -view_ids -1 -i <real source path>
+-init_hw_device qsv=qsv:/dev/dri/renderD128 -filter_hw_device qsv -hwaccel qsv
+-hwaccel_output_format qsv -view_ids -1 -i <real source path>
 -map 0:0 -map 0:1 -c:v:0 h264_qsv ... -vf format=nv12,hwupload=derive_device=qsv,... <output>
 ```
 
-- [ ] Nothing in front of the marker input's `-i` selects a hardware decoder: no `-hwaccel`, no
-      `-hwaccel_output_format`, no `-hwaccel_device`, no `-hwaccel_args`, no `-hwaccel_flags`. No
-      hardware accelerator decodes this source into the composed (or base) view a profile plays, so
-      the wrapper takes those off the input whatever the profile - `two_d_base` included.
-- [ ] The device the **encode** runs on is still there: `-init_hw_device ...`,
-      `-filter_hw_device ...`, and on a VA-API server a `-vaapi_device <path>`. A command missing
-      them has lost the hardware encode along with the decode, which is the wrong half to remove.
+- [ ] Everything the server wrote in front of the marker's `-i` is still in front of it, the decode
+      selection included: `-hwaccel`, `-hwaccel_output_format`, `-hwaccel_device`, `-hwaccel_args`,
+      `-hwaccel_flags`, and on a VA-API server the `-vaapi_device <path>`. The wrapper removes none of
+      them, for any profile, `two_d_base` included - a command missing them has regressed to cp17.
+- [ ] The device the **encode** runs on is still there as well: `-init_hw_device ...` and
+      `-filter_hw_device ...`.
+- [ ] The one argument the wrapper added on that side of the `-i` is `-view_ids -1`, and it sits
+      immediately in front of the option that opens the file - after the server's hardware arguments,
+      not in place of them.
+- [ ] Read FFmpeg's own output for what the decoder decided. On a multiview stream the build says
+      `H.264/MVC: hardware acceleration is not supported, falling back to software decoding` once and
+      carries on in software; that line is the fallback doing its job, and it is FFmpeg's line rather
+      than an `anaglyfin-wrapper:` one. Nothing in the command had to be altered for it to appear.
+- [ ] An ordinary (non-MVC) item transcoded on the same server with the same binary shows no such line
+      and keeps its hardware decode. That is the same gate answering the other question, and it is the
+      reason the wrapper does not answer it in advance - see V8.
 - [ ] The video encoder is the server's own, and on this host a hardware one: `h264_qsv`, `hevc_qsv`,
       `h264_nvenc`, `h264_vaapi`, and so on. Anaglyfin names no encoder and never forces `libx264`, so
       a command carrying `libx264` here is the binary answering the gate - the check above - and not a
       rewrite the wrapper performed.
-- [ ] The filters that carry a software frame to that encoder survive: `hwupload`,
+- [ ] The filters that carry a frame to that encoder survive: `hwupload`,
       `hwupload=derive_device=...`, `hwmap`, `vpp_qsv`, `scale_qsv`, `format=nv12` - in the server's
       `-vf` chain, or inside its `-filter_complex` where the server wrote them. The profile's chain
-      is still in front of them and still ends on a software pixel format, which is exactly the frame
-      those filters are for.
+      is still in front of them, which is what makes them upload the converted picture.
 - [ ] The profile's own fragments are where V7.1-V7.9 put them: `-view_ids -1` in front of `-i` for
       every converting profile, none for `two_d_base`, the profile's chain or graph merged in front of
       the server's.
-- [ ] The segments still measure what V7.8 says they measure. A command that reached FFmpeg without
-      the decode it asked for would show up as the wrong picture rather than as an error, and this is
-      the check that tells the two apart.
+- [ ] The segments still measure what V7.8 says they measure. The wrong picture arrives without an
+      error, so this is the check that notices it - and it is the check that would notice a decode
+      chosen wrongly as well.
 - [ ] With the server's hardware acceleration **off**, this section asks for nothing: the command is
       the one from V7.1-V7.7, with the same encoder and no device options, because there was nothing
-      here to take away.
+      there to pass through.
 
-A command whose decode flags were removed is a rewrite and not a refusal, so expect no
-`anaglyfin-wrapper:` diagnostic for it. FFmpeg's own output may still name the device it opened; that
-is the encoder's device, and it is expected to be opened.
+Nothing in this section is a refusal, and nothing in it produces a diagnostic: the wrapper's work on
+such a command is the same work it does on any marker command, and the hardware arguments ride along
+untouched. FFmpeg's output naming a device it opened is expected - that is the encoder's device.
 
 ## V8. Ordinary playback pass-through
 
@@ -1015,8 +1026,8 @@ Play a non-MVC item that will be transcoded, or force transcoding.
 
 - [ ] The wrapper starts the real FFmpeg binary with the received arguments unchanged.
 - [ ] Jellyfin hardware decode options from the server remain present if configured: no marker is in
-      this command, so nothing about its decode is Anaglyfin's to change. (V7.10 is about the commands
-      that do carry one, where the decode selection does come off.)
+      this command, so nothing about its decode is Anaglyfin's to change. V7.10 asks for the same
+      patience on the commands that do carry a marker, where those arguments pass through as well.
 - [ ] No Anaglyfin `-view_ids` option is inserted for a non-marker command.
 - [ ] No Anaglyfin `-vf`, `-filter_complex`, or `-sn` is inserted for a non-marker command.
 - [ ] Ordinary playback does not create an Anaglyfin concurrency slot file.
@@ -1135,8 +1146,9 @@ Current state:
 
 - `EncoderPolicy` is stored and exposed by the admin page.
 - The current generated profile commands do not encode policy into encoder arguments.
-- MVC decoding stays software-only; hardware decode choices for ordinary playback remain
-  with Jellyfin.
+- Hardware decode and encode choices stay with Jellyfin on every command, marker or not; the
+  FFmpeg-mvc build is what falls back to software decoding, per decoder context, when the stream it
+  opened turns out to be multiview.
 
 Validation expectation:
 
