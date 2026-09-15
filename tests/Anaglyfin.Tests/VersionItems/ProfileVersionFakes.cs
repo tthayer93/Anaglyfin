@@ -50,12 +50,17 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
 
     private readonly Dictionary<Guid, List<PersonInfo>> _people = new();
 
-    private readonly List<Video> _versionRoots = new();
+    private readonly List<Video> _threeDRoots = new();
+
+    private readonly List<Video> _taggedRoots = new();
 
     private readonly ManualResetEventSlim _creationGate = new(initialState: true);
 
-    /// <summary>Gets the items a full pass is told to consider.</summary>
-    public IList<Video> VersionRoots => _versionRoots;
+    /// <summary>Gets the items a full pass is told to consider by its 3D query.</summary>
+    public IList<Video> ThreeDVersionRoots => _threeDRoots;
+
+    /// <summary>Gets the items a full pass is told to consider by its tag query.</summary>
+    public IList<Video> TaggedVersionRoots => _taggedRoots;
 
     /// <summary>Gets every item created, with the folder it was filed under.</summary>
     public List<(BaseItem Item, Folder? Parent)> Created { get; } = new();
@@ -80,10 +85,25 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     /// </summary>
     public List<(Guid ItemId, IReadOnlyList<string> Paths)> ImagesSaved { get; } = new();
 
-    /// <summary>Gets how many times the full-library list was read.</summary>
-    public int RootsReadCount { get; private set; }
+    /// <summary>
+    /// Gets how many times the 3D query was asked. A pass asks once; a pass that walked the library
+    /// would ask for something this fake cannot answer and would have to ask for everything.
+    /// </summary>
+    public int ThreeDQueryCount { get; private set; }
 
-    /// <summary>Makes the full-library list throw, once per read.</summary>
+    /// <summary>Gets how many times the tag query was asked, whatever it was asked for.</summary>
+    public int TagQueryCount { get; private set; }
+
+    /// <summary>Gets the tag spellings every tag query was asked for, in call order.</summary>
+    public List<IReadOnlyList<string>> TagQueries { get; } = new();
+
+    /// <summary>
+    /// Gets the items every query answered with, in call order and with duplicates: what a pass was
+    /// told to look at, which is not necessarily what it looked at.
+    /// </summary>
+    public List<Video> QueriedCandidates { get; } = new();
+
+    /// <summary>Makes the library queries throw, once per read.</summary>
     public bool ThrowOnListRoots { get; set; }
 
     /// <summary>Makes the creation of a matching item throw.</summary>
@@ -206,17 +226,28 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     }
 
     /// <inheritdoc />
-    public IReadOnlyList<Video> GetVersionRootCandidates()
+    public IReadOnlyList<Video> Get3DVersionRootCandidates()
     {
-        RootsReadCount++;
+        ThreeDQueryCount++;
+        QueriedCandidates.AddRange(_threeDRoots);
 
-        if (ThrowOnListRoots)
-        {
-            throw new InvalidOperationException("the library could not be listed (failure under test)");
-        }
-
-        return _versionRoots;
+        return ThrowOnListRoots ? Throw() : _threeDRoots;
     }
+
+    /// <inheritdoc />
+    public IReadOnlyList<Video> GetTaggedVersionRootCandidates(IReadOnlyList<string> tagNames)
+    {
+        ArgumentNullException.ThrowIfNull(tagNames);
+
+        TagQueryCount++;
+        TagQueries.Add(tagNames);
+        QueriedCandidates.AddRange(_taggedRoots);
+
+        return ThrowOnListRoots ? Throw() : _taggedRoots;
+    }
+
+    private static IReadOnlyList<Video> Throw()
+        => throw new InvalidOperationException("the library could not be listed (failure under test)");
 
     /// <inheritdoc />
     public IReadOnlyList<Video> GetLinkedAlternateVersions(Video primary)
@@ -355,15 +386,34 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     public void AddItem(BaseItem item)
         => _items[item.Id] = item;
 
-    /// <summary>Puts an item in the library and lists it as a version root.</summary>
+    /// <summary>
+    /// Puts an item in the library and names it as a version root: what the server's 3D query answers
+    /// with, which is where a full pass starts.
+    /// </summary>
     /// <typeparam name="T">The kind of item, so a test can keep the type it built.</typeparam>
-    /// <param name="video">The item to file and list.</param>
+    /// <param name="video">The item to file and name.</param>
     /// <returns>The same item it was handed.</returns>
     public T AddVersionRoot<T>(T video)
         where T : Video
     {
         AddItem(video);
-        _versionRoots.Add(video);
+        _threeDRoots.Add(video);
+
+        return video;
+    }
+
+    /// <summary>
+    /// Puts an item in the library and names it through the tag query instead: the item that says MVC
+    /// in a tag and carries no stereo format, which is the one case a 3D query cannot see.
+    /// </summary>
+    /// <typeparam name="T">The kind of item, so a test can keep the type it built.</typeparam>
+    /// <param name="video">The item to file and name.</param>
+    /// <returns>The same item it was handed.</returns>
+    public T AddTaggedVersionRoot<T>(T video)
+        where T : Video
+    {
+        AddItem(video);
+        _taggedRoots.Add(video);
 
         return video;
     }
@@ -400,6 +450,44 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
         _people.Remove(itemId);
     }
 
+    /// <summary>
+    /// Puts an ordinary movie in the library without naming it through either narrow query.
+    /// </summary>
+    /// <returns>The scripted item, reporting one source: its own file.</returns>
+    /// <remarks>
+    /// This is the library a pass must not touch: it exists, it can be found by id, and neither of
+    /// the two cheap questions a full pass asks can name it.
+    /// </remarks>
+    public ScriptedVideo AddItemReturnedByNoQuery()
+    {
+        var item = ProfileVersionFixtures.CreateOrdinaryMovie(
+            Guid.NewGuid(),
+            "/movies/Unqueried (2014)/Unqueried (2014).mkv");
+
+        AddItem(item);
+
+        return item;
+    }
+
+    /// <summary>
+    /// Puts the primary of the stacked MVC movie in the library without naming it through either
+    /// narrow query.
+    /// </summary>
+    /// <returns>The scripted root, reporting its plain file and the hidden MVC alternate as sources.</returns>
+    /// <remarks>
+    /// The query can only see the hidden alternate; the primary is the item a client reaches and the
+    /// item whose media sources still include the MVC file. That gap is why a named candidate has to
+    /// be resolved to its root before anything is scanned.
+    /// </remarks>
+    public ScriptedVideo AddItemRootOfNothing()
+    {
+        var item = ProfileVersionFixtures.CreateStackedMvcMovie();
+
+        AddItem(item);
+
+        return item;
+    }
+
     /// <summary>Gets the version ids linked to one primary.</summary>
     /// <param name="primaryId">The item to ask about.</param>
     /// <returns>The linked version ids.</returns>
@@ -418,14 +506,26 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
 /// A <see cref="Video"/> whose static media sources are scripted, because a unit test has no
 /// database for the real item to read them from.
 /// </summary>
+/// <remarks>
+/// It counts the reads it answered as well as answering them, because the expensive half of a pass is
+/// exactly this call - the server answers it with the persisted stream rows of every file grouped with
+/// the item - and "a library of ordinary videos cost none of them" is a property worth testing.
+/// </remarks>
 public sealed class ScriptedVideo : Video
 {
     /// <summary>Gets or sets the sources the item reports for its own files.</summary>
     public IReadOnlyList<MediaSourceInfo> StaticSources { get; set; } = Array.Empty<MediaSourceInfo>();
 
+    /// <summary>Gets how many times this item's media sources were read.</summary>
+    public int MediaSourceReads { get; private set; }
+
     /// <inheritdoc />
     public override IReadOnlyList<MediaSourceInfo> GetMediaSources(bool enablePathSubstitution)
-        => StaticSources;
+    {
+        MediaSourceReads++;
+
+        return StaticSources;
+    }
 }
 
 /// <summary>
@@ -547,10 +647,17 @@ public sealed class FakeLibraryEventSource : ILibraryEventSource
     public void RaiseAdded(BaseItem item)
         => ItemAdded?.Invoke(this, new ItemChangeEventArgs { Item = item });
 
-    /// <summary>Raises an item-updated event.</summary>
+    /// <summary>
+    /// Raises an item-updated event, naming the reason the server wrote the item back for.
+    /// </summary>
     /// <param name="item">The item that changed.</param>
-    public void RaiseUpdated(BaseItem item)
-        => ItemUpdated?.Invoke(this, new ItemChangeEventArgs { Item = item });
+    /// <param name="reason">
+    /// What the write carried. The default is a metadata edit because that is what an update is for;
+    /// an addition carries no reason at all, which <see cref="RaiseAdded"/> leaves unset the way the
+    /// server does.
+    /// </param>
+    public void RaiseUpdated(BaseItem item, ItemUpdateType reason = ItemUpdateType.MetadataEdit)
+        => ItemUpdated?.Invoke(this, new ItemChangeEventArgs { Item = item, UpdateReason = reason });
 
     /// <summary>Raises an item-removed event.</summary>
     /// <param name="item">The item that left.</param>
@@ -805,12 +912,61 @@ public static class ProfileVersionFixtures
     /// version of it that only the media-source API can name.
     /// </summary>
     /// <returns>The scripted item.</returns>
+    /// <remarks>
+    /// The primary names the sibling file the way a scanned stack's primary does - in
+    /// <see cref="Video.LocalAlternateVersions"/> - because that is the only cheap thing about this
+    /// item that says "the file that matters may not be mine". Its own name, path and tags describe
+    /// its 1080p file, and a listener that took those as the whole answer would lose the versions of
+    /// the MVC file beside them.
+    /// </remarks>
     public static ScriptedVideo CreateStackedMvcMovie()
-        => CreateMovie(new[]
+    {
+        var movie = CreateMovie(new[]
         {
             CreateSource(MovieId, "1080p", PlainPath),
             CreateSource(MvcVersionItemId, "3D mvc", MvcPath)
         });
+
+        movie.LocalAlternateVersions = new[] { MvcPath };
+
+        return movie;
+    }
+
+    /// <summary>
+    /// Builds an ordinary movie, alone over its own file: the item a library is mostly made of, with
+    /// no 3D signal anywhere on it and no version of anything beside it.
+    /// </summary>
+    /// <param name="id">The item's id.</param>
+    /// <param name="path">The item's own file.</param>
+    /// <returns>The scripted item, reporting one source: its own file.</returns>
+    public static ScriptedVideo CreateOrdinaryMovie(Guid? id = null, string path = PlainPath)
+    {
+        var itemId = id ?? MovieId;
+
+        return CreateMovie(new[] { CreateSource(itemId, "1080p", path) }, path, itemId);
+    }
+
+    /// <summary>
+    /// Builds a movie that says MVC in a tag and nowhere else - no stereo format on the item and no
+    /// MVC in its name or path, which is what an NFO tag or a hand edit in the dashboard leaves.
+    /// </summary>
+    /// <param name="id">The item's id.</param>
+    /// <param name="tag">The tag the item carries.</param>
+    /// <returns>The scripted item.</returns>
+    /// <remarks>
+    /// Its file is named like the ordinary movie's, so nothing but the tag tells this item from any
+    /// other: exactly the case the supplementary tag query exists for, and the one a 3D query cannot
+    /// see. The tag still has to mean MVC to the detector, which is the difference between
+    /// <c>3D MVC</c> and the plain <c>3D</c> a scraper leaves on an ordinary movie.
+    /// </remarks>
+    public static ScriptedVideo CreateTaggedMvcMovie(Guid? id = null, string tag = "3D MVC")
+    {
+        var movie = CreateOrdinaryMovie(id);
+
+        movie.Tags = new[] { tag };
+
+        return movie;
+    }
 
     /// <summary>
     /// Builds one static media source as the item's own media-source API reports it.
@@ -880,10 +1036,15 @@ public static class ProfileVersionFixtures
     /// cast, deliberately nothing like the 1080p root's. A version has to be wearing these, and not
     /// the root's, for the details panel of a version to say anything.
     /// </param>
+    /// <param name="video3DFormat">
+    /// The stereo format the item declares for its own file. The server's own resolver reads it off the
+    /// file name when it files the item, so an MVC rip read back from a library carries it; a test that
+    /// wants the item known only by its name leaves it unset.
+    /// </param>
     /// <returns>The alternate-version item, filed where the movie is filed and claimed by it.</returns>
-    public static Video CreateMvcAlternateItem(bool scraped = true)
+    public static ScriptedVideo CreateMvcAlternateItem(bool scraped = true, Video3DFormat? video3DFormat = null)
     {
-        var item = new Video
+        var item = new ScriptedVideo
         {
             Id = MvcVersionItemId,
             Name = "Ready Player One (2018)",
@@ -894,7 +1055,9 @@ public static class ProfileVersionFixtures
             Container = "mkv",
             Size = FileSize,
             TotalBitrate = Bitrate,
-            VideoType = VideoType.VideoFile
+            VideoType = VideoType.VideoFile,
+            Video3DFormat = video3DFormat,
+            StaticSources = new[] { CreateSource(MvcVersionItemId, "3D mvc", MvcPath, video3DFormat) }
         };
 
         item.SetPrimaryVersionId(MovieId);

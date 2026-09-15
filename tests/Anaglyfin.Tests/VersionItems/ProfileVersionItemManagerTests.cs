@@ -135,9 +135,12 @@ public class ProfileVersionItemManagerTests
 
         Assert.Equal(1, result.Created);
 
-        // Both files were asked, and the versions came from the one that is 3D - filed under the item
-        // a client can open, because the MVC file behind them is not listable.
-        Assert.Equal(2, detector.Candidates.Count);
+        // The item was asked about cheaply first - and could not be refused, because it names a version
+        // its own fields do not speak for - and then both of its files were asked expensively.
+        Assert.Equal(3, detector.Candidates.Count);
+        Assert.Equal(
+            new string?[] { ProfileVersionFixtures.PlainPath, ProfileVersionFixtures.MvcPath },
+            detector.Candidates.Skip(1).Select(candidate => candidate.Path).Distinct().ToArray());
         Assert.Equal(VersionIdOf(movie.StaticSources[1], SideBySideFull), item.Id);
         Assert.Equal(movie.Id, ((Video)item).PrimaryVersionId);
         Assert.Equal(ProfileVersionFixtures.FolderId, item.ParentId);
@@ -339,7 +342,7 @@ public class ProfileVersionItemManagerTests
         };
 
         store.AddItem(orphan);
-        store.VersionRoots.Add(orphan);
+        store.ThreeDVersionRoots.Add(orphan);
 
         var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
             .ReconcileLibraryAsync(CancellationToken.None);

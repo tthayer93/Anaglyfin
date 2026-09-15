@@ -1,6 +1,8 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Anaglyfin.Detection;
+using Anaglyfin.MediaSources;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Hosting;
@@ -22,8 +24,22 @@ namespace Anaglyfin.VersionItems;
 /// <b>What it listens to.</b> The library's three item events (added, updated, removed - the whole
 /// of "something about a file or its metadata changed") and a full pass on start-up, which is what
 /// covers an item that changed while the server was not running. A settings save arrives through the
-/// same queue (<c>Plugin.SaveConfiguration</c> asks for the full pass).
+/// same queue (<c>Plugin.SaveConfiguration</c> asks for the full pass). Playback is not among them:
+/// the server reports watched state, resume position and played-state on its own user-data event,
+/// which this service never subscribes to, and an item written back for no reason at all
+/// (<see cref="ItemUpdateType.None"/>) says less than the events below do.
 /// </para>
+/// <para>
+/// <b>What it refuses.</b> An item event is a request about one item, and the cheap half of the
+/// eligibility question (<see cref="MvcEligibilityPrefilter.IsCheapCandidate"/>) answers whether that
+/// item could carry a version at all before anything is queued: a track, a folder, one of Anaglyfin's
+/// own marker items, and the ordinary movie whose name, tags and declared format say nothing about 3D
+/// are refused on the spot. The refusal is the whole point of listening to a library at all - a
+/// refresh announces every item it touched, most of them several times, and a queue that kept all of
+/// them would be reconciling a ten-thousand-item library one movie at a time to change nothing in any
+/// of them.
+/// </para>
+
 /// <para>
 /// <b>Why it debounces.</b> A folder refresh is not one change; it is an item, then its images, then
 /// its metadata, then its parent, each an event. Reconciling after each one would run the same diff
@@ -48,6 +64,8 @@ public sealed class ProfileVersionItemService : IHostedService, IDisposable
 
     private readonly ILibraryEventSource _libraryEvents;
 
+    private readonly IMvcSourceDetector _detector;
+
     private readonly IProfileVersionReconciler _reconciler;
 
     private readonly ProfileVersionReconcileQueue _queue;
@@ -64,20 +82,24 @@ public sealed class ProfileVersionItemService : IHostedService, IDisposable
 
     private bool _listening;
 
+    private int _ignoredEvents;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="ProfileVersionItemService"/> class.
     /// </summary>
     /// <param name="libraryEvents">The library events to listen to.</param>
+    /// <param name="detector">The rules that decide whether an item could carry versions at all.</param>
     /// <param name="reconciler">The work to run.</param>
     /// <param name="queue">The requests, already made and not yet acted on.</param>
     /// <param name="logger">Logger for the passes and their failures.</param>
     /// <exception cref="ArgumentNullException">Any argument is <c>null</c>.</exception>
     public ProfileVersionItemService(
         ILibraryEventSource libraryEvents,
+        IMvcSourceDetector detector,
         IProfileVersionReconciler reconciler,
         ProfileVersionReconcileQueue queue,
         ILogger<ProfileVersionItemService> logger)
-        : this(libraryEvents, reconciler, queue, logger, DefaultDebounceWindow)
+        : this(libraryEvents, detector, reconciler, queue, logger, DefaultDebounceWindow)
     {
     }
 
@@ -86,6 +108,7 @@ public sealed class ProfileVersionItemService : IHostedService, IDisposable
     /// debounce window.
     /// </summary>
     /// <param name="libraryEvents">The library events to listen to.</param>
+    /// <param name="detector">The rules that decide whether an item could carry versions at all.</param>
     /// <param name="reconciler">The work to run.</param>
     /// <param name="queue">The requests, already made and not yet acted on.</param>
     /// <param name="logger">Logger for the passes and their failures.</param>
@@ -95,12 +118,14 @@ public sealed class ProfileVersionItemService : IHostedService, IDisposable
     /// </exception>
     public ProfileVersionItemService(
         ILibraryEventSource libraryEvents,
+        IMvcSourceDetector detector,
         IProfileVersionReconciler reconciler,
         ProfileVersionReconcileQueue queue,
         ILogger<ProfileVersionItemService> logger,
         TimeSpan debounceWindow)
     {
         _libraryEvents = libraryEvents ?? throw new ArgumentNullException(nameof(libraryEvents));
+        _detector = detector ?? throw new ArgumentNullException(nameof(detector));
         _reconciler = reconciler ?? throw new ArgumentNullException(nameof(reconciler));
         _queue = queue ?? throw new ArgumentNullException(nameof(queue));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -210,26 +235,65 @@ public sealed class ProfileVersionItemService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// The library noticed an item. Whether it is one that could carry versions is not decided here.
+    /// The library noticed an item, and it is only worth asking about if it could carry a version.
     /// </summary>
     /// <param name="sender">The event source.</param>
     /// <param name="args">The item that changed.</param>
     /// <remarks>
-    /// Cheap by contract: runs on the scanner's thread for every item of every refresh, so it looks at
-    /// nothing but the item's kind and identity and hands the question on. Folders, audio and people
-    /// are filtered because they can never be a video with a 3D question; everything else is asked
-    /// about, including the items whose versions belong to another item - that walk is the
-    /// reconciler's job.
+    /// <para>
+    /// Cheap by contract: runs on the scanner's thread for every item of every refresh, so it reads
+    /// nothing the item does not already carry and writes nothing anywhere. What it decides is the
+    /// cheap half of the eligibility question - the same half a full pass asks, from the same
+    /// detector, so an item cannot be refused by one and reconciled by the other - and everything it
+    /// cannot decide cheaply is asked about: an item that names other versions of itself may hold its
+    /// MVC file in one of them, and that is the case the whole feature exists for.
+    /// </para>
+    /// <para>
+    /// <b>What arrives here at all.</b> Only the three item events this service subscribes to, which
+    /// is why no playback state is ever reconciled: watched flags, resume positions and played-state
+    /// travel on the server's user-data event, and a write-back that carries
+    /// <see cref="ItemUpdateType.None"/> carries no answer about an item's metadata either - the two
+    /// shapes that could otherwise turn every pause in the house into a database pass.
+    /// </para>
+    /// <para>
+    /// What it is asked, if it is asked at all, is one item's id: the walk from an item to the item
+    /// that owns its versions is the reconciler's job, and a burst is coalesced and debounced there.
+    /// </para>
     /// </remarks>
     public void OnItemChanged(object? sender, ItemChangeEventArgs? args)
     {
-        if (args?.Item is null or not Video)
+        // An addition carries no update reason at all (the server leaves the flag unset), so only the
+        // bare "nothing changed" answer is refused: the shapes that cannot put an MVC file anywhere -
+        // import, image, scrape, hand edit - are the ones this listener was built for, and an addition
+        // is the loudest of them.
+        if (args is { UpdateReason: ItemUpdateType.None })
         {
+            Ignored();
             return;
         }
 
-        _queue.RequestItem(args.Item.Id);
+        if (args?.Item is not Video video)
+        {
+            // Nothing that is not a video has a 3D question, and an event with no item in it is not a
+            // report of anything.
+            Ignored();
+            return;
+        }
+
+        if (!MvcEligibilityPrefilter.IsCheapCandidate(video, _detector))
+        {
+            Ignored();
+            return;
+        }
+
+        _queue.RequestItem(video.Id);
     }
+
+    /// <summary>
+    /// Counts an event that will not be reconciled, so that a burst that changed nothing is at least
+    /// visible once per burst instead of once per item.
+    /// </summary>
+    private void Ignored() => Interlocked.Increment(ref _ignoredEvents);
 
     /// <summary>
     /// The library removed an item.
@@ -295,6 +359,18 @@ public sealed class ProfileVersionItemService : IHostedService, IDisposable
     /// </summary>
     private async Task RunQueuedWorkAsync(CancellationToken cancellationToken)
     {
+        // One line per burst, whatever the library raised: the count is what a listener on a large
+        // library has to say about itself, and saying it per item would be the noise this listener
+        // exists to avoid. No item is named - the number is the whole story, and it is the number that
+        // tells a reader whether the prefilter is doing its job.
+        var ignored = Interlocked.Exchange(ref _ignoredEvents, 0);
+        if (ignored > 0)
+        {
+            _logger.LogDebug(
+                "Anaglyfin ignored {Count} library item events that could not carry a version item.",
+                ignored);
+        }
+
         if (_queue.TryTakeFullPass())
         {
             await _reconciler.ReconcileLibraryAsync(cancellationToken).ConfigureAwait(false);

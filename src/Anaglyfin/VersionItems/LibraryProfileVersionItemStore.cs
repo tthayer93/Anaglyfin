@@ -75,27 +75,69 @@ public sealed class LibraryProfileVersionItemStore : IProfileVersionItemStore
         => itemId == Guid.Empty ? null : _libraryManager.GetItemById(itemId);
 
     /// <inheritdoc />
-    public IReadOnlyList<Video> GetVersionRootCandidates()
+    public IReadOnlyList<Video> Get3DVersionRootCandidates()
     {
-        // One query for one pass. What makes this list the right list is the general-query rule the
-        // server applies to it: an item that names a primary version is not in a general query at
-        // all, which is both why a profile version never shows up in browse or search and why a pass
-        // over this list never mistakes one of Anaglyfin's own items for a library movie. SourceTypes
-        // states the intent the server's own query builder does not implement (it ignores that field),
-        // so the eligibility scan remains the real gate on what a pass attempts; it is declared here
-        // because a background pass has no business editing channel or remote content, and a server
-        // that honours the field will find Anaglyfin already asking correctly.
+        // One query for one pass, and the narrowest one the server answers that covers this question:
+        // Is3D names the items carrying a stereo format, and it names them the way this feature needs
+        // - the server's own filter promotes an item that groups or links such a file, so the plain
+        // primary of a stack whose MVC rip lives beside it comes back in place of the version no
+        // general query would list. What it cannot see is an item that says MVC in a tag and carries
+        // no format at all, which is the second query's job.
+        //
+        // It is a superset on purpose. The filter asks whether a stereo format is recorded, not
+        // whether it is MVC, so a shelf of half-SBS rips does come back; MvcEligibilityPrefilter is
+        // the half that reads the value, and it reads it off the item rather than off its sources.
+        //
+        // What is still true of every answer: an item naming a primary version is not in a general
+        // query at all, which is both why a profile version never shows up in browse or search and why
+        // a pass over this list never mistakes one of Anaglyfin's own items for a library movie.
+        // SourceTypes states the intent the server's own query builder does not implement (it ignores
+        // that field), so the eligibility scan remains the real gate on what a pass attempts; it is
+        // declared here because a background pass has no business editing channel or remote content,
+        // and a server that honours the field will find Anaglyfin already asking correctly.
         var query = new InternalItemsQuery
         {
             MediaTypes = new[] { MediaType.Video },
             SourceTypes = new[] { SourceType.Library },
             Recursive = true,
             IsVirtualItem = false,
-            IsPlaceHolder = false
+            IsPlaceHolder = false,
+            Is3D = true
         };
 
         return _libraryManager.GetItemList(query).OfType<Video>().ToList();
     }
+
+    /// <inheritdoc />
+    public IReadOnlyList<Video> GetTaggedVersionRootCandidates(IReadOnlyList<string> tagNames)
+    {
+        ArgumentNullException.ThrowIfNull(tagNames);
+
+        // Nothing to ask for is nothing to run: a query with an empty tag list is not a tag query, it
+        // is the general one, and the general one is exactly what these two queries exist to avoid.
+        if (tagNames.Count == 0)
+        {
+            return Array.Empty<Video>();
+        }
+
+        // The same narrow ask, answered by tag instead of by format. Tags are matched whole and by
+        // name, so the caller hands over the spellings the detector reads and this does not invent any
+        // of its own; there is no name search here because a search term is not a bounded query, and
+        // an item known only by the word MVC inside its name is still found by every path that asks
+        // the item itself - playback, and its own library event.
+        var query = new InternalItemsQuery
+        {
+            MediaTypes = new[] { MediaType.Video },
+            SourceTypes = new[] { SourceType.Library },
+            Recursive = true,
+            IsVirtualItem = false,
+            IsPlaceHolder = false,
+            Tags = [.. tagNames]
+        };
+
+        return _libraryManager.GetItemList(query).OfType<Video>().ToList();
+    }
+
 
     /// <inheritdoc />
     public IReadOnlyList<Video> GetLinkedAlternateVersions(Video primary)

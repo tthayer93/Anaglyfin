@@ -60,6 +60,31 @@ internal sealed class MvcDetectionRules
     };
 
     /// <summary>
+    /// The tag strings a database query can ask for by name, one per spelling a tag could reach
+    /// this vocabulary in.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="MvcMarkers"/> is not enough for a query. Reading a tag is token-wise - the compound
+    /// spellings below are MVC because their separators split them into <c>3d</c> plus <c>mvc</c> -
+    /// while a tag query compares a whole cleaned value, so every spelling has to be named for the
+    /// query to find it. The plain flags come first because a tag written as a single flag is what a
+    /// scraper leaves behind; the separated spellings are what a person types into the tag box.
+    /// </para>
+    /// <para>
+    /// Deliberately finite: the point of the list is a bounded query, not a general name search. A
+    /// spelling absent from it is still detected wherever the item itself is asked about - the query
+    /// only decides which items a background pass walks at all.
+    /// </para>
+    /// </remarks>
+    internal static readonly string[] MvcTagQueryTerms =
+    [
+        "mvc", "3dmvc", "mvc3d",
+        "3d mvc", "3d-mvc", "3d_mvc",
+        "mvc 3d", "mvc-3d", "mvc_3d"
+    ];
+
+    /// <summary>
     /// Flags that state a stereoscopic format the MVP does not convert. They veto
     /// eligibility unless the item also carries an MVC marker.
     /// </summary>
