@@ -494,28 +494,29 @@ public class WrapperArgumentRewriterTests
             result.Arguments);
     }
 
-    // ----- hardware encode, software decode -----------------------------------------
+    // ----- hardware acceleration passes through --------------------------------------
 
-    // The server's hardware-acceleration settings reach a command line as two decisions at once: the
-    // encoder it picked, written together with the device that encoder runs on, and the accelerator it
-    // attaches to an input, written in that input's scope. A marker command can arrive carrying both,
-    // and one of them is wrong here: no hardware accelerator decodes the MVC stream this pipeline
-    // reads, so the decode half comes off and the encode half stays exactly as the server wrote it.
-    // The commands below are written in the shape Jellyfin's EncodingHelper writes them in, one token
-    // per argument, with the device initialisation and the upload filters that belong to the encode
-    // left in place.
+    // A server with hardware acceleration on writes two decisions into one command line: the device
+    // and encoder the picture is encoded on, and the accelerator it attaches to an input. Neither one
+    // is Anaglyfin's to change. The FFmpeg-mvc build that opens a marker input decides the decode per
+    // decoder context - an MVC or multiview stream is decoded in software by that build, an ordinary
+    // stream keeps the hardware decode the server asked for - and the hardware encode works
+    // independently of that answer. A rewrite therefore lands its own fragments around the server's
+    // arguments and deletes none of them, in the marker input's scope or anywhere else.
     //
-    // The decode of a marker input is software whatever the profile converts afterwards, so the 2D
-    // base profile - which writes nothing of its own - is covered by the same rule as the
-    // converting ones, and a command that carries no hardware argument at all is written exactly as
-    // it was before this rule existed.
+    // The commands below are written in the shape Jellyfin's EncodingHelper builds them in, one token
+    // per argument: the device initialisation and the upload filters belonging to the encode, the
+    // accelerator selection belonging to the decode, and the marker input standing among them. What
+    // every expectation below has to show is that the only token appearing on the input side of that
+    // "-i" which the server did not write is the composed view request.
 
     [Fact]
-    public void TheQuickSyncDecodeFlagsComeOffAndTheQuickSyncEncodeStays()
+    public void TheQuickSyncDecodeArgumentsSurviveTheRewriteWhereTheServerWroteThem()
     {
-        // The command a Quick Sync server builds for a version once the version is allowed to be
-        // hardware encoded: the qsv device opened for the encoder and the filter graph, the qsv
-        // accelerator asked of the input, and the upload of the decoded frame to that device.
+        // The command a Quick Sync server builds for a version it is encoding on the GPU: the qsv
+        // device opened for the encoder and the filter graph, the qsv accelerator attached to the
+        // input, and the upload of the decoded frame to that device. Every one of those reaches
+        // FFmpeg; the profile adds its composed view request and nothing else.
         var arguments = new List<string>
         {
             "-analyzeduration", "3000000",
@@ -540,15 +541,19 @@ public class WrapperArgumentRewriterTests
                 "-analyzeduration", "3000000",
                 "-probesize", "10000000",
 
-                // The device the encoder and the filter graph run on is not the decoder's device
-                // selection, and a hardware encode of a software-decoded frame needs it: it stays,
-                // and so does the chain that carries the frame to the encoder.
+                // Device initialisation, filter device, and the accelerator selection of this input:
+                // three arguments the server chose, none of them this wrapper's to second-guess.
+                // FFmpeg-mvc opens the multiview stream of this particular input with its own
+                // software decoder whatever "-hwaccel" says, and an ordinary stream in the same
+                // command keeps the hardware decode the server asked for.
                 "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
                 "-filter_hw_device", "qsv",
+                "-hwaccel", "qsv",
+                "-hwaccel_output_format", "qsv",
 
-                // The composed request takes the place the decode flags left, in front of the
-                // option that opens this file: this input is decoded by FFmpeg-mvc's software MVC
-                // decoder, and it is that decoder that composes the eyes.
+                // The composed request is the one token added here, and it still lands immediately
+                // in front of the option that opens this file - after everything the server wrote in
+                // that scope, not in place of it.
                 "-view_ids", "-1",
                 "-i", SourcePath,
                 "-map", "0:0", "-map", "0:1",
@@ -558,17 +563,17 @@ public class WrapperArgumentRewriterTests
             },
             result.Arguments);
 
-        // No software fallback was written over the server's choice either: the encoder named here
-        // is the server's, and Anaglyfin's only input on it is that it is not asked to decode.
+        // No software fallback written over the server's encoder either: Anaglyfin names no codec,
+        // so the hardware encode the server picked is what the command still carries.
         Assert.DoesNotContain("libx264", string.Join(' ', result.Arguments), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TheCudaDecodeFlagsComeOffAndTheCudaDeviceAndEncoderStay()
+    public void TheCudaDecodeArgumentsAndTheCudaEncodeBothSurviveTheRewrite()
     {
-        // NVENC with CUDA decode is where the two decisions sit closest together: Jellyfin writes
-        // the accelerator, its output format, its flags and a thread cap in one breath, and only
-        // the accelerator-side options of those are the decode's.
+        // NVENC with CUDA decode is where the server's two decisions sit closest together: it writes
+        // the accelerator, its output format, its flags and a thread cap in one breath, and the
+        // profile's chain has to land in front of the upload chain without disturbing any of them.
         var arguments = new List<string>
         {
             "-init_hw_device", "cuda=cuda:0",
@@ -591,9 +596,12 @@ public class WrapperArgumentRewriterTests
             {
                 "-init_hw_device", "cuda=cuda:0",
                 "-filter_hw_device", "cuda",
+                "-hwaccel", "cuda",
+                "-hwaccel_output_format", "cuda",
+                "-hwaccel_flags", "+unsafe_output",
 
-                // The server's thread cap came in beside the decode flags and is not one of them:
-                // it is an input choice the server makes for its own reasons and stays.
+                // The thread cap came in beside the accelerator and is an input choice of the
+                // server's; the accelerator itself is one too.
                 "-threads", "1",
                 "-view_ids", "-1",
                 "-i", SourcePath,
@@ -601,8 +609,8 @@ public class WrapperArgumentRewriterTests
                 "-c:v", "h264_nvenc", "-preset", "p4",
 
                 // The profile's conversion in front, the server's upload chain behind it, in one
-                // chain: the frame the encoder is fed is a software frame with the profile applied,
-                // and hwupload is what moves it into the CUDA device afterwards.
+                // chain: exactly what the server's hardware encode is fed, and exactly the chain it
+                // wrote for itself.
                 "-vf", "stereo3d=sbsl:arcd,format=yuv420p,scale=1920:1080:flags=area,format=nv12,hwupload=extra_hw_frames=64",
                 "-f", "hls", "playlist.m3u8"
             },
@@ -610,11 +618,14 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
-    public void TheVaapiDecodeFlagsComeOffAndTheVaapiDeviceTheEncoderNeedsStays()
+    public void TheVaapiDeviceAndItsDecodeArgumentsAllSurviveTheRewrite()
     {
-        // VA-API spells its device selection twice over in one command: "-vaapi_device" is the
-        // legacy form, and it is also what a VA-API encode uses when there is no decode at all. A
-        // rewrite that removed it would leave an encoder with nowhere to encode.
+        // VA-API spells its device selection twice over in one command, and Jellyfin writes both:
+        // "-vaapi_device" as the legacy form of the encode's device, and "-hwaccel" for the decode.
+        // cp17 removed the second family and kept the first, on the reasoning that only the encode
+        // matters here; the corrected rule keeps the whole command, because which of these two
+        // FFmpeg-mvc honours is a question about the decoder it is opening, not about the profile in
+        // the path.
         var arguments = new List<string>
         {
             "-vaapi_device", "/dev/dri/renderD128",
@@ -637,6 +648,8 @@ public class WrapperArgumentRewriterTests
                 "-vaapi_device", "/dev/dri/renderD128",
                 "-init_hw_device", "vaapi=vaapi:/dev/dri/renderD128",
                 "-filter_hw_device", "vaapi",
+                "-hwaccel", "vaapi",
+                "-hwaccel_output_format", "vaapi",
                 "-view_ids", "-1",
                 "-i", SourcePath,
                 "-map", "0:0", "-map", "0:1",
@@ -656,8 +669,17 @@ public class WrapperArgumentRewriterTests
     [InlineData("-hwaccel_device=0", null)]
     [InlineData("-hwaccel_args", "-extra_hw_frames 64")]
     [InlineData("-hwaccel_flags", "+allow_profile_mismatch")]
-    public void EverySpellingOfTheDecodeSelectionComesOffAndNothingElseDoes(string option, string? value)
+    [InlineData("-vaapi_device", "/dev/dri/renderD128")]
+    [InlineData("-init_hw_device", "vaapi=vaapi:/dev/dri/renderD128")]
+    [InlineData("-filter_hw_device", "vaapi")]
+    public void EverySpellingOfAHardwareAcceleratorOptionSurvivesTheRewriteExactly(string option, string? value)
     {
+        // One option at a time, in every spelling a server or an administrator can write it in -
+        // bare, with its value glued to it, with a stream specifier behind its name - because the
+        // rule is that none of them is removed, and a rule stated as a name list is exactly the rule
+        // that comes back when somebody reintroduces a name list. The whole expected vector is
+        // written out each time: the server's argument, its value, the composed request, the
+        // rewritten input, and nothing else on the input side of the "-i".
         var arguments = new List<string> { option };
 
         if (value is not null)
@@ -674,63 +696,37 @@ public class WrapperArgumentRewriterTests
         var result = _rewriter.Rewrite(arguments);
 
         Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
-        Assert.Equal(
-            new[]
-            {
-                "-view_ids", "-1",
-                "-i", SourcePath,
-                "-map", "0:v", "playlist.m3u8"
-            },
-            result.Arguments);
 
-        // The value of a two-token option went with the option - a leftover "qsv" would be an
-        // argument FFmpeg reads as a file to open - and the input the whole rewrite addresses is
-        // still the input it was.
-        Assert.Equal(SourcePath, InputOf(result.Arguments));
+        // The received option and its value, then the composed request, then the rewritten input:
+        // an option glued to its value is one token and takes the second slot for itself.
+        var expected = value is null
+            ? new[] { option, "-view_ids", "-1", "-i", SourcePath, "-map", "0:v", "playlist.m3u8" }
+            : new[] { option, value, "-view_ids", "-1", "-i", SourcePath, "-map", "0:v", "playlist.m3u8" };
+
+        Assert.Equal(expected, result.Arguments);
+
+        // The input the whole rewrite addresses is still the input it was, and still the marker's
+        // real file rather than the marker.
         Assert.Single(result.Arguments, token => token == WrapperArgumentRewriter.InputFileArgument);
+        Assert.Equal(SourcePath, InputOf(result.Arguments));
     }
 
     [Fact]
-    public void ADDecodeOptionThatCarriedNoValueLeavesTheInputOpeningAlone()
+    public void TheTwoDimensionalBaseProfileWritesNothingIntoAHardwareAcceleratedCommand()
     {
-        // A malformed command is still not a reason to remove the marker's "-i": everything in the
-        // rewrite addresses the input that option opens, and the value it names is the source.
+        // The profile that converts nothing writes no filter and no view request, and it is also the
+        // clearest case for the pass-through: on this command the rewrite is the marker replacement
+        // and nothing else, so every accelerator argument the server wrote - for the decode or for
+        // the encode - is standing where it stood when it arrived.
         var arguments = new List<string>
         {
-            "-hwaccel",
-            "-i", Marker(ProfileIds.SideBySideFull),
-            "-map", "0:v", "playlist.m3u8"
-        };
-
-        var result = _rewriter.Rewrite(arguments);
-
-        Assert.Equal(
-            new[]
-            {
-                "-view_ids", "-1",
-                "-i", SourcePath,
-                "-map", "0:v", "playlist.m3u8"
-            },
-            result.Arguments);
-    }
-
-    [Fact]
-    public void TheTwoDimensionalBaseProfileAlsoTakesTheHardwareDecodeOffTheInput()
-    {
-        // The base view the 2D profile plays is the software MVC decoder's own default output, so a
-        // profile that converts nothing is still a profile that must not be hardware decoded. It is
-        // also the one profile that writes no composed view request: what comes off this command is
-        // the decode selection, and nothing goes on in its place.
-        var arguments = new List<string>
-        {
-            "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
-            "-filter_hw_device", "qsv",
-            "-hwaccel", "qsv",
-            "-hwaccel_output_format", "qsv",
+            "-vaapi_device", "/dev/dri/renderD128",
+            "-hwaccel", "vaapi",
+            "-hwaccel_output_format", "vaapi",
             "-i", Marker(ProfileIds.TwoDBase, videoStreamIndex: 0),
             "-map", "0:0", "-map", "0:1",
-            "-c:v", "h264_qsv",
-            "-vf", "format=nv12,hwupload=derive_device=qsv",
+            "-c:v", "h264_vaapi",
+            "-vf", "format=nv12,hwupload=extra_hw_frames=64",
             "playlist.m3u8"
         };
 
@@ -740,12 +736,13 @@ public class WrapperArgumentRewriterTests
         Assert.Equal(
             new[]
             {
-                "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
-                "-filter_hw_device", "qsv",
+                "-vaapi_device", "/dev/dri/renderD128",
+                "-hwaccel", "vaapi",
+                "-hwaccel_output_format", "vaapi",
                 "-i", SourcePath,
                 "-map", "0:0", "-map", "0:1",
-                "-c:v", "h264_qsv",
-                "-vf", "format=nv12,hwupload=derive_device=qsv",
+                "-c:v", "h264_vaapi",
+                "-vf", "format=nv12,hwupload=extra_hw_frames=64",
                 "playlist.m3u8"
             },
             result.Arguments);
@@ -757,7 +754,8 @@ public class WrapperArgumentRewriterTests
     {
         // The merge rewrites which label the server's chains read; it does not rewrite the chains.
         // The upload that feeds the hardware encoder is in the middle of one of them here, and the
-        // frame it uploads is the profile's converted picture by the time it runs.
+        // frame it uploads is the profile's converted picture by the time it runs. The input's
+        // accelerator option is not part of that graph and is not part of the merge either.
         var arguments = new List<string>
         {
             "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
@@ -775,6 +773,7 @@ public class WrapperArgumentRewriterTests
             {
                 "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
                 "-filter_hw_device", "qsv",
+                "-hwaccel", "qsv",
                 "-view_ids", "-1",
                 "-i", SourcePath,
                 "-filter_complex",
@@ -786,33 +785,13 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
-    public void ACommandWithNoHardwareArgumentsIsRewrittenExactlyAsItWasBefore()
-    {
-        // The hardware-disabled server is the common installation, and its commands do not change:
-        // nothing here removes, adds or moves an argument when there is no decode selection to
-        // remove. This is the same expectation the plain full-SBS rewrite carries.
-        var arguments = JellyfinLikeCommand(Marker(ProfileIds.SideBySideFull));
-
-        var result = _rewriter.Rewrite(arguments);
-
-        Assert.Equal(
-            new[]
-            {
-                "-hide_banner", "-loglevel", "warning",
-                "-view_ids", "-1",
-                "-i", SourcePath,
-                "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
-                "-f", "hls", "-hls_time", "6", "playlist.m3u8"
-            },
-            result.Arguments);
-    }
-
-    [Fact]
     public void AHardwareAcceleratedCommandWithNoMarkerKeepsItsHardwareDecode()
     {
         // Ordinary library playback is the server's own business, decode included: no marker, no
         // rewrite, and the accelerator selection of an item Anaglyfin has nothing to say about is
-        // handed to FFmpeg exactly as the server wrote it.
+        // handed to FFmpeg exactly as the server wrote it. This is the half of the rule the server
+        // notices most: an ordinary 2D stream that stops being hardware decoded because a plugin
+        // touched the command line is a regression on every item in the library.
         var arguments = new List<string>
         {
             "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi",
@@ -828,9 +807,9 @@ public class WrapperArgumentRewriterTests
     [Fact]
     public void AHwAcceleratedCommandThatCopiesItsVideoIsStillRefused()
     {
-        // Removing the decode selection does not turn a copy into an encode: the server that asked
-        // for a copy asked for no converted picture on this output, and that refusal is taken
-        // before anything is spliced, hardware arguments present or not.
+        // Passing the hardware arguments through does not turn a copy into an encode: the server
+        // that asked for a copy asked for no converted picture on this output, and that refusal is
+        // taken before anything is spliced, accelerator arguments present or not.
         var arguments = new List<string>
         {
             "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",

@@ -35,11 +35,9 @@ namespace Anaglyfin.FFmpegWrapper;
 /// next, so output options are only unambiguous after the last input. Everything this
 /// rewriter inserts for the output therefore lands immediately after the last <c>-i</c>
 /// value, and everything it examines or removes for a conflict lives in that same output
-/// segment: an option written before an input belongs to that input and is left alone - with
-/// the one exception of the hardware-decode options, which belong to the marker's input and
-/// are the one thing in that scope this rewriter takes out. On the other side of an input it
-/// writes exactly one thing, the composed view request - a decoder option is read when the
-/// input is opened, so
+/// segment: an option written before an input belongs to that input and is left alone. The
+/// one thing it writes on the other side of an input is the composed view request - a
+/// decoder option is read when the input is opened, so
 /// <see cref="ComposedViewInputArgument"/> goes immediately before the <c>-i</c> of the
 /// marker's own input and nowhere else.
 /// </para>
@@ -77,18 +75,19 @@ namespace Anaglyfin.FFmpegWrapper;
 /// beside the option would be a command FFmpeg rejects.
 /// </para>
 /// <para>
-/// <b>Hardware encode, software decode.</b> The server's hardware-acceleration settings arrive on
-/// the command line as two decisions at once: the encoder it picked, and the accelerator it
-/// attaches to the input - <c>-hwaccel</c> and its relatives, offered per reported codec. This
-/// rewriter separates them: the accelerator-selection options of the marker's input -
-/// <c>-hwaccel</c>, <c>-hwaccel_output_format</c>, <c>-hwaccel_device</c>, <c>-hwaccel_args</c>,
-/// <c>-hwaccel_flags</c> - come off, because no hardware accelerator decodes the MVC stream this
-/// pipeline reads, while the device initialisation, the filter device, the encoder the server chose
-/// and the filters that move a frame to that encoder all stay exactly as the server wrote them. A
-/// software-decoded picture uploaded to <c>h264_qsv</c>, <c>h264_nvenc</c> or <c>h264_vaapi</c> is
-/// the command this produces; <c>libx264</c> is not forced anywhere, because forcing an encoder
-/// would be the same mistake in the other direction. A command with no hardware arguments at all is
-/// unchanged by this rule, and a command whose input is not a marker is never looked at by it.
+/// <b>Hardware acceleration is the server's, in both scopes.</b> A server with hardware acceleration
+/// on writes two decisions onto one command line: the device and encoder it picked, and the
+/// accelerator it attaches to an input - <c>-hwaccel</c>, <c>-hwaccel_output_format</c>,
+/// <c>-hwaccel_device</c>, <c>-hwaccel_args</c>, <c>-hwaccel_flags</c>, <c>-vaapi_device</c>,
+/// <c>-init_hw_device</c>, <c>-filter_hw_device</c>. This rewriter touches none of them, in the
+/// marker's input scope or anywhere else, and it substitutes no encoder and no decoder of its own.
+/// The answer is not visible from here: FFmpeg-mvc - the only build that can open a marker input -
+/// decides the decode per decoder context, decoding an MVC or multiview stream in software while
+/// keeping the hardware decode of an ordinary one. That is a judgement about the streams inside the
+/// file, made where the decoder is chosen; stripping an input's accelerator options would preempt it
+/// from a marker URL, and would take the hardware decode away from every ordinary stream sharing the
+/// server's setting. What reaches FFmpeg in front of the marker's <c>-i</c> is therefore what the
+/// server wrote there, plus exactly one inserted argument: the composed view request.
 /// </para>
 /// <para>
 /// <b>Which video maps are the profile's competition.</b> A profile that maps nothing of its
@@ -218,54 +217,6 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// into one frame", shared with the command builder.
     /// </summary>
     public const string ComposedViewInputValue = FfmpegProfileArgumentBuilder.ComposedViewInputValue;
-
-    /// <summary>
-    /// The FFmpeg option that attaches a hardware decoder to the input it is written on.
-    /// </summary>
-    public const string HardwareAccelerationArgument = "-hwaccel";
-
-    /// <summary>
-    /// The FFmpeg option that asks a hardware decoder to hand on device surfaces.
-    /// </summary>
-    public const string HardwareAccelerationOutputFormatArgument = "-hwaccel_output_format";
-
-    /// <summary>
-    /// The FFmpeg option that names the device a hardware accelerator opens.
-    /// </summary>
-    public const string HardwareAccelerationDeviceArgument = "-hwaccel_device";
-
-    /// <summary>
-    /// The FFmpeg option that passes extra arguments to a hardware accelerator.
-    /// </summary>
-    public const string HardwareAccelerationArgsArgument = "-hwaccel_args";
-
-    /// <summary>
-    /// The FFmpeg option that sets hardware-accelerator flags on an input.
-    /// </summary>
-    public const string HardwareAccelerationFlagsArgument = "-hwaccel_flags";
-
-    /// <summary>
-    /// The option names that attach a hardware <em>decoder</em> to the input they are written on.
-    /// </summary>
-    /// <remarks>
-    /// These are the whole of what a rewrite takes out of a marker input's scope, and the list is
-    /// deliberately closed rather than a prefix match: <c>-init_hw_device</c> and
-    /// <c>-filter_hw_device</c> start the same way and mean something else entirely (they create the
-    /// device an <em>encoder</em> or a filter runs on, which is what a hardware-encoded,
-    /// software-decoded command needs and keeps), and a bare <c>-vaapi_device</c> may be either the
-    /// legacy form of that or a VAAPI encode's device selection. Each name here is a decoder-side
-    /// option in FFmpeg's own option table, and each one written in the marker input's scope is that
-    /// input's decode decision - which is what makes an option in this scope, and only an option in
-    /// this scope, removable as somebody's answer to a question this pipeline has already answered.
-    /// </remarks>
-    private static readonly string[] HardwareDecodeOptionNames =
-    [
-        "hwaccel",
-        "hwaccel_output_format",
-        "hwaccel_device",
-        "hwaccel_args",
-        "hwaccel_flags"
-    ];
 
     /// <summary>
     /// The prefix a <c>-map</c> value carries when it numbers a stream of the first input -
@@ -722,17 +673,6 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
                 "The command's filter graph names a view of the video stream this profile composes at the input, and a decode configured through the composed view request refuses a view specifier, so this graph cannot be given the picture the profile asks for.");
         }
 
-        // Hardware decode comes off the input this profile converts, and it comes off whatever the
-        // profile is: the composed all-view picture and the base view the 2D profile plays are both
-        // produced by FFmpeg-mvc's own software decoder, and neither of them is produced by a
-        // hardware accelerator - so a marker input has to be opened without "-hwaccel", whether the
-        // profile goes on to convert the frames or hands them on as they are. Everything on the
-        // encode side of the command is left where the server put it: the device initialisation, the
-        // filter device, the encoder and its options, and the upload or mapping filters that carry a
-        // software frame to that encoder. RemoveHardwareDecodeArguments states the boundary and why
-        // it is drawn there.
-        RemoveHardwareDecodeArguments(arguments, markerIndex - 1, removals);
-
         // The composed view, asked of the input itself: a decoder option is read when its
         // input is opened, so it belongs immediately before the "-i" the marker arrived on -
         // never in the output segment, where it would be an option for the encoder and would
@@ -986,135 +926,6 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     }
 
     /// <summary>
-    /// Takes the hardware <em>decode</em> arguments off the input the marker arrived on.
-    /// </summary>
-    /// <param name="arguments">The received vector.</param>
-    /// <param name="inputOptionIndex">
-    /// The index of the <c>-i</c> token that carried the marker. Everything before it is the scope
-    /// this input is opened with, which is the only place an option of this input can stand, and
-    /// therefore the only place a decode decision about this input can have been written.
-    /// </param>
-    /// <param name="removals">The pending removals; this method adds the options it recognises.</param>
-    /// <remarks>
-    /// <para>
-    /// <b>Why the decode goes.</b> A server with hardware acceleration on attaches a hardware decoder
-    /// to any input whose codec its administrator put on the decoding list, and nothing about that
-    /// choice asks what this pipeline needs the decode to be. Whatever the accelerator produces, it is
-    /// not the picture a profile plays: the composed all-view frame the converting profiles ask for with
-    /// <c>-view_ids -1</c>, and the base view the 2D profile plays, are both output of FFmpeg-mvc's
-    /// own software MVC decoder. A hardware accelerator opened on a multiview H.264 stream returns
-    /// one eye, or the stream's views undecoded, and it returns them in VRAM where no profile filter
-    /// runs. So the decode of a marker input is software by construction, and a server that picked
-    /// otherwise is corrected rather than argued with.
-    /// </para>
-    /// <para>
-    /// <b>What stays, and why the line is drawn there.</b> Only the accelerator-selection options in
-    /// <see cref="HardwareDecodeOptionNames"/> are removed, and only in the marker input's scope:
-    /// <c>-init_hw_device</c> and <c>-filter_hw_device</c> survive because they create the device an
-    /// <em>encoder</em> and the filter graph run on, which is precisely what a hardware-encoded
-    /// command with a software decode needs; a VAAPI device selection survives because on a VAAPI
-    /// encode it is the same argument, doing the encode's job; the encoder, its codec options, and
-    /// the <c>hwupload</c>/<c>hwmap</c>/<c>format=nv12</c>/<c>vpp_qsv</c> filters the server wrote to
-    /// move a frame to that encoder survive because they are the server's answer to the encode
-    /// question, which the wrapper has never owned. Removing a hardware <em>encode</em> would also
-    /// be a decision this wrapper has no standing to make: the server picked that encoder from its
-    /// own settings, and product requirement 11 is that Anaglyfin encodes with what the server
-    /// offers.
-    /// </para>
-    /// <para>
-    /// <b>What is left of the command.</b> A software-decoded frame travelling into the server's own
-    /// upload filter into a hardware encoder - the shape Jellyfin itself builds for a software decode
-    /// with a hardware encode, which is the shape every Anaglyfin job was already in before the
-    /// server was allowed to consider these sources at all. The server's accompanying input choices
-    /// (<c>-threads</c>, <c>-noautorotate</c>, a forced input decoder) are not decode-selection
-    /// options and stay with the server, even where the server wrote them beside a decode flag.
-    /// </para>
-    /// <para>
-    /// Removals are recorded by index for <see cref="Rebuild"/> to apply, exactly as every other
-    /// removal here: the received vector is never mutated, and because everything removed here is in
-    /// front of the marker's <c>-i</c>, no index another decision in this method holds can shift.
-    /// </para>
-    /// </remarks>
-    private static void RemoveHardwareDecodeArguments(
-        IReadOnlyList<string> arguments,
-        int inputOptionIndex,
-        ISet<int> removals)
-    {
-        for (var index = 0; index < inputOptionIndex; index++)
-        {
-            var token = arguments[index];
-            if (!IsHardwareDecodeOption(token))
-            {
-                continue;
-            }
-
-            removals.Add(index);
-
-            // The value belongs to the option: <c>-hwaccel qsv</c> is one decision in two tokens,
-            // and leaving "qsv" behind would hand FFmpeg a stray argument to read as an input file.
-            // A value glued to its option ("<c>-hwaccel=qsv</c>") travels in the token already
-            // removed. And a value that never arrived - the option written last in the scope, with
-            // the file opening after it - is not a reason to eat the "-i": that token is the marker
-            // input and the whole rewrite addresses it.
-            if (!CarriesInlineValue(token) && index + 1 < inputOptionIndex)
-            {
-                removals.Add(index + 1);
-                index++;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Whether a token is one of the options that attach a hardware decoder to the input it is
-    /// written on, in any of the spellings FFmpeg routes it under: bare, with a stream specifier
-    /// behind its name, or with its value glued to it.
-    /// </summary>
-    /// <remarks>
-    /// An exact name match on purpose, never a prefix test: <c>-hwaccel_extra</c> would match a
-    /// prefix and is not an option this wrapper knows the meaning of, while
-    /// <c>-hwaccel_output_format:v</c> is the same decision as its unsuffixed spelling and has to be
-    /// caught by the same rule.
-    /// </remarks>
-    private static bool IsHardwareDecodeOption(string? token)
-    {
-        if (string.IsNullOrEmpty(token) || token[0] != '-')
-        {
-            return false;
-        }
-
-        var name = token[1..];
-
-        var valueSeparator = name.IndexOf('=');
-        if (valueSeparator >= 0)
-        {
-            name = name[..valueSeparator];
-        }
-
-        var specifierSeparator = name.IndexOf(':');
-        if (specifierSeparator >= 0)
-        {
-            name = name[..specifierSeparator];
-        }
-
-        foreach (var optionName in HardwareDecodeOptionNames)
-        {
-            if (string.Equals(name, optionName, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Whether an option token carries its value inside itself (<c>-option=value</c>) rather
-    /// than taking the next token as one.
-    /// </summary>
-    private static bool CarriesInlineValue(string token)
-        => token.IndexOf('=') >= 0;
-
-    /// <summary>
     /// Turns the subtitle ordinal of a marker into the burn-in the profile asks for.
     /// </summary>
     /// <remarks>
@@ -1235,10 +1046,12 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// sample aspect ratio, so the frames arriving at the server's filters are software frames
     /// of the geometry the version reports. A following <c>format=yuv420p</c> is then a no-op,
     /// and a following <c>format=nv12</c> - the QSV upload form - is the server doing what it
-    /// always does with a software frame on its way to an hardware encoder. No hardware <em>decode</em>
-    /// filter can be waiting behind the profile's position either: the codec this provider
-    /// reports is never one the server can request a hardware decoder for, so these sources are
-    /// software-decoded by construction and their chain starts in software too.
+    /// always does with a software frame on its way to an hardware encoder. And no hardware <em>decode</em>
+    /// filter can be waiting behind the profile's position either: whatever accelerator the server
+    /// attached to the input, the FFmpeg-mvc build opens the multiview stream it carries with its own
+    /// software decoder, so the chain starts on software frames either way. That fallback is made per
+    /// decoder context by the build that chooses the decoder, which is why the server's accelerator
+    /// options are left exactly where the server wrote them.
     /// </para>
     /// <para>
     /// <b>Subtitle burn-in.</b> A profile's burn-in is already the last stage of its own chain,

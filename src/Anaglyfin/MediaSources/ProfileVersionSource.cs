@@ -95,9 +95,10 @@ public static class ProfileVersionSource
     /// the declaration does <em>not</em> buy is the hardware <c>decode</c> of a version: the server
     /// offers that per reported codec, and the codec a version reports is <c>mvc</c> (see
     /// <see cref="ForceTranscodeVideoStreams"/>), which is in no server's default decoding-codec
-    /// list - and were it ever added there, the wrapper takes the decode flags back off the command
-    /// anyway, because an MVC composed decode is software-only by construction. See
-    /// <c>docs/architecture.md</c>, "Hardware encode, software decode".
+    /// list. An administrator who does add it there loses nothing: the wrapper passes the server's
+    /// accelerator arguments through untouched and FFmpeg-mvc opens the multiview stream with its own
+    /// software decoder, whatever the input was asked to decode with. See
+    /// <c>docs/architecture.md</c>, "Hardware acceleration passes through".
     /// </para>
     /// </remarks>
     public const VideoType VersionVideoType = VideoType.VideoFile;
