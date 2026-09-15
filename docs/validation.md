@@ -370,6 +370,7 @@ For each alternate source, check:
 | `Type` | `Default` |
 | `MediaStreams` | the original source's streams, with one exception: the video stream's `Codec` and its `Width`/`Height` |
 | `Video3DFormat` | `null` on every Anaglyfin source, whatever the item's own source declares |
+| `VideoType` | `VideoFile` on every Anaglyfin source, including the one the server builds from a materialised version item (see "What `VideoType: VideoFile` is for") |
 
 - [ ] The Anaglyfin source ids are lower-case `N`-format GUIDs, unique per profile and different from the item id.
       DynamicHLS parses `MediaSourceId` as a `Guid`, so a descriptive id fails playback before FFmpeg starts.
@@ -479,6 +480,69 @@ copy to build. The name is the lever, not a description: ffprobe reports an MVC 
 version's stream report is the item's own, field for field. The server then builds a real encode
 command, which is visible in the transcoding URL as a video codec that is not the source's own,
 and in the child FFmpeg command as `-codec:v <encoder>`.
+
+### What `VideoType: VideoFile` is for
+
+Every Anaglyfin source declares its media a video file. The claim is read in four places, and the
+one that has an encoder behind it is the server's gate: Jellyfin offers its hardware video encoders
+(`h264_qsv`, `hevc_nvenc`, `h264_vaapi` and their families) only to a job whose `VideoType` is
+`VideoFile`. On Jellyfin 12 that gate stands open to a version either way - the streaming path never
+writes the job's field, and the enum has no "unspecified" member, so a field nobody wrote answers its
+first value, which is `VideoFile`. What the checks below therefore record is the claim, not an
+encoder unlocked: the encoder is settled by the two bullets that name the command and the binary.
+
+- [ ] The dynamic Anaglyfin sources in the PlaybackInfo response carry `VideoType: "VideoFile"`.
+      Before the declaration they carried nothing at all: an Anaglyfin version was a source with no
+      video type on it, in a response where every other source names one.
+- [ ] The version item's own `MediaSources` entry on the parent's item DTO carries
+      `VideoType: "VideoFile"` as well, so the item lists as the file it converts and sorts with the
+      sources that name that type. A version item that drifted onto a disc value - a resolver that
+      read it from a name, a hand edit, an item merged in from elsewhere - is brought back by the next
+      version-item pass; no re-scan of the files is needed.
+- [ ] The declaration is not an encoder choice. Whatever the server picked - a hardware encoder, or
+      `libx264` on a server with hardware acceleration off - is what the command has to carry. An
+      encoder the plugin invented would be a bug, not a fix.
+- [ ] On a server with hardware encoding switched on, the child FFmpeg command for a version names a
+      hardware encoder rather than `libx264` (see V7.10). A version that still comes out `libx264` on
+      a Quick Sync or NVENC host has an FFmpeg with no such encoder compiled into it - the gate asks
+      `SupportsEncoder`, which probes the binary the server was pointed at - which is a build finding,
+      not a plugin one. Capture that binary's `ffmpeg -hide_banner -encoders` list next to the
+      server's `HardwareAccelerationType` before writing it up as anything.
+
+### The DTO flags the plugin cannot write
+
+A **dynamic** source is the plugin's own object, and its flags are what the provider wrote:
+`SupportsDirectPlay: false`, `SupportsDirectStream: false`, `SupportsTranscoding: true`. A
+**materialised version item** is not: its `MediaSources` entry is a `MediaSourceInfo` the server
+constructs itself (in `BaseItem.GetVersionInfo`) out of the item's fields, and that constructor opens
+every capability flag at `true`. The plugin is never asked, and the item model offers no hook that
+would let it answer.
+
+One of those flags does have a rule attached to it, and the rule is about something else: the server
+sets `SupportsDirectStream = false` for a video whose type is *not* a video file. A version item that
+claims a disc loses the flag through that rule; one declaring `VideoFile` - the value the
+version-item pass repairs a drifted item back to - keeps the constructor's answer, and nothing in the
+plugin can lower it from here:
+
+| Flag on a materialised version item's source | Value | Why it says that |
+| --- | --- | --- |
+| `SupportsDirectPlay` | `true` | constructor default; nothing in the item model clears it for an HTTP-protocol path |
+| `SupportsDirectStream` | `true` | computed from path and protocol, and an HTTP path that is not an `.m3u` passes that test |
+| `SupportsTranscoding` | `true` | correct, and the one flag of the three the plugin would choose itself |
+
+- [ ] Record the two `true` values above as **expected**, not as a FAIL. They are the server's own
+      defaults on a source the plugin does not build. The same version offered dynamically - a
+      profile the library has not materialised, or one whose item could not be created - still
+      reports `SupportsDirectPlay: false`.
+- [ ] Do not treat them as a playback risk to chase in this pass. A client that believed
+      `SupportsDirectPlay` here would aim at the item's `Path`, which is a marker URL: the item is
+      locked, its protocol is HTTP, and there is no file behind a marker to serve. What keeps a
+      version encoding is the `mvc` codec it reports (above), and the evidence that it held is the
+      child command and the segments it wrote (V7), not these flags.
+- [ ] If a real client is ever seen honouring one of these two flags for a version item - requesting
+      a direct play or a direct stream of a marker - record the client, the flag and the request URL
+      as a finding. The fix for that is in the server's item model (a static source whose path is not
+      a file), and the plugin has no lever on it short of not materialising items at all.
 
 ## V6. Marker transport
 
@@ -898,6 +962,51 @@ graph that reaches it through a view specifier (`[0:v:view:all]`), which a compo
 outright; several graphs in one command; or a graph already carrying `[anaglyfin_profile]` or
 `[anaglyfin_custom]`.
 
+### 7.10 A hardware-accelerated server: hardware encode, software decode
+
+Run one profile with the server's `HardwareAccelerationType` set to `qsv`, `nvenc` or `vaapi` and
+hardware encoding on, and capture the child command the way V7 describes. This is what a version's
+command looks like on a host where the FFmpeg the server runs has that encoder compiled in - which is
+the part a plugin cannot arrange, since a marker input has to be decoded by the FFmpeg-mvc build and
+that build's encoder list is the ceiling. A command that comes out with no device options and
+`-codec:v libx264` on such a server is that case, not a rewrite failure; check the binary's
+`-encoders` list before checking anything here:
+
+```text
+-init_hw_device qsv=qsv:/dev/dri/renderD128 -filter_hw_device qsv -view_ids -1 -i <real source path>
+-map 0:0 -map 0:1 -c:v:0 h264_qsv ... -vf format=nv12,hwupload=derive_device=qsv,... <output>
+```
+
+- [ ] Nothing in front of the marker input's `-i` selects a hardware decoder: no `-hwaccel`, no
+      `-hwaccel_output_format`, no `-hwaccel_device`, no `-hwaccel_args`, no `-hwaccel_flags`. No
+      hardware accelerator decodes this source into the composed (or base) view a profile plays, so
+      the wrapper takes those off the input whatever the profile - `two_d_base` included.
+- [ ] The device the **encode** runs on is still there: `-init_hw_device ...`,
+      `-filter_hw_device ...`, and on a VA-API server a `-vaapi_device <path>`. A command missing
+      them has lost the hardware encode along with the decode, which is the wrong half to remove.
+- [ ] The video encoder is the server's own, and on this host a hardware one: `h264_qsv`, `hevc_qsv`,
+      `h264_nvenc`, `h264_vaapi`, and so on. Anaglyfin names no encoder and never forces `libx264`, so
+      a command carrying `libx264` here is the binary answering the gate - the check above - and not a
+      rewrite the wrapper performed.
+- [ ] The filters that carry a software frame to that encoder survive: `hwupload`,
+      `hwupload=derive_device=...`, `hwmap`, `vpp_qsv`, `scale_qsv`, `format=nv12` - in the server's
+      `-vf` chain, or inside its `-filter_complex` where the server wrote them. The profile's chain
+      is still in front of them and still ends on a software pixel format, which is exactly the frame
+      those filters are for.
+- [ ] The profile's own fragments are where V7.1-V7.9 put them: `-view_ids -1` in front of `-i` for
+      every converting profile, none for `two_d_base`, the profile's chain or graph merged in front of
+      the server's.
+- [ ] The segments still measure what V7.8 says they measure. A command that reached FFmpeg without
+      the decode it asked for would show up as the wrong picture rather than as an error, and this is
+      the check that tells the two apart.
+- [ ] With the server's hardware acceleration **off**, this section asks for nothing: the command is
+      the one from V7.1-V7.7, with the same encoder and no device options, because there was nothing
+      here to take away.
+
+A command whose decode flags were removed is a rewrite and not a refusal, so expect no
+`anaglyfin-wrapper:` diagnostic for it. FFmpeg's own output may still name the device it opened; that
+is the encoder's device, and it is expected to be opened.
+
 ## V8. Ordinary playback pass-through
 
 The wrapper sits on the server's FFmpeg path, so it must be invisible for ordinary playback.
@@ -905,7 +1014,9 @@ The wrapper sits on the server's FFmpeg path, so it must be invisible for ordina
 Play a non-MVC item that will be transcoded, or force transcoding.
 
 - [ ] The wrapper starts the real FFmpeg binary with the received arguments unchanged.
-- [ ] Jellyfin hardware decode options from the server remain present if configured.
+- [ ] Jellyfin hardware decode options from the server remain present if configured: no marker is in
+      this command, so nothing about its decode is Anaglyfin's to change. (V7.10 is about the commands
+      that do carry one, where the decode selection does come off.)
 - [ ] No Anaglyfin `-view_ids` option is inserted for a non-marker command.
 - [ ] No Anaglyfin `-vf`, `-filter_complex`, or `-sn` is inserted for a non-marker command.
 - [ ] Ordinary playback does not create an Anaglyfin concurrency slot file.
