@@ -94,15 +94,41 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     }
 
     /// <summary>
-    /// Reconciles every video in the library.
+    /// Reconciles every library video the full version-item walk can list.
     /// </summary>
     /// <param name="cancellationToken">Stops the pass between items.</param>
     /// <returns>What the pass changed.</returns>
     /// <remarks>
+    /// <para>
     /// Called on start-up and whenever the settings are saved. One item failing (a database read, an
     /// item mid-refresh) is logged and skipped: the pass has no reason to abandon the rest of the
     /// library because one folder had a bad moment, and the next request for that item reconciles it
     /// again.
+    /// </para>
+    /// <para>
+    /// <b>The pass is a walk, made cheap item by item.</b> The source population is every library
+    /// video the server's general query can list, because that is the only population guaranteed to
+    /// contain both the detector's vocabulary and any stale version a root still owns. The cost is
+    /// kept down after that: <see cref="MvcEligibilityPrefilter.IsCheapCandidate"/> is answered from
+    /// the fields of each item, and only what survives it reaches
+    /// <see cref="MvcEligibleSourceScanner.Scan"/>, which is the one call in this file that reads
+    /// media sources. On a shelf of ordinary movies with no links, the walk reads items and reads no
+    /// media sources.
+    /// </para>
+    /// <para>
+    /// <b>What still reaches the scan.</b> Anything the cheap question cannot refuse: an item the
+    /// detector accepts from its own fields, an item that names local alternate versions, and an item
+    /// whose linked versions may be Anaglyfin's own. The last one is the correctness case the prefilter
+    /// must fail open on - a root that stopped looking MVC still has to be reconciled so its stale
+    /// version items can disappear.
+    /// </para>
+    /// <para>
+    /// <b>The janitor does not need an invitation.</b> One of Anaglyfin's own version items found in a
+    /// candidate list is not something to scan but something to look after - it is either a healthy
+    /// version of a healthy primary or an orphan that has to go - and neither answer needs a media
+    /// source. It is passed through the prefilter rather than refused by it, because "ignore this item"
+    /// is the only answer the prefilter is allowed to give on its own.
+    /// </para>
     /// </remarks>
     public async Task<ProfileVersionReconcileResult> ReconcileLibraryAsync(CancellationToken cancellationToken)
     {
@@ -111,10 +137,10 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            IReadOnlyList<Video> roots;
+            IReadOnlyList<Video> candidates;
             try
             {
-                roots = _store.GetVersionRootCandidates();
+                candidates = CollectPassCandidates();
             }
             catch (Exception ex)
             {
@@ -122,14 +148,49 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
                 return total;
             }
 
-            _logger.LogDebug("Anaglyfin is reconciling profile version items across {Count} items.", roots.Count);
+            _logger.LogDebug(
+                "Anaglyfin is reconciling profile version items across {CandidateCount} library videos.",
+                candidates.Count);
 
-            foreach (var root in roots)
+            var scanned = 0;
+            var scansSkipped = 0;
+            var reconciled = new HashSet<Guid>();
+
+            foreach (var candidate in candidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
                 try
                 {
+                    if (IsAnaglyfinVersion(candidate))
+                    {
+                        // One of ours in a candidate list: nothing to scan and nothing to plan, but
+                        // something to look after, and that answer is an item read and a decision -
+                        // never a media source.
+                        total.Add(await ReconcileOrphanVersionAsync(candidate, cancellationToken).ConfigureAwait(false));
+                        continue;
+                    }
+
+                    if (!MvcEligibilityPrefilter.IsCheapCandidate(candidate, _detector))
+                    {
+                        scansSkipped++;
+                        continue;
+                    }
+
+                    // The item the walk reached is not always the item the versions belong to: an
+                    // alternate version of something else - the MVC file beside a stack's primary -
+                    // carries the signals the detector can read, and its versions have to be filed
+                    // where a client can reach them. Nothing to reach is nothing to reconcile: an
+                    // alternate whose primary is gone is left to the pass over the file that was
+                    // removed, which takes its versions with it.
+                    var root = ResolveRoot(candidate);
+                    if (root is null || !reconciled.Add(root.Id))
+                    {
+                        scansSkipped++;
+                        continue;
+                    }
+
+                    scanned++;
                     total.Add(await ReconcileRootAsync(root, cancellationToken).ConfigureAwait(false));
                 }
                 catch (OperationCanceledException)
@@ -141,10 +202,19 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
                     _logger.LogError(
                         ex,
                         "Anaglyfin could not reconcile the profile version items of {ItemName}; leaving it as it is.",
-                        root?.Name);
+                        candidate?.Name);
                     total.Skipped++;
                 }
             }
+
+            // The two numbers that say what a pass cost, in one line per pass and with no title in
+            // either of them: the walk reached these items, the cheap question refused these of them
+            // outright, and only the rest were read as media. A library that stopped costing scans is
+            // visible here; a library that did not is, too.
+            _logger.LogDebug(
+                "Anaglyfin's version-item pass refused {Skipped} of its candidates without reading a media source and scanned {Scanned} of them.",
+                scansSkipped,
+                scanned);
         }
         finally
         {
@@ -162,6 +232,38 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         }
 
         return total;
+    }
+
+    /// <summary>
+    /// The items a pass has to look at, from the full library walk.
+    /// </summary>
+    /// <returns>The candidates in store order, each item named once.</returns>
+    /// <remarks>
+    /// One authoritative query, not a guess at which items the detector would understand. The server's
+    /// general query excludes items that name a primary version, which keeps Anaglyfin's own items out
+    /// of browse and out of this list under normal circumstances, but it does not narrow away ordinary
+    /// movies, filenames that merely contain the MVC markers, tags, or roots that still own stale
+    /// versions. Those are filtered cheaply per item in the loop that consumes this list.
+    /// </remarks>
+    private IReadOnlyList<Video> CollectPassCandidates()
+    {
+        var candidates = new List<Video>();
+        var seen = new HashSet<Guid>();
+
+        AddCandidates(_store.GetVersionRootCandidates());
+
+        return candidates;
+
+        void AddCandidates(IReadOnlyList<Video> named)
+        {
+            foreach (var video in named)
+            {
+                if (video is not null && seen.Add(video.Id))
+                {
+                    candidates.Add(video);
+                }
+            }
+        }
     }
 
     /// <summary>

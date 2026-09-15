@@ -77,14 +77,20 @@ public sealed class LibraryProfileVersionItemStore : IProfileVersionItemStore
     /// <inheritdoc />
     public IReadOnlyList<Video> GetVersionRootCandidates()
     {
-        // One query for one pass. What makes this list the right list is the general-query rule the
-        // server applies to it: an item that names a primary version is not in a general query at
-        // all, which is both why a profile version never shows up in browse or search and why a pass
-        // over this list never mistakes one of Anaglyfin's own items for a library movie. SourceTypes
-        // states the intent the server's own query builder does not implement (it ignores that field),
-        // so the eligibility scan remains the real gate on what a pass attempts; it is declared here
-        // because a background pass has no business editing channel or remote content, and a server
-        // that honours the field will find Anaglyfin already asking correctly.
+        // One query for one pass, and the authoritative one: a filename, folder or tag the detector
+        // understands is not necessarily visible to a 3D or tag query, and a root that lost its own
+        // MVC signal can still own Anaglyfin versions that have to be removed. The cost is kept down
+        // by MvcEligibilityPrefilter before the scan, not by narrowing the population below what the
+        // detector can actually say anything about.
+        //
+        // What makes this list the right list is the general-query rule the server applies to it: an
+        // item that names a primary version is not in a general query at all, which is both why a
+        // profile version never shows up in browse or search and why a pass over this list never
+        // mistakes one of Anaglyfin's own items for a library movie. SourceTypes states the intent the
+        // server's own query builder does not implement (it ignores that field), so the eligibility
+        // scan remains the real gate on what a pass attempts; it is declared here because a background
+        // pass has no business editing channel or remote content, and a server that honours the field
+        // will find Anaglyfin already asking correctly.
         var query = new InternalItemsQuery
         {
             MediaTypes = new[] { MediaType.Video },

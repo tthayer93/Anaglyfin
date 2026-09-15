@@ -135,9 +135,12 @@ public class ProfileVersionItemManagerTests
 
         Assert.Equal(1, result.Created);
 
-        // Both files were asked, and the versions came from the one that is 3D - filed under the item
-        // a client can open, because the MVC file behind them is not listable.
-        Assert.Equal(2, detector.Candidates.Count);
+        // The item was asked about cheaply first - and could not be refused, because it names a version
+        // its own fields do not speak for - and then both of its files were asked expensively.
+        Assert.Equal(3, detector.Candidates.Count);
+        Assert.Equal(
+            new string?[] { ProfileVersionFixtures.PlainPath, ProfileVersionFixtures.MvcPath },
+            detector.Candidates.Skip(1).Select(candidate => candidate.Path).Distinct().ToArray());
         Assert.Equal(VersionIdOf(movie.StaticSources[1], SideBySideFull), item.Id);
         Assert.Equal(movie.Id, ((Video)item).PrimaryVersionId);
         Assert.Equal(ProfileVersionFixtures.FolderId, item.ParentId);
@@ -329,7 +332,7 @@ public class ProfileVersionItemManagerTests
     [Fact]
     public async Task AMarkerItemFoundInTheLibraryIsRemovedByAPass()
     {
-        var store = NewStore(out _);
+        var store = new FakeProfileVersionItemStore();
         var orphan = new Video
         {
             Id = Guid.NewGuid(),
@@ -339,13 +342,43 @@ public class ProfileVersionItemManagerTests
         };
 
         store.AddItem(orphan);
-        store.VersionRoots.Add(orphan);
+        store.AddItem(ProfileVersionFixtures.CreateFolder());
 
         var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
             .ReconcileLibraryAsync(CancellationToken.None);
 
         Assert.Equal(1, result.Deleted);
+        Assert.Empty(store.Created);
         Assert.Null(store.FindItem(orphan.Id));
+    }
+
+    [Fact]
+    public async Task ARootThatLostItsMvcSignalRemovesTheVersionsItStillOwns()
+    {
+        var store = NewStore(out var movie);
+        var manager = CreateManager(store, ConfigurationWith(SideBySideFull));
+
+        await manager.ReconcileLibraryAsync(CancellationToken.None);
+
+        var versionId = Assert.Single(store.Created).Item.Id;
+
+        // The file stopped being MVC: the name is plain, the source report is plain, and no field of
+        // the root says 3D any more. The full walk still reaches the root, and the cheap prefilter
+        // still asks about it because it owns a linked version, so the stale version has somewhere to
+        // be reconciled away from.
+        movie.Path = ProfileVersionFixtures.PlainPath;
+        movie.StaticSources = new[]
+        {
+            ProfileVersionFixtures.CreateSource(movie.Id, "1080p", ProfileVersionFixtures.PlainPath)
+        };
+
+        var result = await manager.ReconcileLibraryAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.Deleted);
+        Assert.Equal(0, result.Created);
+        Assert.Null(store.FindItem(versionId));
+        Assert.Empty(store.LinksOf(movie.Id));
+        Assert.Single(store.Created);
     }
 
     // --- what a pass repairs ----------------------------------------------------

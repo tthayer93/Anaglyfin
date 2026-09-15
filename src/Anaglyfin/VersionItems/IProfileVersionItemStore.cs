@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Anaglyfin.MediaSources;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Model.Entities;
 
@@ -47,9 +48,19 @@ public interface IProfileVersionItemStore
     /// </summary>
     /// <returns>Every library video that could carry versions of its own.</returns>
     /// <remarks>
+    /// <para>
+    /// This is the authoritative source population. It is deliberately broad: a filename, folder or
+    /// tag the detector understands is not necessarily visible to a server-side 3D or tag query, and a
+    /// root that has lost its own MVC signal still has to be reachable when it owns Anaglyfin version
+    /// items that must be removed. The pass keeps that walk cheap by asking
+    /// <see cref="MvcEligibilityPrefilter"/> per item before any media source is read, not by guessing
+    /// which items the detector would understand before it asks.
+    /// </para>
+    /// <para>
     /// Alternate versions are not in here: the server's general queries exclude items that name a
     /// primary version, which is both why a profile version item never shows up in browse or search
-    /// and why a pass over this list never mistakes one of its own items for a library movie.
+    /// and why a pass over this list never mistakes one of Anaglyfin's own items for a library movie.
+    /// </para>
     /// </remarks>
     IReadOnlyList<Video> GetVersionRootCandidates();
 
