@@ -274,6 +274,13 @@ public class ProfileVersionIdentityTests
         Assert.Equal(materialised.SupportsDirectStream, offeredVersion.SupportsDirectStream);
         Assert.Equal(materialised.SupportsTranscoding, offeredVersion.SupportsTranscoding);
         Assert.Equal(materialised.Video3DFormat, offeredVersion.Video3DFormat);
+
+        // What a version says about its own media has to be the same answer whichever road it arrived
+        // by. Before this field was written on both roads the two differed silently - the dynamic
+        // source named no video type, the item named the type its type gives an unwritten field - and
+        // nothing downstream could see the difference until something read it.
+        Assert.Equal(ProfileVersionSource.VersionVideoType, offeredVersion.VideoType);
+        Assert.Equal(materialised.VideoType, offeredVersion.VideoType);
         Assert.Equal(
             materialised.MediaStreams.Select(stream => (stream.Type, stream.Index, stream.Codec, stream.Language, stream.Width, stream.Height)),
             offeredVersion.MediaStreams.Select(stream => (stream.Type, stream.Index, stream.Codec, stream.Language, stream.Width, stream.Height)));

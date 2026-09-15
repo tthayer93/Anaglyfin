@@ -488,6 +488,44 @@ public class AnaglyfinMediaSourceProviderTests
         Assert.Null(source.OpenToken);
         Assert.Null(source.LiveStreamId);
         Assert.Equal(MediaSourceType.Default, source.Type);
+
+        // The one field a version declares for the server's benefit rather than a client's: a marker
+        // converts one file on the server's disk, and that is the answer the server's hardware encoder
+        // gate asks for. It names no encoder, and it changes nothing about the transport - the three
+        // flags above still say this source is transcoded or it is not played.
+        Assert.Equal(VideoType.VideoFile, source.VideoType);
+    }
+
+    [Theory]
+    [InlineData(ProfileIds.SideBySideFull)]
+    [InlineData(ProfileIds.SideBySideHalf)]
+    [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
+    [InlineData(ProfileIds.CustomGrayscale)]
+    [InlineData(ProfileIds.TwoDBase)]
+    public async Task EveryVersionIsOfferedAsATranscodeOfAVideoFile(string profileId)
+    {
+        // Two facts every version states about itself, whichever conversion it offers: it is played by
+        // transcoding (direct play would hand a client the marker URL to open, and direct stream would
+        // hand it the original file with nothing converted), and the media behind the marker is one
+        // file on the server's disk - the answer the server's hardware encoder gate asks for, stated
+        // instead of left to the type's default. The shape test above reads them for one profile;
+        // nothing here is a profile's quirk.
+        var configuration = new StubConfigurationSource
+        {
+            Configuration = new PluginConfiguration
+            {
+                EnabledProfileIds = new List<string> { profileId }
+            }
+        };
+
+        var source = Assert.Single(await CreateProvider(configuration: configuration)
+            .GetMediaSources(CreateMvcItem(), CancellationToken.None));
+
+        Assert.False(source.SupportsDirectPlay);
+        Assert.False(source.SupportsDirectStream);
+        Assert.True(source.SupportsTranscoding);
+        Assert.Equal(ProfileVersionSource.VersionVideoType, source.VideoType);
+        Assert.Equal(MediaProtocol.Http, source.Protocol);
     }
 
     [Fact]

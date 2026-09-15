@@ -83,6 +83,13 @@ public class ProfileVersionItemManagerTests
             // that movie - which is also what keeps it out of browse and search.
             var version = Assert.IsType<Video>(item);
             Assert.Null(version.Video3DFormat);
+
+            // The video type is the claim a version makes about the media behind its marker, and a
+            // materialised version makes it through this item rather than through the provider: the
+            // server lists the version as whatever type the item names, orders its sources by that
+            // answer, and gates its hardware encoders on it.
+            Assert.Equal(ProfileVersionSource.VersionVideoType, version.VideoType);
+
             Assert.Equal(movie.Id, version.PrimaryVersionId);
             Assert.Equal(ProfileVersionFixtures.FolderId, version.ParentId);
             Assert.Equal(ProfileVersionFixtures.FolderId, parent?.Id);

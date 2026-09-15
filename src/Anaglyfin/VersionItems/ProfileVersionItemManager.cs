@@ -601,11 +601,11 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     /// <para>
     /// Every fact about the item is checked - the streams it reports, the link that puts it in the
     /// picker, its own fields (label, marker, duration, size, bitrate, container, parent, the frame
-    /// it describes), the metadata it is wearing, the images it names, the credits it carries,
-    /// whether it is still locked, and whether anything still links it to this primary - and only
-    /// the ones that are wrong are repaired. An item that is right in all of them is read and left
-    /// alone, which is the common case and the reason a pass can afford to run over the whole
-    /// library.
+    /// it describes, the video type it declares), the metadata it is wearing, the images it names,
+    /// the credits it carries, whether it is still locked, and whether anything still links it to
+    /// this primary - and only the ones that are wrong are repaired. An item that is right in all of
+    /// them is read and left alone, which is the common case and the reason a pass can afford to run
+    /// over the whole library.
     /// </para>
     /// <para>
     /// <b>Every comparison must answer the same way the database answers it.</b> A check that reads
@@ -670,6 +670,17 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
                          && (currentVideo.Width != frame.Value.Width
                              || currentVideo.Height != frame.Value.Height);
 
+        // The video type is part of what the item is: it is the answer the item gives about the media
+        // behind its marker, and code on both sides reads it - the server lists a version as the type
+        // it claims and orders its sources by it, and this plugin's own scanner refuses an item that
+        // names a disc type. A version item that drifted onto Iso, Dvd or BluRay is a version that
+        // lies about itself in the picker and loses its encoder at the gate, and drift is exactly what
+        // a reconciliation pass is for: a resolver that guessed from a path, a hand edit, an item
+        // merged in from another library. The field round-trips through item persistence as the plain
+        // enum value it is, so a repaired item is read back repaired and the next pass leaves it alone.
+        var needsVideoType = currentVideo is not null
+                             && currentVideo.VideoType != ProfileVersionSource.VersionVideoType;
+
         // The credits are compared against the source's, read once for this file, and written as
         // their own copy: a credit names the item it is credited on, so the version cannot share the
         // primary's rows, and neither can two versions of one file share one list with each other.
@@ -694,6 +705,7 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
                         || needsMetadata
                         || needsImages
                         || needsFrame
+                        || needsVideoType
                         || needsLock
                         || needsPrimary;
 
@@ -742,6 +754,7 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
 
             AddIf("images", needsImages);
             AddIf("frame", needsFrame);
+            AddIf("videotype", needsVideoType);
             AddIf("lock", needsLock);
             AddIf("primary", needsPrimary);
 
@@ -776,6 +789,14 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
                 // this write read one PlannedFrame, or a settled item would never settle.
                 currentVideo.Width = frame.Value.Width;
                 currentVideo.Height = frame.Value.Height;
+            }
+
+            if (needsVideoType && currentVideo is not null)
+            {
+                // The same value the create path writes, and the same one the comparison above
+                // compares: an item answering anything else is repaired once and then left alone,
+                // which is the only way a claim this widely read settles.
+                currentVideo.VideoType = ProfileVersionSource.VersionVideoType;
             }
 
             if (needsPrimary && currentVideo is not null)
@@ -875,6 +896,14 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     /// an item the size of a library that a pass has to keep re-locking would be an item the server
     /// keeps trying to refresh.
     /// </para>
+    /// <para>
+    /// And it is born declaring the video type its version declares, so that the one claim a version
+    /// makes about its own media is true of the item as much as of the source: the server builds the
+    /// static version list, the item listing and the source ordering off this field, and the encoder
+    /// gate downstream refuses anything that names a disc. See
+    /// <see cref="ProfileVersionSource.VersionVideoType"/> for why the value is stated rather than
+    /// inherited from the type's default.
+    /// </para>
     /// </remarks>
     private Video BuildVersionItem(Video root, Guid versionId, PlannedVersion planned)
     {
@@ -895,6 +924,13 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             // Nobody scrapes a marker. See the remarks: this is the flag that keeps the server from
             // treating the item's path as a media file it may probe and describe.
             IsLocked = true,
+
+            // The video type the version declares for itself, written onto the item so that the
+            // static media source the server builds from this item carries the same claim the dynamic
+            // source makes. A materialised version is listed, ordered and gated on the item's answer
+            // and not on the provider's, so the claim has to be on both.
+            // See ProfileVersionSource.VersionVideoType.
+            VideoType = ProfileVersionSource.VersionVideoType,
 
             // Deliberately unset, and inherited from the type: no 3D format (the server would read
             // it as an instruction to convert the picture itself), no owner (this is a linked

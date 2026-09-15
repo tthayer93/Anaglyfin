@@ -5,6 +5,7 @@ using Anaglyfin.Markers;
 using Anaglyfin.Profiles;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 
 namespace Anaglyfin.MediaSources;
@@ -38,6 +39,13 @@ namespace Anaglyfin.MediaSources;
 /// that field as an instruction to convert a side-by-side source to 2D itself, which is the
 /// opposite of what a version that has already converted the picture needs.
 /// </para>
+/// <para>
+/// What it does declare, and declares for the server's benefit rather than a client's, is the video
+/// type: <see cref="VersionVideoType"/> says that the media behind the marker is one file on the
+/// server's disk, which is what the server's hardware encoder gate asks about. See that field for
+/// the whole argument, including the transport and the hardware <em>decode</em> this declaration
+/// deliberately does not reach.
+/// </para>
 /// </remarks>
 public static class ProfileVersionSource
 {
@@ -46,6 +54,53 @@ public static class ProfileVersionSource
     /// used only when an item has more than one file to choose between.
     /// </summary>
     private const string SourceNameSeparator = " / ";
+
+    /// <summary>
+    /// The video type every Anaglyfin version declares itself to be: <see cref="VideoType.VideoFile"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is one decision stated once, written on the dynamic source (<see cref="Build"/>) and on
+    /// the item a version is materialised as, and compared against that same value by the
+    /// reconciliation that repairs an item which has drifted off it.
+    /// </para>
+    /// <para>
+    /// <b>What the field is read for.</b> The server gates its hardware video encoders on it:
+    /// <c>EncodingHelper.GetH26xOrAv1Encoder</c> hands out <c>h264_qsv</c>, <c>hevc_nvenc</c>,
+    /// <c>h264_vaapi</c> and their families only <c>if (state.VideoType == VideoType.VideoFile)</c>,
+    /// and a job that answers the gate with a disc is encoded with <c>libx264</c> on a machine with a
+    /// working Quick Sync encoder - silently, with nothing in the log to say a choice was made.
+    /// </para>
+    /// <para>
+    /// <b>Why state it when the default already says the same.</b> On the server this plugin builds
+    /// against, declaring the type changes nothing about which encoder a version gets: the streaming
+    /// path never writes the job's <c>VideoType</c> at all, and the enum has no "unspecified" member,
+    /// so an unwritten field already answers <c>VideoFile</c> - because that is where the type lists
+    /// it, which is not a decision anyone made. The answer is stated anyway: an enum member's position
+    /// is what an unwritten field depends on, and one member inserted in front of it would move every
+    /// version out of the hardware encoders' reach with no log line and no error - the shape of
+    /// failure this repository has agreed to stop accepting, a product behaviour resting on a value
+    /// somebody else's code produces by default. And the claim is read
+    /// directly by code that looks at the answer rather than the default: the version list a client
+    /// renders, which before the declaration was written showed Anaglyfin versions as sources with no
+    /// video type on them at all; this plugin's own scanner, which tolerates a source naming no type
+    /// and refuses one naming a disc (<see cref="MvcEligibleSourceScanner.IsTranscodableSource"/>);
+    /// the server's ordering of an item's sources, which sorts a declared <c>VideoFile</c> ahead of
+    /// everything else; and the item's own listing, which prints what the item claims. The plugin
+    /// never names an encoder; this names only the kind of media a version is.
+    /// </para>
+    /// <para>
+    /// <b>Why <c>VideoFile</c> is the honest answer.</b> A version converts one file that is on the
+    /// server's disk: it is not a disc image, not a folder rip, and not a live stream. The one thing
+    /// the declaration does <em>not</em> buy is the hardware <c>decode</c> of a version: the server
+    /// offers that per reported codec, and the codec a version reports is <c>mvc</c> (see
+    /// <see cref="ForceTranscodeVideoStreams"/>), which is in no server's default decoding-codec
+    /// list - and were it ever added there, the wrapper takes the decode flags back off the command
+    /// anyway, because an MVC composed decode is software-only by construction. See
+    /// <c>docs/architecture.md</c>, "Hardware encode, software decode".
+    /// </para>
+    /// </remarks>
+    public const VideoType VersionVideoType = VideoType.VideoFile;
 
     /// <summary>
     /// Builds one profile version of one eligible media source.
@@ -128,6 +183,13 @@ public static class ProfileVersionSource
             SupportsDirectPlay = false,
             SupportsDirectStream = false,
             SupportsTranscoding = true,
+
+            // What the server's hardware encoder gate asks about, stated instead of left to the
+            // type's default: a source that names a disc is a source the server encodes with
+            // libx264 whatever its settings say. It names no encoder, it changes no transport (the
+            // path is still a marker behind the Http protocol, and the reported codec is still one
+            // no client can copy), and it buys no hardware decode: see VersionVideoType.
+            VideoType = VersionVideoType,
 
             // ffprobe cannot read a marker URL, so the stream list copied from the source this
             // version is built from is authoritative.

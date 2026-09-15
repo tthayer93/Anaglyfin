@@ -494,6 +494,359 @@ public class WrapperArgumentRewriterTests
             result.Arguments);
     }
 
+    // ----- hardware encode, software decode -----------------------------------------
+
+    // The server's hardware-acceleration settings reach a command line as two decisions at once: the
+    // encoder it picked, written together with the device that encoder runs on, and the accelerator it
+    // attaches to an input, written in that input's scope. A marker command can arrive carrying both,
+    // and one of them is wrong here: no hardware accelerator decodes the MVC stream this pipeline
+    // reads, so the decode half comes off and the encode half stays exactly as the server wrote it.
+    // The commands below are written in the shape Jellyfin's EncodingHelper writes them in, one token
+    // per argument, with the device initialisation and the upload filters that belong to the encode
+    // left in place.
+    //
+    // The decode of a marker input is software whatever the profile converts afterwards, so the 2D
+    // base profile - which writes nothing of its own - is covered by the same rule as the
+    // converting ones, and a command that carries no hardware argument at all is written exactly as
+    // it was before this rule existed.
+
+    [Fact]
+    public void TheQuickSyncDecodeFlagsComeOffAndTheQuickSyncEncodeStays()
+    {
+        // The command a Quick Sync server builds for a version once the version is allowed to be
+        // hardware encoded: the qsv device opened for the encoder and the filter graph, the qsv
+        // accelerator asked of the input, and the upload of the decoded frame to that device.
+        var arguments = new List<string>
+        {
+            "-analyzeduration", "3000000",
+            "-probesize", "10000000",
+            "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
+            "-filter_hw_device", "qsv",
+            "-hwaccel", "qsv",
+            "-hwaccel_output_format", "qsv",
+            "-i", Marker(ProfileIds.SideBySideFull, videoStreamIndex: 0),
+            "-map", "0:0", "-map", "0:1",
+            "-c:v:0", "h264_qsv", "-preset:v", "veryfast", "-global_quality", "23",
+            "-vf", "format=nv12,hwupload=derive_device=qsv,scale_qsv=1920:1080:async_depth=1",
+            "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Equal(
+            new[]
+            {
+                "-analyzeduration", "3000000",
+                "-probesize", "10000000",
+
+                // The device the encoder and the filter graph run on is not the decoder's device
+                // selection, and a hardware encode of a software-decoded frame needs it: it stays,
+                // and so does the chain that carries the frame to the encoder.
+                "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
+                "-filter_hw_device", "qsv",
+
+                // The composed request takes the place the decode flags left, in front of the
+                // option that opens this file: this input is decoded by FFmpeg-mvc's software MVC
+                // decoder, and it is that decoder that composes the eyes.
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-map", "0:0", "-map", "0:1",
+                "-c:v:0", "h264_qsv", "-preset:v", "veryfast", "-global_quality", "23",
+                "-vf", "format=nv12,hwupload=derive_device=qsv,scale_qsv=1920:1080:async_depth=1",
+                "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        // No software fallback was written over the server's choice either: the encoder named here
+        // is the server's, and Anaglyfin's only input on it is that it is not asked to decode.
+        Assert.DoesNotContain("libx264", string.Join(' ', result.Arguments), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheCudaDecodeFlagsComeOffAndTheCudaDeviceAndEncoderStay()
+    {
+        // NVENC with CUDA decode is where the two decisions sit closest together: Jellyfin writes
+        // the accelerator, its output format, its flags and a thread cap in one breath, and only
+        // the accelerator-side options of those are the decode's.
+        var arguments = new List<string>
+        {
+            "-init_hw_device", "cuda=cuda:0",
+            "-filter_hw_device", "cuda",
+            "-hwaccel", "cuda",
+            "-hwaccel_output_format", "cuda",
+            "-hwaccel_flags", "+unsafe_output",
+            "-threads", "1",
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 0),
+            "-map", "0:0",
+            "-c:v", "h264_nvenc", "-preset", "p4",
+            "-vf", "scale=1920:1080:flags=area,format=nv12,hwupload=extra_hw_frames=64",
+            "-f", "hls", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-init_hw_device", "cuda=cuda:0",
+                "-filter_hw_device", "cuda",
+
+                // The server's thread cap came in beside the decode flags and is not one of them:
+                // it is an input choice the server makes for its own reasons and stays.
+                "-threads", "1",
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-map", "0:0",
+                "-c:v", "h264_nvenc", "-preset", "p4",
+
+                // The profile's conversion in front, the server's upload chain behind it, in one
+                // chain: the frame the encoder is fed is a software frame with the profile applied,
+                // and hwupload is what moves it into the CUDA device afterwards.
+                "-vf", "stereo3d=sbsl:arcd,format=yuv420p,scale=1920:1080:flags=area,format=nv12,hwupload=extra_hw_frames=64",
+                "-f", "hls", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void TheVaapiDecodeFlagsComeOffAndTheVaapiDeviceTheEncoderNeedsStays()
+    {
+        // VA-API spells its device selection twice over in one command: "-vaapi_device" is the
+        // legacy form, and it is also what a VA-API encode uses when there is no decode at all. A
+        // rewrite that removed it would leave an encoder with nowhere to encode.
+        var arguments = new List<string>
+        {
+            "-vaapi_device", "/dev/dri/renderD128",
+            "-init_hw_device", "vaapi=vaapi:/dev/dri/renderD128",
+            "-filter_hw_device", "vaapi",
+            "-hwaccel", "vaapi",
+            "-hwaccel_output_format", "vaapi",
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 0),
+            "-map", "0:0", "-map", "0:1",
+            "-c:v", "h264_vaapi", "-bf", "0",
+            "-vf", "format=nv12,hwupload=extra_hw_frames=64,scale_vaapi=w=1920:h=1080",
+            "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-vaapi_device", "/dev/dri/renderD128",
+                "-init_hw_device", "vaapi=vaapi:/dev/dri/renderD128",
+                "-filter_hw_device", "vaapi",
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-map", "0:0", "-map", "0:1",
+                "-c:v", "h264_vaapi", "-bf", "0",
+                "-vf", "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p,format=nv12,hwupload=extra_hw_frames=64,scale_vaapi=w=1920:h=1080",
+                "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Theory]
+    [InlineData("-hwaccel", "qsv")]
+    [InlineData("-hwaccel=qsv", null)]
+    [InlineData("-hwaccel_output_format", "qsv")]
+    [InlineData("-hwaccel_output_format:v", "qsv")]
+    [InlineData("-hwaccel_device", "0")]
+    [InlineData("-hwaccel_device=0", null)]
+    [InlineData("-hwaccel_args", "-extra_hw_frames 64")]
+    [InlineData("-hwaccel_flags", "+allow_profile_mismatch")]
+    public void EverySpellingOfTheDecodeSelectionComesOffAndNothingElseDoes(string option, string? value)
+    {
+        var arguments = new List<string> { option };
+
+        if (value is not null)
+        {
+            arguments.Add(value);
+        }
+
+        arguments.Add("-i");
+        arguments.Add(Marker(ProfileIds.SideBySideFull));
+        arguments.Add("-map");
+        arguments.Add("0:v");
+        arguments.Add("playlist.m3u8");
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-map", "0:v", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        // The value of a two-token option went with the option - a leftover "qsv" would be an
+        // argument FFmpeg reads as a file to open - and the input the whole rewrite addresses is
+        // still the input it was.
+        Assert.Equal(SourcePath, InputOf(result.Arguments));
+        Assert.Single(result.Arguments, token => token == WrapperArgumentRewriter.InputFileArgument);
+    }
+
+    [Fact]
+    public void ADDecodeOptionThatCarriedNoValueLeavesTheInputOpeningAlone()
+    {
+        // A malformed command is still not a reason to remove the marker's "-i": everything in the
+        // rewrite addresses the input that option opens, and the value it names is the source.
+        var arguments = new List<string>
+        {
+            "-hwaccel",
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "0:v", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-map", "0:v", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void TheTwoDimensionalBaseProfileAlsoTakesTheHardwareDecodeOffTheInput()
+    {
+        // The base view the 2D profile plays is the software MVC decoder's own default output, so a
+        // profile that converts nothing is still a profile that must not be hardware decoded. It is
+        // also the one profile that writes no composed view request: what comes off this command is
+        // the decode selection, and nothing goes on in its place.
+        var arguments = new List<string>
+        {
+            "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
+            "-filter_hw_device", "qsv",
+            "-hwaccel", "qsv",
+            "-hwaccel_output_format", "qsv",
+            "-i", Marker(ProfileIds.TwoDBase, videoStreamIndex: 0),
+            "-map", "0:0", "-map", "0:1",
+            "-c:v", "h264_qsv",
+            "-vf", "format=nv12,hwupload=derive_device=qsv",
+            "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Equal(
+            new[]
+            {
+                "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
+                "-filter_hw_device", "qsv",
+                "-i", SourcePath,
+                "-map", "0:0", "-map", "0:1",
+                "-c:v", "h264_qsv",
+                "-vf", "format=nv12,hwupload=derive_device=qsv",
+                "playlist.m3u8"
+            },
+            result.Arguments);
+        Assert.DoesNotContain(WrapperArgumentRewriter.ComposedViewInputArgument, result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void AHwuploadTheServerWroteIntoItsOwnGraphSurvivesTheMergedConversion()
+    {
+        // The merge rewrites which label the server's chains read; it does not rewrite the chains.
+        // The upload that feeds the hardware encoder is in the middle of one of them here, and the
+        // frame it uploads is the profile's converted picture by the time it runs.
+        var arguments = new List<string>
+        {
+            "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
+            "-filter_hw_device", "qsv",
+            "-hwaccel", "qsv",
+            "-i", Marker(ProfileIds.AnaglyphRedCyanDubois, videoStreamIndex: 0),
+            "-filter_complex", "[0:0]scale=1920:1080:flags=area,format=nv12,hwupload=derive_device=qsv[v]",
+            "-map", "[v]", "-map", "0:1", "-c:v", "h264_qsv", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
+                "-filter_hw_device", "qsv",
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex",
+                "[0:0]stereo3d=sbsl:arcd,format=yuv420p[anaglyfin_profile];"
+                + "[anaglyfin_profile]scale=1920:1080:flags=area,format=nv12,hwupload=derive_device=qsv[v]",
+                "-map", "[v]", "-map", "0:1", "-c:v", "h264_qsv", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void ACommandWithNoHardwareArgumentsIsRewrittenExactlyAsItWasBefore()
+    {
+        // The hardware-disabled server is the common installation, and its commands do not change:
+        // nothing here removes, adds or moves an argument when there is no decode selection to
+        // remove. This is the same expectation the plain full-SBS rewrite carries.
+        var arguments = JellyfinLikeCommand(Marker(ProfileIds.SideBySideFull));
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(
+            new[]
+            {
+                "-hide_banner", "-loglevel", "warning",
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
+                "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void AHardwareAcceleratedCommandWithNoMarkerKeepsItsHardwareDecode()
+    {
+        // Ordinary library playback is the server's own business, decode included: no marker, no
+        // rewrite, and the accelerator selection of an item Anaglyfin has nothing to say about is
+        // handed to FFmpeg exactly as the server wrote it.
+        var arguments = new List<string>
+        {
+            "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi",
+            "-i", "/library/movie.mkv", "-c:v", "hevc_vaapi", "-f", "hls", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.PassedThrough, result.Status);
+        Assert.Equal(arguments.ToArray(), result.Arguments);
+    }
+
+    [Fact]
+    public void AHwAcceleratedCommandThatCopiesItsVideoIsStillRefused()
+    {
+        // Removing the decode selection does not turn a copy into an encode: the server that asked
+        // for a copy asked for no converted picture on this output, and that refusal is taken
+        // before anything is spliced, hardware arguments present or not.
+        var arguments = new List<string>
+        {
+            "-init_hw_device", "qsv=qsv:/dev/dri/renderD128",
+            "-hwaccel", "qsv",
+            "-hwaccel_output_format", "qsv",
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-map", "0:v", "-map", "0:a",
+            "-c:v", "copy", "-f", "hls", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(arguments);
+
+        Assert.Equal(WrapperRewriteStatus.ServerChoseVideoCopy, result.Status);
+        Assert.Empty(result.Arguments);
+    }
+
     // ----- linear profile filters ----------------------------------------------------
 
     [Fact]

@@ -111,6 +111,59 @@ is involved, and a source that named no width gets no invented one. `Video3DForm
 a version: the server reads a stereo format as an instruction to convert that format to 2D itself,
 which is the opposite of what a source that has already converted the picture wants.
 
+## Hardware encode, software decode
+
+Every Anaglyfin version declares its media as a **video file** (`ProfileVersionSource.VersionVideoType`,
+written on the dynamic source and on the materialised item, and repaired on any item that has drifted
+onto a disc type). That is not a description of a file the plugin owns; it is the answer to the one
+question the server's hardware video encoders are gated on. `EncodingHelper` offers `h264_qsv`,
+`hevc_nvenc`, `h264_vaapi` and their families only `if (state.VideoType == VideoType.VideoFile)`, and
+what it refuses it refuses silently: the command comes out `libx264` on a machine whose administrator
+turned Quick Sync on, with nothing in the log to say a choice had been made.
+
+On Jellyfin 12 the declaration wins nothing at that gate, for a reason worth writing down: the
+streaming path never writes the job's `VideoType` at all, and `VideoType` has no "unspecified"
+member - `VideoFile` is its first, so a field nobody wrote already answers `VideoFile`. The value is
+written because an enum member's position is a thin thing to hang a product behaviour on, and because
+the claim is read as it stands by the version list a client renders, by the server's ordering of an
+item's sources, by the item's own listing, and by this plugin's scanner, which tolerates a source
+naming no type and refuses one naming a disc.
+
+What settles which encoder a version actually gets is the FFmpeg the server runs, because the gate
+asks `SupportsEncoder` and that is answered by probing the binary. A marker input can only be decoded
+by the FFmpeg-mvc build, so that build's encoder list is the ceiling: the shipped `linux-x64`
+`n8.1.2-mvc4-jf4` is configured `--disable-doc --enable-gpl --enable-libx264 --enable-libass` and
+reports `libx264, libx264rgb, h264_v4l2m2m` for H.264 - no QSV, no VA-API, no NVENC. Pointing a
+Quick Sync server at that FFmpeg is what made every cp16 run come out `libx264`; the fix is a build
+with the hardware encoders compiled in, not a field on the media source. Anaglyfin names no encoder,
+never forces `libx264`, and takes whatever the server's settings select out of whatever binary the
+server was handed.
+
+A hardware **decode** is a separate decision, and that one the plugin actively takes back. A marker
+input is decoded by FFmpeg-mvc's own software MVC decoder - that decoder is what
+composes the eyes for `-view_ids -1`, and it is what hands the 2D profile its base view; no hardware
+accelerator decodes this stream at all. So the rewrite removes the accelerator-selection options from
+the marker input's scope, whatever profile the marker names:
+
+| Removed from the marker input's scope | Kept |
+| --- | --- |
+| `-hwaccel <value>` | `-init_hw_device <name>:<type>[:<device>]` |
+| `-hwaccel_output_format <value>` | `-filter_hw_device <name>` |
+| `-hwaccel_device <value>` | `-vaapi_device <path>` (a VAAPI encode's device selection) |
+| `-hwaccel_args <value>` | the encoder and its options (`-c:v h264_qsv`, `-global_quality`, …) |
+| `-hwaccel_flags <value>` | the upload and mapping filters (`hwupload`, `hwmap`, `vpp_qsv`, `format=nv12`) |
+
+The result is the command Jellyfin itself builds for a software decode with a hardware encode: the
+picture decoded in memory, converted by the profile, uploaded to the device the server opened, and
+encoded there. Two boundaries are deliberate. The removal is scoped to the arguments in front of the
+marker's `-i`, because that is the only scope in which an option can be a decision about this input.
+And the list of removed names is closed rather than a prefix match, because `-init_hw_device` and
+`-filter_hw_device` open the device the encoder and the filter graph run on - removing them would
+take the hardware encode away with the hardware decode - and a bare `-vaapi_device` is what a
+VA-API encode uses for its device. A command that carries no hardware argument is unchanged by this
+rule, which is what keeps an ordinary hardware-disabled server byte-for-byte in the commands it
+already ran; a command whose input is not a marker is never looked at, decode options included.
+
 ## Profile command rules
 
 | Profile | Required fragments |
@@ -120,6 +173,10 @@ which is the opposite of what a source that has already converted the picture wa
 | `anaglyph_arcd` | `-view_ids -1` immediately before the marker input's `-i`, `-vf stereo3d=sbsl:arcd,format=yuv420p` |
 | `two_d_base` | marker replacement only; no `-view_ids` |
 | `custom_grayscale` | `-view_ids -1` immediately before the marker input's `-i`, `-filter_complex <Anaglyfin graph>`, `-map [anaglyfin_custom]` (the map only when the server's own graph does not consume the label) |
+
+Every one of those rows is also a command the server's hardware **decode** has been taken out of,
+and `two_d_base` is no exception: it writes no filter and no view request, and it is still a marker
+input that must be decoded in software. See "Hardware encode, software decode" above.
 
 A profile whose marker names a subtitle ordinal burns that track in - the `subtitles=` filter
 lands as the last stage of the profile's chain, and only then does the rewrite add `-sn` and take
