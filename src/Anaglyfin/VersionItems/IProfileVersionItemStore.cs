@@ -44,41 +44,25 @@ public interface IProfileVersionItemStore
     BaseItem? FindItem(Guid itemId);
 
     /// <summary>
-    /// Gets the library items a server-side 3D query names.
+    /// Gets the items a full reconciliation pass has to consider.
     /// </summary>
-    /// <returns>The videos the server reports as carrying a 3D format, or as grouping one.</returns>
+    /// <returns>Every library video that could carry versions of its own.</returns>
     /// <remarks>
     /// <para>
-    /// This is the cheap half of a full pass's candidate list: one query, answered from the item rows
-    /// alone, that replaces walking every video in the library. It is deliberately not an MVC query -
-    /// the server's 3D filter answers "this item, or one grouped with it, declares a stereo format",
-    /// which is a superset of what Anaglyfin converts and is narrowed by
-    /// <see cref="MvcEligibilityPrefilter"/> per item before anything expensive is asked.
+    /// This is the authoritative source population. It is deliberately broad: a filename, folder or
+    /// tag the detector understands is not necessarily visible to a server-side 3D or tag query, and a
+    /// root that has lost its own MVC signal still has to be reachable when it owns Anaglyfin version
+    /// items that must be removed. The pass keeps that walk cheap by asking
+    /// <see cref="MvcEligibilityPrefilter"/> per item before any media source is read, not by guessing
+    /// which items the detector would understand before it asks.
     /// </para>
     /// <para>
-    /// Alternate versions are not in the answer for their own sake: the server's general queries
-    /// exclude items that name a primary version, and a version of something is promoted to the item
-    /// it is a version of rather than listed beside it - which is both why a profile version item
-    /// never shows up in browse or search and why the item a pass gets back is the one a client can
-    /// reach.
+    /// Alternate versions are not in here: the server's general queries exclude items that name a
+    /// primary version, which is both why a profile version item never shows up in browse or search
+    /// and why a pass over this list never mistakes one of Anaglyfin's own items for a library movie.
     /// </para>
     /// </remarks>
-    IReadOnlyList<Video> Get3DVersionRootCandidates();
-
-    /// <summary>
-    /// Gets the library items carrying any of the given tags.
-    /// </summary>
-    /// <param name="tagNames">The tag spellings to ask for; an empty list asks for nothing.</param>
-    /// <returns>The videos carrying one of those tags, or nothing when none do.</returns>
-    /// <remarks>
-    /// The supplement to <see cref="Get3DVersionRootCandidates"/>: an item can say MVC in a tag - from
-    /// an NFO file, from a scraper, from a person who typed it - and carry no stereo format at all,
-    /// which a 3D query cannot see. It is a second narrow query rather than a general one, and the
-    /// list it hands over is the same list the cheap prefilter judges, so a tag that means nothing to
-    /// the detector costs a lookup and nothing else.
-    /// </remarks>
-    IReadOnlyList<Video> GetTaggedVersionRootCandidates(IReadOnlyList<string> tagNames);
-
+    IReadOnlyList<Video> GetVersionRootCandidates();
 
     /// <summary>
     /// Gets the items linked to a primary as its alternate versions.

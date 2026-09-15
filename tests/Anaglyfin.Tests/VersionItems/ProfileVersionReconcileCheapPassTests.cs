@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Anaglyfin.Configuration;
 using Anaglyfin.Detection;
+using Anaglyfin.Markers;
 using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
 using Anaglyfin.VersionItems;
@@ -16,22 +17,22 @@ using Xunit;
 namespace Anaglyfin.Tests.VersionItems;
 
 /// <summary>
-/// Covers what a full reconciliation pass asks the library, and what it refuses to ask.
+/// Covers what a full reconciliation pass considers, and what it refuses to read expensively.
 /// </summary>
 /// <remarks>
 /// <para>
 /// The other version-item tests ask what a pass changes. These ask what it costs, because that is the
-/// property a library of thousands experiences: a pass runs on every start-up and every settings save,
-/// and the expensive thing a pass can do is read the media sources of an item - the persisted streams,
-/// attachments and segment state of every file grouped with it. The answers below are therefore about
-/// reads: which queries ran, which items they named, and which of those items ever had their sources
-/// looked at. The fake counts reads for exactly this question, and an item whose sources were never
-/// read is the outcome several of these tests are about.
+/// property a library of thousands experiences: a pass runs on every start-up and every settings save.
+/// The population it walks is deliberately the whole library - the detector's vocabulary is wider than
+/// a 3D or tag query - but the expensive thing a pass can do is read the media sources of an item. The
+/// answers below are therefore about reads: which items the fake full walk returns naturally, and which
+/// of those items ever had their sources looked at. The fake counts reads for exactly this question,
+/// and an item whose sources were never read is the outcome several of these tests are about.
 /// </para>
 /// <para>
-/// The narrow queries are asserted as answers rather than as query objects: what a pass may ask the
-/// server is bounded by what this seam exposes, and a pass that went hunting for every video in the
-/// library would have to ask for something the fake has no answer for.
+/// The fake full walk is not a list of query results. A video in the fake library is seen by the pass
+/// because it is in the library, which is what lets tests prove the detector's filename vocabulary
+/// works without naming it as a query answer first.
 /// </para>
 /// </remarks>
 public class ProfileVersionReconcileCheapPassTests
@@ -42,61 +43,61 @@ public class ProfileVersionReconcileCheapPassTests
 
     private static readonly Guid OtherMovieId = Guid.Parse("2b1f0e9d-7c6b-4a59-8e3d-4c5b6a7988f7");
 
-    // --- what a pass asks -------------------------------------------------------
+    // --- what a full walk reaches -------------------------------------------------
 
     [Fact]
-    public async Task APassAsksTheNarrowQueriesAndNeverTheWholeLibrary()
+    public async Task AFileNamedForMVCReachesTheDetectorFromTheFullWalk()
     {
         var store = new FakeProfileVersionItemStore();
         store.AddItem(ProfileVersionFixtures.CreateFolder());
+        store.AddOrdinaryLibraryVideo();
 
-        // Two movies with no 3D anywhere on them and nothing filed beside them, and the one item a
-        // query could name: a pass over a library like this one is the common case on a real server,
-        // and the only things it is allowed to learn are the two answers below.
-        store.AddItem(OtherMovie(OtherMovieId, "/movies/Second (2015)/Second (2015).mkv"));
-        store.AddItem(OtherMovie(Guid.NewGuid(), "/movies/Third (2016)/Third (2016).mkv"));
-        store.AddVersionRoot(ProfileVersionFixtures.CreateSingleFileMvcMovie());
+        // Nothing here says this item was returned by a narrow query. It is only a video in the fake
+        // library whose file name carries the detector's vocabulary, and the full pass has to ask the
+        // detector about it anyway.
+        var mvc = AddNamedVideo(
+            store,
+            "/movies/Ready Player One (2018)/Ready Player One (2018) 3DMVC.mkv",
+            Video3DFormat.MVC);
 
-        await CreateManager(store, ConfigurationWith(SideBySideFull))
+        var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
             .ReconcileLibraryAsync(CancellationToken.None);
 
-        // One 3D query and one tag query, and the tag query asked for the vocabulary the detector reads
-        // rather than for a word invented on the spot. There is no third question: nothing here offers a
-        // pass a way to list every video, which is the ask these two queries exist to replace.
-        Assert.Equal(1, store.ThreeDQueryCount);
-        Assert.Equal(1, store.TagQueryCount);
-        Assert.Equal(MvcEligibilityPrefilter.TagQueryValues, Assert.Single(store.TagQueries));
-        Assert.Single(store.QueriedCandidates);
+        Assert.Equal(1, result.Created);
+        Assert.Equal(1, mvc.MediaSourceReads);
+
+        var created = Assert.Single(store.Created);
+        Assert.Equal(mvc.Id, Assert.IsType<Video>(created.Item).PrimaryVersionId);
     }
 
     [Fact]
-    public async Task APassNeverReadsTheSourcesOfAnOrdinaryMovie()
+    public async Task APassNeverReadsTheSourcesOfOrdinaryMoviesInTheWalk()
     {
         var store = new FakeProfileVersionItemStore();
         store.AddItem(ProfileVersionFixtures.CreateFolder());
-        var ordinary = store.AddItemReturnedByNoQuery();
+        var ordinary = store.AddOrdinaryLibraryVideo();
         var mvc = store.AddVersionRoot(ProfileVersionFixtures.CreateSingleFileMvcMovie());
 
         var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
             .ReconcileLibraryAsync(CancellationToken.None);
 
-        // The MVC movie was read as media, once, and the ordinary one not at all: a named item is still
-        // judged from its own fields, and an item no query named is never reached at all. The version is
-        // the proof that the pass did its job while costing one read.
+        // The MVC movie was read as media, once, and the ordinary one not at all. The ordinary movie is
+        // still in the walk: the cheap answer is what keeps the library's size off the media-source
+        // API, not a query that pretends ordinary items do not exist.
         Assert.Equal(1, mvc.MediaSourceReads);
         Assert.Equal(0, ordinary.MediaSourceReads);
         Assert.Equal(1, result.Created);
     }
 
     [Fact]
-    public async Task TheShelfTheThreeDQueryNamesAndTheScannerRefusesCostsNoSourceRead()
+    public async Task AWholeShelfOfKnownFormatsTheScannerRefusesCostsNoSourceRead()
     {
         var store = new FakeProfileVersionItemStore();
         store.AddItem(ProfileVersionFixtures.CreateFolder());
 
-        // The case the server's filter cannot answer and this half can: a library of half-SBS rips every
-        // one of which comes back from a 3D query, and not one of which the MVP converts. Reading their
-        // streams to find that out is the cost the cheap question takes away.
+        // The case a 3D query would have named and this half can refuse before asking the scanner:
+        // a library of half-SBS rips. The full walk still returns them, but reading their streams to
+        // find that out is the cost the cheap question takes away.
         var sideBySide = store.AddVersionRoot(WithFormat(ProfileVersionFixtures.CreateOrdinaryMovie(OtherMovieId), Video3DFormat.HalfSideBySide));
 
         var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
@@ -114,9 +115,9 @@ public class ProfileVersionReconcileCheapPassTests
         store.AddItem(ProfileVersionFixtures.CreateFolder());
 
         // An MVC movie with no stereo format on it and no MVC in a name - what a tagged NFO leaves
-        // behind. Only the tag query can see it, and only the detector can tell its tag from the plain
-        // "3D" a scraper hangs on an ordinary movie, so the versions have to arrive through both.
-        var tagged = store.AddTaggedVersionRoot(ProfileVersionFixtures.CreateTaggedMvcMovie(OtherMovieId));
+        // behind. It is in the full walk because it is a library video, and only the detector can tell
+        // its tag from the plain "3D" a scraper hangs on an ordinary movie.
+        var tagged = store.AddVersionRoot(ProfileVersionFixtures.CreateTaggedMvcMovie(OtherMovieId));
 
         var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
             .ReconcileLibraryAsync(CancellationToken.None);
@@ -134,35 +135,52 @@ public class ProfileVersionReconcileCheapPassTests
         var store = new FakeProfileVersionItemStore();
         store.AddItem(ProfileVersionFixtures.CreateFolder());
 
-        // The tag query asks for names, not for meanings, so a movie wearing a tag from the ask list is
-        // walked and then judged by the same rules everything else is. This one is in the list because a
-        // person could type it; the answer it gets is the one the file deserves.
-        var tagged = store.AddTaggedVersionRoot(ProfileVersionFixtures.CreateTaggedMvcMovie(OtherMovieId, tag: "mvc"));
+        // The full walk does not know what a tag means, so a movie wearing a 3D word is walked and
+        // then judged by the same rules everything else is. A plain "3D" is asked about and refused.
+        var tagged = store.AddVersionRoot(ProfileVersionFixtures.CreateOrdinaryMovie(OtherMovieId));
+        tagged.Tags = new[] { "3D" };
 
         var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
             .ReconcileLibraryAsync(CancellationToken.None);
 
-        Assert.Equal(1, result.Created);
-        Assert.Equal(1, tagged.MediaSourceReads);
+        Assert.False(result.Changed);
+        Assert.Equal(0, tagged.MediaSourceReads);
     }
 
-    // --- which item the versions belong to --------------------------------------
+    // --- what still has to reach the scan even with no MVC signal -----------------
 
     [Fact]
-    public async Task TheHiddenMvcChildAQueryNamesIsMaterialisedUnderTheItemTheUserReaches()
+    public async Task TheStackRootStillGetsItsVersionsFromTheFileThatIsThreeD()
     {
         var store = new FakeProfileVersionItemStore();
         store.AddItem(ProfileVersionFixtures.CreateFolder());
-        var root = store.AddItemRootOfNothing();
-        var hidden = store.AddVersionRoot(ProfileVersionFixtures.CreateMvcAlternateItem(video3DFormat: Video3DFormat.MVC));
+        var root = store.AddStackedRootToFullWalk();
 
         var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
             .ReconcileLibraryAsync(CancellationToken.None);
 
-        // The signals a query can read live on the hidden alternate - that is the whole reason the file
-        // is invisible - and the versions cannot be filed under it: an item that names a primary is in
-        // no browse list, so a version hung off it would be a version nobody can select. The walk from
-        // the named item to the reachable one is what this pass owes the library.
+        // The root says nothing about 3D in its own name, path or tags, and it is still reconciled -
+        // because it names a version its own fields do not speak for, which is the one thing the cheap
+        // question is not allowed to guess about.
+        Assert.Equal(1, result.Created);
+        Assert.Equal(1, root.MediaSourceReads);
+        Assert.True(store.IsLinked(root.Id, Assert.Single(store.Created).Item.Id));
+    }
+
+    [Fact]
+    public async Task AHiddenMvcChildIsReconciledUnderTheRootThatTheWalkReaches()
+    {
+        var store = new FakeProfileVersionItemStore();
+        store.AddItem(ProfileVersionFixtures.CreateFolder());
+        var root = store.AddStackedRootToFullWalk();
+        var hidden = store.AddItemAndReturn(ProfileVersionFixtures.CreateMvcAlternateItem(video3DFormat: Video3DFormat.MVC));
+
+        var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
+            .ReconcileLibraryAsync(CancellationToken.None);
+
+        // The hidden alternate names a primary, so the general walk leaves it where a client cannot
+        // list it. The versions have to land on the root, and the root's source list - not the hidden
+        // item's own media-source API - is what the scan asks.
         Assert.Equal(1, result.Created);
 
         var created = Assert.IsType<Video>(Assert.Single(store.Created).Item);
@@ -175,24 +193,26 @@ public class ProfileVersionReconcileCheapPassTests
     }
 
     [Fact]
-    public async Task ARootIsReconciledOnceWhenItAndItsVersionAreBothNamed()
+    public async Task AVersionOfAnaglyfinsOwnFoundByTheWalkIsLeftToTheJanitor()
     {
         var store = new FakeProfileVersionItemStore();
         store.AddItem(ProfileVersionFixtures.CreateFolder());
-        var root = store.AddVersionRoot(ProfileVersionFixtures.CreateStackedMvcMovie());
-        var hidden = store.AddVersionRoot(ProfileVersionFixtures.CreateMvcAlternateItem(video3DFormat: Video3DFormat.MVC));
+        var orphan = store.AddItemAndReturn(new ScriptedVideo
+        {
+            Id = Guid.NewGuid(),
+            Name = "3D Full Side-by-Side",
+            Path = ProfileMarker.MarkerPrefix + "sbs_full?source=%2Fmovies%2FMissing%203DMVC.mkv",
+            ParentId = ProfileVersionFixtures.FolderId,
+            VideoType = VideoType.VideoFile
+        });
 
         var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
             .ReconcileLibraryAsync(CancellationToken.None);
 
-        // Two named items, one movie, one answer. Running the same diff twice over one item would
-        // report the second one as a change it made, and a media-source read for a stack is a read of
-        // every file in it, so the second one is not free.
-        Assert.Equal(1, result.Created);
-        Assert.Equal(1, root.MediaSourceReads);
-        Assert.Equal(0, hidden.MediaSourceReads);
-        Assert.Single(store.Created);
-        Assert.Single(store.LinksOf(root.Id));
+        Assert.Equal(1, result.Deleted);
+        Assert.Equal(0, orphan.MediaSourceReads);
+        Assert.Empty(store.Created);
+        Assert.Null(store.FindItem(orphan.Id));
     }
 
     [Fact]
@@ -222,7 +242,7 @@ public class ProfileVersionReconcileCheapPassTests
     {
         var store = new FakeProfileVersionItemStore();
         store.AddItem(ProfileVersionFixtures.CreateFolder());
-        store.AddItem(OtherMovie(OtherMovieId, "/movies/Second (2015)/Second (2015).mkv"));
+        store.AddOrdinaryLibraryVideo();
         store.AddVersionRoot(ProfileVersionFixtures.CreateSingleFileMvcMovie());
 
         var configuration = ConfigurationWith(SideBySideFull, SideBySideHalf);
@@ -231,7 +251,7 @@ public class ProfileVersionReconcileCheapPassTests
         var first = await manager.ReconcileLibraryAsync(CancellationToken.None);
         var second = await manager.ReconcileLibraryAsync(CancellationToken.None);
 
-        // Narrowing what a pass looks at may not narrow what it does: the administrator who enabled two
+        // Narrowing what a pass reads may not narrow what it does: the administrator who enabled two
         // profiles expects both in the picker, on the movie they named, and a pass over a library that
         // agrees with the settings still writes nothing the second time.
         Assert.Equal(2, first.Created);
@@ -242,24 +262,6 @@ public class ProfileVersionReconcileCheapPassTests
         Assert.Equal(2, store.LinksOf(ProfileVersionFixtures.MovieId).Count);
     }
 
-    [Fact]
-    public async Task TheStackedMovieStillGetsItsVersionsFromTheFileThatIsThreeD()
-    {
-        var store = new FakeProfileVersionItemStore();
-        store.AddItem(ProfileVersionFixtures.CreateFolder());
-        var root = store.AddVersionRoot(ProfileVersionFixtures.CreateStackedMvcMovie());
-
-        var result = await CreateManager(store, ConfigurationWith(SideBySideFull))
-            .ReconcileLibraryAsync(CancellationToken.None);
-
-        // The root says nothing about 3D in its own name, path or tags, and it is still reconciled -
-        // because it names a version its own fields do not speak for, which is the one thing the cheap
-        // question is not allowed to guess about.
-        Assert.Equal(1, result.Created);
-        Assert.Equal(1, root.MediaSourceReads);
-        Assert.True(store.IsLinked(root.Id, Assert.Single(store.Created).Item.Id));
-    }
-
     // --- what a pass says about itself ------------------------------------------
 
     [Fact]
@@ -267,7 +269,7 @@ public class ProfileVersionReconcileCheapPassTests
     {
         var store = new FakeProfileVersionItemStore();
         store.AddItem(ProfileVersionFixtures.CreateFolder());
-        store.AddItem(OtherMovie(OtherMovieId, "/movies/Second (2015)/Second (2015).mkv"));
+        store.AddOrdinaryLibraryVideo();
         store.AddVersionRoot(ProfileVersionFixtures.CreateSingleFileMvcMovie());
         store.AddVersionRoot(WithFormat(ProfileVersionFixtures.CreateOrdinaryMovie(Guid.NewGuid()), Video3DFormat.HalfSideBySide));
 
@@ -276,15 +278,15 @@ public class ProfileVersionReconcileCheapPassTests
         await CreateManager(store, ConfigurationWith(SideBySideFull), logger)
             .ReconcileLibraryAsync(CancellationToken.None);
 
-        // Two named items: one of them a movie the cheap question refused outright, the other scanned.
-        // The counts are the whole diagnostic - they are what a reader looks for when a library that
-        // should be cheap is not - and the titles are not, because a pass over a library has no reason
-        // to write the names of other people's movies into a log line it emits for itself.
+        // Three ordinary library videos are considered, two of them by the cheap question alone, and
+        // only one reaches the scanner. The counts are the whole diagnostic - they are what a reader
+        // looks for when a library that should be cheap is not - and the titles are not, because a pass
+        // over a library has no reason to write the names of other people's movies into this line.
         var considered = logger.Message(LogLevel.Debug, "reconciling profile version items");
-        Assert.Contains("2 cheap candidates", considered, StringComparison.Ordinal);
+        Assert.Contains("3 library videos", considered, StringComparison.Ordinal);
 
         var summary = logger.Message(LogLevel.Debug, "without reading a media source");
-        Assert.Contains("refused 1", summary, StringComparison.Ordinal);
+        Assert.Contains("refused 2", summary, StringComparison.Ordinal);
         Assert.Contains("scanned 1", summary, StringComparison.Ordinal);
 
         Assert.DoesNotContain(considered, "Ready Player One", StringComparison.Ordinal);
@@ -293,8 +295,31 @@ public class ProfileVersionReconcileCheapPassTests
 
     // --- fixtures ---------------------------------------------------------------
 
-    private static ScriptedVideo OtherMovie(Guid id, string path)
-        => ProfileVersionFixtures.CreateOrdinaryMovie(id, path);
+    private static ScriptedVideo AddNamedVideo(
+        FakeProfileVersionItemStore store,
+        string path,
+        Video3DFormat? video3DFormat = null)
+    {
+        var id = Guid.NewGuid();
+        var video = new ScriptedVideo
+        {
+            Id = id,
+            Name = "Movie",
+            Path = path,
+            ParentId = ProfileVersionFixtures.FolderId,
+            RunTimeTicks = ProfileVersionFixtures.RunTimeTicks,
+            Container = "mkv",
+            Size = ProfileVersionFixtures.FileSize,
+            TotalBitrate = ProfileVersionFixtures.Bitrate,
+            VideoType = VideoType.VideoFile,
+            Video3DFormat = video3DFormat,
+            StaticSources = new[] { ProfileVersionFixtures.CreateSource(id, "3D mvc", path, video3DFormat) }
+        };
+
+        store.AddItem(video);
+
+        return video;
+    }
 
     private static ScriptedVideo WithFormat(ScriptedVideo video, Video3DFormat format)
     {

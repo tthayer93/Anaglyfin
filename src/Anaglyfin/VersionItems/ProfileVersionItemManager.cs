@@ -106,27 +106,28 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     /// again.
     /// </para>
     /// <para>
-    /// <b>The pass is a query, not a walk.</b> It asks the server which items could be involved and
-    /// then asks those cheaply, so the cost of a pass follows the number of items with a stereo
-    /// question and not the size of the library: the two queries read item rows only, and
-    /// <see cref="MvcEligibilityPrefilter.IsCheapCandidate"/> is answered from the fields of the item
-    /// it was handed. Only what survives both reaches
+    /// <b>The pass is a walk, made cheap item by item.</b> The source population is every library
+    /// video the server's general query can list, because that is the only population guaranteed to
+    /// contain both the detector's vocabulary and any stale version a root still owns. The cost is
+    /// kept down after that: <see cref="MvcEligibilityPrefilter.IsCheapCandidate"/> is answered from
+    /// the fields of each item, and only what survives it reaches
     /// <see cref="MvcEligibleSourceScanner.Scan"/>, which is the one call in this file that reads
-    /// media sources, and on a shelf of ordinary movies it is called for none of them.
+    /// media sources. On a shelf of ordinary movies with no links, the walk reads items and reads no
+    /// media sources.
     /// </para>
     /// <para>
     /// <b>What still reaches the scan.</b> Anything the cheap question cannot refuse: an item the
-    /// queries named, and an item that names other versions of itself, whose 3D file - if it has one -
-    /// declares itself on a version this item does not speak for. That is the stacked movie this
-    /// feature was built on, and guessing about it from the primary's own fields would lose its
-    /// versions, which is a worse failure than one more media-source read.
+    /// detector accepts from its own fields, an item that names local alternate versions, and an item
+    /// whose linked versions may be Anaglyfin's own. The last one is the correctness case the prefilter
+    /// must fail open on - a root that stopped looking MVC still has to be reconciled so its stale
+    /// version items can disappear.
     /// </para>
     /// <para>
     /// <b>The janitor does not need an invitation.</b> One of Anaglyfin's own version items found in a
     /// candidate list is not something to scan but something to look after - it is either a healthy
     /// version of a healthy primary or an orphan that has to go - and neither answer needs a media
-    /// source. It is passed through the prefilter rather than refused by it, because "not one of ours"
-    /// is the question the prefilter answers.
+    /// source. It is passed through the prefilter rather than refused by it, because "ignore this item"
+    /// is the only answer the prefilter is allowed to give on its own.
     /// </para>
     /// </remarks>
     public async Task<ProfileVersionReconcileResult> ReconcileLibraryAsync(CancellationToken cancellationToken)
@@ -148,7 +149,7 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             }
 
             _logger.LogDebug(
-                "Anaglyfin is reconciling profile version items across {CandidateCount} cheap candidates.",
+                "Anaglyfin is reconciling profile version items across {CandidateCount} library videos.",
                 candidates.Count);
 
             var scanned = 0;
@@ -234,25 +235,22 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     }
 
     /// <summary>
-    /// The items a pass has to look at, from the queries that name them.
+    /// The items a pass has to look at, from the full library walk.
     /// </summary>
-    /// <returns>The candidates in query order, each item named once.</returns>
+    /// <returns>The candidates in store order, each item named once.</returns>
     /// <remarks>
-    /// Two narrow queries, not one general one. The server's 3D filter names the items that carry a
-    /// stereo format - and, because it reads through the grouping an item is built from, the plain
-    /// primary of a movie whose MVC file is filed as one of its versions; the tag query names the ones
-    /// that say MVC in a tag and record no format, which is the only way a hand-tagged item can be
-    /// found without a name search. Both are answered from item rows, and neither is the scanner: what
-    /// they hand over is still judged by the cheap prefilter and, for whatever survives that, by the
-    /// scan itself.
+    /// One authoritative query, not a guess at which items the detector would understand. The server's
+    /// general query excludes items that name a primary version, which keeps Anaglyfin's own items out
+    /// of browse and out of this list under normal circumstances, but it does not narrow away ordinary
+    /// movies, filenames that merely contain the MVC markers, tags, or roots that still own stale
+    /// versions. Those are filtered cheaply per item in the loop that consumes this list.
     /// </remarks>
     private IReadOnlyList<Video> CollectPassCandidates()
     {
         var candidates = new List<Video>();
         var seen = new HashSet<Guid>();
 
-        AddCandidates(_store.Get3DVersionRootCandidates());
-        AddCandidates(_store.GetTaggedVersionRootCandidates(MvcEligibilityPrefilter.TagQueryValues));
+        AddCandidates(_store.GetVersionRootCandidates());
 
         return candidates;
 

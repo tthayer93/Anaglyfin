@@ -255,14 +255,16 @@ public class ProfileVersionItemServiceTests
     }
 
     [Fact]
-    public async Task AVersionItemOfAnaglyfinsOwnIsNotARequest()
+    public async Task AVersionItemOfAnaglyfinsOwnIsARequestForTheJanitor()
     {
         var (service, events, queue) = Create(out _, debounce: Never);
         await service.StartAsync(CancellationToken.None);
         queue.TryTakeFullPass();
 
-        // The write that created a version announces that version, and answering the announcement is
-        // the loop this listener exists to break. Its path is a marker, which is the whole answer.
+        // The write that created a version announces that version, and the primary deletion that leaves
+        // a version promoted or orphaned announces it too. Dropping marker items is how a stale version
+        // outlives the movie it used to belong to, so the listener asks the manager - whose janitor path
+        // will either reconcile the primary or remove the orphan - rather than guessing here.
         var version = new Video
         {
             Id = Guid.NewGuid(),
@@ -271,10 +273,67 @@ public class ProfileVersionItemServiceTests
         };
 
         var requests = queue.RequestCount;
-        events.RaiseAdded(version);
         events.RaiseUpdated(version);
 
-        Assert.Equal(requests, queue.RequestCount);
+        Assert.Equal(requests + 1, queue.RequestCount);
+        Assert.Equal(1, queue.PendingItemCount);
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task APromotedMarkerItemEventReachesTheWorkerJanitor()
+    {
+        var (service, events, _) = Create(out _, out var reconciler, debounce: TimeSpan.FromMilliseconds(25));
+
+        await service.StartAsync(CancellationToken.None);
+        await reconciler.FirstLibraryPass.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var marker = new Video
+        {
+            Id = Guid.NewGuid(),
+            Name = "3D Full Side-by-Side",
+            Path = MarkerPath,
+            VideoType = VideoType.VideoFile
+        };
+
+        // This is the shape a primary deletion can leave behind: the marker item is announced, and if
+        // the listener treats its marker path as a reason to ignore it, no janitor ever learns it is
+        // now a version of nothing.
+        events.RaiseUpdated(marker);
+
+        await WaitUntil(() => reconciler.ItemReconciliations.Contains(marker.Id), TimeSpan.FromSeconds(5));
+        Assert.Equal(1, reconciler.LibraryPasses);
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task ARootThatNamesVersionsIsARequestEvenWhenItsOwnFieldsSayNothing()
+    {
+        var (service, events, queue) = Create(out _, debounce: Never);
+        await service.StartAsync(CancellationToken.None);
+        queue.TryTakeFullPass();
+
+        // A root may have lost every MVC signal in its own name, path, tags and format while still
+        // owning a linked Anaglyfin version. The link carries an item id rather than a path, so the
+        // listener cannot cheaply prove it is not one of ours; asking the reconciler is the safe answer.
+        var root = new Video
+        {
+            Id = Guid.NewGuid(),
+            Name = "Ordinary Movie",
+            Path = "/movies/Ordinary (2015)/Ordinary (2015).mkv",
+            VideoType = VideoType.VideoFile,
+            LinkedAlternateVersions = new[]
+            {
+                new LinkedChild { ItemId = Guid.NewGuid(), Type = LinkedChildType.LinkedAlternateVersion }
+            }
+        };
+
+        var requests = queue.RequestCount;
+        events.RaiseUpdated(root);
+
+        Assert.Equal(requests + 1, queue.RequestCount);
 
         await service.StopAsync(CancellationToken.None);
     }

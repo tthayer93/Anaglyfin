@@ -50,17 +50,7 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
 
     private readonly Dictionary<Guid, List<PersonInfo>> _people = new();
 
-    private readonly List<Video> _threeDRoots = new();
-
-    private readonly List<Video> _taggedRoots = new();
-
     private readonly ManualResetEventSlim _creationGate = new(initialState: true);
-
-    /// <summary>Gets the items a full pass is told to consider by its 3D query.</summary>
-    public IList<Video> ThreeDVersionRoots => _threeDRoots;
-
-    /// <summary>Gets the items a full pass is told to consider by its tag query.</summary>
-    public IList<Video> TaggedVersionRoots => _taggedRoots;
 
     /// <summary>Gets every item created, with the folder it was filed under.</summary>
     public List<(BaseItem Item, Folder? Parent)> Created { get; } = new();
@@ -84,24 +74,6 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     /// Gets every image save: the item written and the files its rows name, in call order.
     /// </summary>
     public List<(Guid ItemId, IReadOnlyList<string> Paths)> ImagesSaved { get; } = new();
-
-    /// <summary>
-    /// Gets how many times the 3D query was asked. A pass asks once; a pass that walked the library
-    /// would ask for something this fake cannot answer and would have to ask for everything.
-    /// </summary>
-    public int ThreeDQueryCount { get; private set; }
-
-    /// <summary>Gets how many times the tag query was asked, whatever it was asked for.</summary>
-    public int TagQueryCount { get; private set; }
-
-    /// <summary>Gets the tag spellings every tag query was asked for, in call order.</summary>
-    public List<IReadOnlyList<string>> TagQueries { get; } = new();
-
-    /// <summary>
-    /// Gets the items every query answered with, in call order and with duplicates: what a pass was
-    /// told to look at, which is not necessarily what it looked at.
-    /// </summary>
-    public List<Video> QueriedCandidates { get; } = new();
 
     /// <summary>Makes the library queries throw, once per read.</summary>
     public bool ThrowOnListRoots { get; set; }
@@ -226,24 +198,21 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     }
 
     /// <inheritdoc />
-    public IReadOnlyList<Video> Get3DVersionRootCandidates()
+    public IReadOnlyList<Video> GetVersionRootCandidates()
     {
-        ThreeDQueryCount++;
-        QueriedCandidates.AddRange(_threeDRoots);
+        // The full server walk, not a test-side query list: any primary-less library video the fake
+        // holds is naturally visible to a pass. Items that name a primary version stay out, exactly as
+        // a server's general queries leave alternate versions and Anaglyfin's own items out of browse.
+        if (ThrowOnListRoots)
+        {
+            Throw();
+        }
 
-        return ThrowOnListRoots ? Throw() : _threeDRoots;
-    }
-
-    /// <inheritdoc />
-    public IReadOnlyList<Video> GetTaggedVersionRootCandidates(IReadOnlyList<string> tagNames)
-    {
-        ArgumentNullException.ThrowIfNull(tagNames);
-
-        TagQueryCount++;
-        TagQueries.Add(tagNames);
-        QueriedCandidates.AddRange(_taggedRoots);
-
-        return ThrowOnListRoots ? Throw() : _taggedRoots;
+        return _items.Values
+            .OfType<Video>()
+            .Where(video => !video.PrimaryVersionId.HasValue)
+            .OrderBy(video => video.Id)
+            .ToList();
     }
 
     private static IReadOnlyList<Video> Throw()
@@ -306,11 +275,7 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
         _streams.Remove(item.Id);
         _people.Remove(item.Id);
         _linkedVersions.Remove(item.Id);
-
-        foreach (var links in _linkedVersions.Values)
-        {
-            links.Remove(item.Id);
-        }
+        RemoveLinkReferencesEverywhere(item.Id);
     }
 
     /// <inheritdoc />
@@ -328,6 +293,8 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
         {
             links.Add(versionItemId);
         }
+
+        WriteLinkedChildren(primaryId, links);
     }
 
     /// <inheritdoc />
@@ -387,35 +354,34 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
         => _items[item.Id] = item;
 
     /// <summary>
-    /// Puts an item in the library and names it as a version root: what the server's 3D query answers
-    /// with, which is where a full pass starts.
+    /// Puts a primary-less video in the library where the full pass walk can see it naturally.
     /// </summary>
     /// <typeparam name="T">The kind of item, so a test can keep the type it built.</typeparam>
-    /// <param name="video">The item to file and name.</param>
+    /// <param name="video">The item to file.</param>
     /// <returns>The same item it was handed.</returns>
+    /// <remarks>
+    /// The fake full walk answers from the library itself; this helper exists so a test can name the
+    /// item it is putting into that walk without implying that a separate query list decides what a
+    /// pass is allowed to consider.
+    /// </remarks>
     public T AddVersionRoot<T>(T video)
         where T : Video
     {
         AddItem(video);
-        _threeDRoots.Add(video);
 
         return video;
     }
 
-    /// <summary>
-    /// Puts an item in the library and names it through the tag query instead: the item that says MVC
-    /// in a tag and carries no stereo format, which is the one case a 3D query cannot see.
-    /// </summary>
+    /// <summary>Puts an item in the library and hands the caller the same object it filed.</summary>
     /// <typeparam name="T">The kind of item, so a test can keep the type it built.</typeparam>
-    /// <param name="video">The item to file and name.</param>
+    /// <param name="item">The item to file.</param>
     /// <returns>The same item it was handed.</returns>
-    public T AddTaggedVersionRoot<T>(T video)
-        where T : Video
+    public T AddItemAndReturn<T>(T item)
+        where T : BaseItem
     {
-        AddItem(video);
-        _taggedRoots.Add(video);
+        AddItem(item);
 
-        return video;
+        return item;
     }
 
     /// <summary>Writes the streams an item reports, as a prior pass or a probe would have.</summary>
@@ -435,30 +401,26 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     /// <param name="versionItemId">The version to unlink.</param>
     public void Unlink(Guid primaryId, Guid versionItemId)
     {
-        if (_linkedVersions.TryGetValue(primaryId, out var links))
+        if (_linkedVersions.TryGetValue(primaryId, out var links) && links.Remove(versionItemId))
         {
-            links.Remove(versionItemId);
+            WriteLinkedChildren(primaryId, links);
         }
     }
 
-    /// <summary>Removes an item from the library, leaving any link naming it behind.</summary>
+    /// <summary>Removes an item from the library, taking links naming it with it.</summary>
     /// <param name="itemId">The item to remove.</param>
     public void RemoveItem(Guid itemId)
     {
         _items.Remove(itemId);
         _streams.Remove(itemId);
         _people.Remove(itemId);
+        _linkedVersions.Remove(itemId);
+        RemoveLinkReferencesEverywhere(itemId);
     }
 
-    /// <summary>
-    /// Puts an ordinary movie in the library without naming it through either narrow query.
-    /// </summary>
+    /// <summary>Puts an ordinary movie in the library, visible to the full walk but not eligible.</summary>
     /// <returns>The scripted item, reporting one source: its own file.</returns>
-    /// <remarks>
-    /// This is the library a pass must not touch: it exists, it can be found by id, and neither of
-    /// the two cheap questions a full pass asks can name it.
-    /// </remarks>
-    public ScriptedVideo AddItemReturnedByNoQuery()
+    public ScriptedVideo AddOrdinaryLibraryVideo()
     {
         var item = ProfileVersionFixtures.CreateOrdinaryMovie(
             Guid.NewGuid(),
@@ -469,17 +431,9 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
         return item;
     }
 
-    /// <summary>
-    /// Puts the primary of the stacked MVC movie in the library without naming it through either
-    /// narrow query.
-    /// </summary>
+    /// <summary>Puts the stacked MVC primary in the library without linking it as a query result.</summary>
     /// <returns>The scripted root, reporting its plain file and the hidden MVC alternate as sources.</returns>
-    /// <remarks>
-    /// The query can only see the hidden alternate; the primary is the item a client reaches and the
-    /// item whose media sources still include the MVC file. That gap is why a named candidate has to
-    /// be resolved to its root before anything is scanned.
-    /// </remarks>
-    public ScriptedVideo AddItemRootOfNothing()
+    public ScriptedVideo AddStackedRootToFullWalk()
     {
         var item = ProfileVersionFixtures.CreateStackedMvcMovie();
 
@@ -500,6 +454,36 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     /// <returns><c>true</c> when the pair is linked.</returns>
     public bool IsLinked(Guid primaryId, Guid versionItemId)
         => LinksOf(primaryId).Contains(versionItemId);
+
+    /// <summary>
+    /// Mirrors the fake's link table into the primary item's loaded child rows, the way a server
+    /// loads <c>Video.LinkedAlternateVersions</c> from the linked-child rows.
+    /// </summary>
+    private void WriteLinkedChildren(Guid primaryId, IReadOnlyCollection<Guid> versionIds)
+    {
+        if (_items.TryGetValue(primaryId, out var primary) && primary is Video video)
+        {
+            video.LinkedAlternateVersions = versionIds
+                .Select(versionId => new LinkedChild
+                {
+                    ItemId = versionId,
+                    Type = LinkedChildType.LinkedAlternateVersion
+                })
+                .ToArray();
+        }
+    }
+
+    /// <summary>Removes one version from every primary's loaded child rows.</summary>
+    private void RemoveLinkReferencesEverywhere(Guid versionItemId)
+    {
+        foreach (var pair in _linkedVersions.ToArray())
+        {
+            if (pair.Value.Remove(versionItemId))
+            {
+                WriteLinkedChildren(pair.Key, pair.Value);
+            }
+        }
+    }
 }
 
 /// <summary>

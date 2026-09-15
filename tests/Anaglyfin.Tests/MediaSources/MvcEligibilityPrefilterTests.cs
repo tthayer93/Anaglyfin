@@ -90,11 +90,12 @@ public class MvcEligibilityPrefilterTests
     }
 
     [Fact]
-    public void AnItemOfAnaglyfinsOwnIsRefused()
+    public void AnItemOfAnaglyfinsOwnIsAskedAboutForTheJanitor()
     {
-        // A version is never the owner of versions. Its path is a marker into a file its primary
-        // already holds the versions of, and the name and format it wears are the ones this plugin
-        // wrote - which is the recursion a naive listener never stops.
+        // A version is never the owner of versions, but an item whose path is one of our markers is
+        // still not ignorable: it has to reach the janitor so a healthy primary can be reconciled or
+        // an orphan can be removed. The manager's janitor branch decides what happens next; this answer
+        // only refuses to discard the item.
         var version = new Video
         {
             Id = Guid.NewGuid(),
@@ -104,7 +105,7 @@ public class MvcEligibilityPrefilterTests
             Video3DFormat = Video3DFormat.MVC
         };
 
-        Assert.False(MvcEligibilityPrefilter.IsCheapCandidate(version, Detector));
+        Assert.True(MvcEligibilityPrefilter.IsCheapCandidate(version, Detector));
     }
 
     [Fact]
@@ -221,31 +222,6 @@ public class MvcEligibilityPrefilterTests
         // The same item with the versions taken away: nothing of its own says MVC and nothing else is
         // claimed to exist, which is the state a refusal is actually owed.
         Assert.False(MvcEligibilityPrefilter.IsCheapCandidate(Video(PlainPath), Detector));
-    }
-
-    [Fact]
-    public void EveryTagAQueryMayAskForMeansMvc()
-    {
-        // The two halves of the tag story have to agree: the spellings a background pass may ask a
-        // database for are spellings the detector reads as MVC, or the query would name items the
-        // scanner then refuses and the pass would have walked for nothing.
-        var values = MvcEligibilityPrefilter.TagQueryValues;
-
-        Assert.NotEmpty(values);
-        Assert.All(values, value => Assert.True(MvcEligibilityPrefilter.IsCheapCandidate(Video(PlainPath, tags: new[] { value }), Detector)));
-    }
-
-    [Fact]
-    public void TheTagQueryVocabularyIsFiniteAndFreeOfNoise()
-    {
-        // A query vocabulary is a bound, not a search: bounded in size, spelled out rather than
-        // generated, and free of the plain "3d" that would turn it back into a walk of the shelf.
-        var values = MvcEligibilityPrefilter.TagQueryValues;
-
-        Assert.True(values.Count <= 16, $"{values.Count} tag spellings is not a narrow query.");
-        Assert.DoesNotContain(values, value => string.Equals(value.Trim(), "3d", StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(values, string.IsNullOrWhiteSpace);
-        Assert.Equal(values.Count, values.Distinct(StringComparer.OrdinalIgnoreCase).Count());
     }
 
     private static Video Video(
