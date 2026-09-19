@@ -298,6 +298,10 @@ public class ConfigurationPageTests
         Assert.Equal("#00FF00", configuration.CustomLeftEyeColor);
         Assert.Equal("#0000FF", configuration.CustomRightEyeColor);
         Assert.Equal(new[] { "sbs_full", "two_d_base" }, configuration.EnabledProfileIds);
+        Assert.True(configuration.SubtitleDepthEnabled);
+        Assert.Equal(SubtitleDepthMode.Plane, configuration.SubtitleDepthMode);
+        Assert.Equal(3, configuration.SubtitleDepthShift);
+        Assert.Equal(3, configuration.SubtitleDepthPlane);
 
         var deviceDefault = Assert.Single(configuration.DeviceDefaultProfiles);
         Assert.Equal("living-room-tv", deviceDefault.DeviceId);
@@ -428,6 +432,160 @@ public class ConfigurationPageTests
     }
 
     [Fact]
+    public void TheSubtitleDepthSwitchIsTheOneTheSettingsShipUnticked()
+    {
+        var html = ReadPageHtml();
+        var attributes = ReadAttributes(ReadFieldTag(nameof(PluginConfiguration.SubtitleDepthEnabled)));
+
+        Assert.Equal("checkbox", attributes["type"]);
+        Assert.Equal("boolean", attributes["data-anaglyfin-kind"]);
+
+        // Spelled the way the settings endpoint spells a boolean, because that is what the page
+        // reads back out of a stored setting - and off is what an installation that has never seen
+        // this setting, and one that upgraded out of a build without it, both store.
+        Assert.Equal("False", attributes["data-anaglyfin-default"]);
+
+        // The dashboard's own checkbox shape, so the box arrives as the control the dashboard
+        // upgrades and captions rather than as a bare input.
+        Assert.Matches(
+            @"<label class=""emby-checkbox-label"">\s*<input\s+type=""checkbox""\s+is=""emby-checkbox""\s+id=""AnaglyfinSubtitleDepthEnabled""",
+            html);
+
+        Assert.Contains("Enable FFmpeg-mvc subtitle depth", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheSubtitleDepthModeChoicesAreTheModeEnumeration()
+    {
+        var options = ReadOptionValues(nameof(PluginConfiguration.SubtitleDepthMode));
+
+        Assert.Equal(Enum.GetNames<SubtitleDepthMode>(), options.Select(option => option.Value).ToArray());
+        Assert.All(options, option => Assert.NotEmpty(option.Text));
+
+        // The names are what the settings endpoint binds, so a value no property declares would
+        // save as nothing at all - and it would report that it had succeeded.
+        Assert.Equal("Automatic", ReadAttributes(ReadFieldTag(nameof(PluginConfiguration.SubtitleDepthMode)))["data-anaglyfin-default"]);
+    }
+
+    [Theory]
+    [InlineData(nameof(PluginConfiguration.SubtitleDepthShift), SubtitleDepthSettings.MinShiftPixels, SubtitleDepthSettings.MaxShiftPixels)]
+    [InlineData(nameof(PluginConfiguration.SubtitleDepthPlane), SubtitleDepthSettings.MinPlane, SubtitleDepthSettings.MaxPlane)]
+    public void TheSubtitleDepthNumbersAreLimitedToWhatTheModelCanHonour(string fieldName, int minimum, int maximum)
+    {
+        var attributes = ReadAttributes(ReadFieldTag(fieldName));
+
+        Assert.Equal("number", attributes["type"]);
+        Assert.Equal("1", attributes["step"]);
+        Assert.Equal(minimum.ToString(CultureInfo.InvariantCulture), attributes["min"]);
+        Assert.Equal(maximum.ToString(CultureInfo.InvariantCulture), attributes["max"]);
+        Assert.Equal("boundedInteger", attributes["data-anaglyfin-kind"]);
+        Assert.Equal("0", attributes["data-anaglyfin-default"]);
+    }
+
+    [Fact]
+    public void TheSubtitleDepthFieldsAreLaidOutByTheModeThatWasPicked()
+    {
+        var html = ReadPageHtml();
+
+        // One field per reading of the depth, and the page shows the one the picked mode asks
+        // for: an administrator who chose a constant shift has no use for a plane index, and a
+        // form that asked for both is a form whose answers contradict each other.
+        foreach (var field in new[] { "mode", "shift", "plane" })
+        {
+            Assert.Contains($"data-anaglyfin-depth-field=\"{field}\"", html, StringComparison.Ordinal);
+        }
+
+        var sync = FunctionBody(html, "syncSubtitleDepthFields");
+
+        // Decided from the two controls the page has, since the page has no view model to be told.
+        Assert.Contains("#AnaglyfinSubtitleDepthEnabled", sync, StringComparison.Ordinal);
+        Assert.Contains("#AnaglyfinSubtitleDepthMode", sync, StringComparison.Ordinal);
+        Assert.Contains("data-anaglyfin-depth-field", sync, StringComparison.Ordinal);
+
+        // Hidden rather than emptied: the field of the mode that was not picked keeps its value,
+        // because a save reads it and the settings keep the shape the server stored.
+        Assert.Matches(@"fields\[i\]\.hidden\s*=\s*!visible;", sync);
+        Assert.DoesNotContain("value = string.Empty", sync, StringComparison.Ordinal);
+
+        // Laid out from the shipped defaults and again once the stored settings arrive, and every
+        // time the administrator changes either of the two controls it reads.
+        Assert.Contains("syncSubtitleDepthFields();", FunctionBody(html, "applyConfiguration"), StringComparison.Ordinal);
+        Assert.Equal(2, Regex.Matches(html, "syncSubtitleDepthFields\\(\\);").Count);
+        Assert.Equal(2, Regex.Matches(html, "addEventListener\\('change', syncSubtitleDepthFields\\)").Count);
+
+        // The hidden attribute has to be backed by the page's own stylesheet, for the same reason
+        // the dashboard notice is: the dashboard's sheet has an opinion about these elements.
+        Assert.Matches(@"\.anaglyfin-depthField\[hidden\]\s*\{\s*display:\s*none;", html);
+    }
+
+    [Fact]
+    public void TheSubtitleDepthModeNamesChooseTheFieldsTheyReveal()
+    {
+        var html = ReadPageHtml();
+
+        // The layout keys (`shift`, `plane`) are not the spelling the mode option stores, so a
+        // field has to name the mode that reveals it. Inferring the pairing by lower-casing the
+        // enum name makes `ConstantShift` look for a field called `constantshift`, which hides a
+        // number the selected mode needs even though its field is present.
+        var expectedFieldByMode = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [nameof(SubtitleDepthMode.Automatic)] = string.Empty,
+            [nameof(SubtitleDepthMode.ConstantShift)] = "shift",
+            [nameof(SubtitleDepthMode.Plane)] = "plane"
+        };
+
+        Assert.Equal(
+            Enum.GetNames<SubtitleDepthMode>().OrderBy(name => name, StringComparer.Ordinal).ToArray(),
+            expectedFieldByMode.Keys.OrderBy(name => name, StringComparer.Ordinal).ToArray());
+
+        var actualFieldByMode = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [nameof(SubtitleDepthMode.Automatic)] = string.Empty
+        };
+
+        foreach (Match field in Regex.Matches(html, @"<div\b[^>]*data-anaglyfin-depth-field[^>]*>"))
+        {
+            var attributes = ReadAttributes(field.Value);
+            var fieldKey = attributes.GetValueOrDefault("data-anaglyfin-depth-field", string.Empty);
+            var modeName = attributes.GetValueOrDefault("data-anaglyfin-depth-mode", string.Empty);
+
+            if (fieldKey == "mode")
+            {
+                Assert.False(
+                    attributes.ContainsKey("data-anaglyfin-depth-mode"),
+                    "The mode selector is shown by the feature switch, not by one mode name.");
+
+                continue;
+            }
+
+            Assert.True(
+                expectedFieldByMode.TryGetValue(modeName, out var expectedField) && expectedField.Length > 0,
+                $"The depth field '{fieldKey}' names a mode no settings enum declares: '{modeName}'.");
+
+            Assert.Equal(expectedField, fieldKey);
+            Assert.True(actualFieldByMode.TryAdd(modeName, fieldKey), $"The mode '{modeName}' revealed more than one field.");
+        }
+
+        Assert.Equal(expectedFieldByMode, actualFieldByMode);
+
+        var sync = FunctionBody(html, "syncSubtitleDepthFields");
+
+        // The function compares the mode option's stored spelling to that attribute, and uses that
+        // answer for both visibility and whether the control can be typed into. That is the half
+        // that turns "Enable" plus "One constant shift" into an editable shift box.
+        Assert.Contains("#AnaglyfinSubtitleDepthEnabled", sync, StringComparison.Ordinal);
+        Assert.Contains("#AnaglyfinSubtitleDepthMode", sync, StringComparison.Ordinal);
+        Assert.Contains("data-anaglyfin-depth-mode", sync, StringComparison.Ordinal);
+        Assert.Contains("modeForField === wantedMode", sync, StringComparison.Ordinal);
+        Assert.Matches(
+            @"var visible\s*=\s*askedFor\s*&&\s*\(when\s*===\s*'mode'\s*\|\|\s*\(modeForField\s*!==\s*''\s*&&\s*modeForField\s*===\s*wantedMode\)\);",
+            sync);
+        Assert.Matches(@"fields\[i\]\.hidden\s*=\s*!visible;", sync);
+        Assert.Matches(@"input\.disabled\s*=\s*!visible;", sync);
+        Assert.DoesNotContain("wanted.toLowerCase", sync, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TheAdminPageCarriesNoFreeFormConversionInput()
     {
         var html = ReadPageHtml();
@@ -547,6 +705,11 @@ public class ConfigurationPageTests
         Assert.Contains(FFmpegWrapperOptions.RealFFmpegAlternateEnvironmentVariable, html, StringComparison.Ordinal);
         Assert.Contains(FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable, html, StringComparison.Ordinal);
         Assert.Contains(FFmpegWrapperOptions.LockDirectoryEnvironmentVariable, html, StringComparison.Ordinal);
+
+        // ... and the one variable that decides whether a subtitle depth request reaches the
+        // wrapper at all belongs with them, because an administrator wondering why a saved
+        // setting did nothing needs to know that a file on disk is between the two.
+        Assert.Contains(WrapperSettingsFile.EnvironmentVariable, html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -724,6 +887,13 @@ public class ConfigurationPageTests
         if (propertyType == typeof(int))
         {
             return JsonValue.Create(3)!;
+        }
+
+        if (propertyType == typeof(bool))
+        {
+            // Ticked, so that a switch the endpoint did not bind comes back as the shipped
+            // default and shows up as a difference.
+            return JsonValue.Create(true)!;
         }
 
         if (propertyType.IsEnum)

@@ -33,4 +33,69 @@ public static class PluginConfigurationExtensions
             ? PluginConfiguration.DefaultMaxConcurrentTranscodes
             : configuration.MaxConcurrentTranscodes;
     }
+
+    /// <summary>
+    /// Reads the subtitle depth Anaglyfin acts on.
+    /// </summary>
+    /// <param name="configuration">The persisted settings.</param>
+    /// <returns>
+    /// The stored request when it is a request the FFmpeg-mvc filter can honour, and
+    /// <see cref="SubtitleDepthSettings.Disabled"/> when it is not.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Three rules, in the order a reader can check them:
+    /// <list type="bullet">
+    /// <item>
+    /// <description>
+    /// Nothing is asked for unless <see cref="PluginConfiguration.SubtitleDepthEnabled"/> is
+    /// on. A stored mode, shift or plane is then not a request - which is what lets a
+    /// settings file that has never seen this feature load as "off" rather than as
+    /// "somebody asked for plane 0".
+    /// </description>
+    /// </item>
+    /// <item>
+    /// <description>
+    /// The mode decides which number matters, and only that number is read. The other one
+    /// stays on the page for the next time its mode is picked, but it never travels.
+    /// </description>
+    /// </item>
+    /// <item>
+    /// <description>
+    /// A number outside what the filter honours, or a mode no name declares, is answered
+    /// with <see cref="SubtitleDepthSettings.Disabled"/> rather than with a clamp. Depth is
+    /// an enhancement: a settings file that cannot state it is a settings file that does not
+    /// want it, and the flat result is the one that is certain to play.
+    /// </description>
+    /// </item>
+    /// </list>
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="configuration"/> is null.</exception>
+    public static SubtitleDepthSettings GetEffectiveSubtitleDepth(this PluginConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        if (!configuration.SubtitleDepthEnabled
+            || !SubtitleDepthSettings.IsDeclaredMode(configuration.SubtitleDepthMode))
+        {
+            return SubtitleDepthSettings.Disabled;
+        }
+
+        return configuration.SubtitleDepthMode switch
+        {
+            SubtitleDepthMode.Automatic
+                => new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0),
+
+            SubtitleDepthMode.ConstantShift when SubtitleDepthSettings.IsShiftInRange(configuration.SubtitleDepthShift)
+                => new SubtitleDepthSettings(true, SubtitleDepthMode.ConstantShift, configuration.SubtitleDepthShift, 0),
+
+            SubtitleDepthMode.Plane when SubtitleDepthSettings.IsPlaneInRange(configuration.SubtitleDepthPlane)
+                => new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, configuration.SubtitleDepthPlane),
+
+            // A number the filter would clamp or refuse, reached through a mode that wants
+            // it: the feature is off, and the stored numbers are left where they are.
+            _ => SubtitleDepthSettings.Disabled
+        };
+    }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Anaglyfin.Configuration;
 using Anaglyfin.FFmpegWrapper;
 using Xunit;
 
@@ -212,6 +213,10 @@ public sealed class FFmpegWrapperOptionsTests
         Assert.False(string.IsNullOrWhiteSpace(options.LockDirectory));
         Assert.True(Path.IsPathRooted(options.LockDirectory));
         Assert.True(options.MaxConcurrentTranscodes >= 1);
+
+        // Including on a machine that happens to have a settings file pointed at it: the
+        // depth is always a value the wrapper can read, never a hole it has to check.
+        Assert.NotNull(options.SubtitleDepth);
     }
 
     [Fact]
@@ -219,6 +224,156 @@ public sealed class FFmpegWrapperOptionsTests
     {
         Assert.Throws<ArgumentNullException>(() => FFmpegWrapperOptions.FromEnvironment(null!));
         Assert.Throws<ArgumentNullException>(() => FFmpegWrapperOptions.ResolveRealFFmpegPath(null!));
+    }
+
+    [Theory]
+    [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "automatic", "shiftPixels": 0, "plane": 0 } }""", true, SubtitleDepthMode.Automatic, 0, 0)]
+    [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "constantShift", "shiftPixels": 40, "plane": 0 } }""", true, SubtitleDepthMode.ConstantShift, 40, 0)]
+    [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "constantShift", "shiftPixels": -40, "plane": 0 } }""", true, SubtitleDepthMode.ConstantShift, -40, 0)]
+    [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "plane", "shiftPixels": 0, "plane": 9 } }""", true, SubtitleDepthMode.Plane, 0, 9)]
+    [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": false, "mode": "plane", "shiftPixels": 0, "plane": 9 } }""", false, SubtitleDepthMode.Automatic, 0, 0)]
+    [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "flat", "shiftPixels": 0, "plane": 9 } }""", false, SubtitleDepthMode.Automatic, 0, 0)]
+    [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "plane", "shiftPixels": 0, "plane": 32 } }""", false, SubtitleDepthMode.Automatic, 0, 0)]
+    [InlineData("""{ "schemaVersion": 4, "subtitleDepth": { "enabled": true, "mode": "plane", "shiftPixels": 0, "plane": 9 } }""", false, SubtitleDepthMode.Automatic, 0, 0)]
+    [InlineData("""this is not a document""", false, SubtitleDepthMode.Automatic, 0, 0)]
+    public void TheDepthTheDocumentStatesReachesTheInvocation(
+        string written,
+        bool enabled,
+        SubtitleDepthMode mode,
+        int shiftPixels,
+        int plane)
+    {
+        // Written here as text rather than as what the plugin's writer produces, so that what
+        // is being tested is the wrapper's reading of the published shape and not its agreement
+        // with itself. A deployment can edit this file, and so can a newer plugin.
+        var directory = TemporaryDirectory();
+
+        try
+        {
+            var path = Path.Combine(directory, WrapperSettingsFile.DefaultFileName);
+            File.WriteAllText(path, written);
+
+            var options = OptionsFrom((WrapperSettingsFile.EnvironmentVariable, path));
+
+            Assert.Equal(new SubtitleDepthSettings(enabled, mode, shiftPixels, plane), options.SubtitleDepth);
+        }
+        finally
+        {
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void TheFileThePluginWritesIsTheFileTheWrapperReads()
+    {
+        // The two halves of the bridge, in one test: the settings model says what it wants, the
+        // plugin's writer states it, and this process reads it back as the same request. A
+        // spelling that drifted on either side is invisible everywhere else until playback.
+        var directory = TemporaryDirectory();
+
+        try
+        {
+            var configuration = new PluginConfiguration
+            {
+                SubtitleDepthEnabled = true,
+                SubtitleDepthMode = SubtitleDepthMode.Plane,
+                SubtitleDepthShift = 12,
+                SubtitleDepthPlane = 6
+            };
+
+            var request = configuration.GetEffectiveSubtitleDepth();
+            var path = Path.Combine(directory, WrapperSettingsFile.DefaultFileName);
+
+            Assert.True(WrapperSettingsFile.TryWrite(path, request, out var failure));
+            Assert.Null(failure);
+
+            Assert.Equal(request, OptionsFrom((WrapperSettingsFile.EnvironmentVariable, path)).SubtitleDepth);
+        }
+        finally
+        {
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void AWrapperWithNothingToReadOffersNoDepth()
+    {
+        // Every one of these is a real deployment: the variable unset, the file not yet written,
+        // a plugin that died mid-save, a data directory the wrapper cannot open. None of them is
+        // a transcode failure, and none of them is answered by a guess.
+        var directory = TemporaryDirectory();
+
+        try
+        {
+            var absent = Path.Combine(directory, WrapperSettingsFile.DefaultFileName);
+            var unreadable = Path.Combine(directory, "unreadable");
+
+            Assert.Equal(SubtitleDepthSettings.Disabled, OptionsFrom((WrapperSettingsFile.EnvironmentVariable, absent)).SubtitleDepth);
+            Assert.Equal(SubtitleDepthSettings.Disabled, OptionsFrom((WrapperSettingsFile.EnvironmentVariable, null)).SubtitleDepth);
+            Assert.Equal(SubtitleDepthSettings.Disabled, OptionsFrom((WrapperSettingsFile.EnvironmentVariable, "  ")).SubtitleDepth);
+            Assert.Equal(SubtitleDepthSettings.Disabled, OptionsFrom().SubtitleDepth);
+
+            File.WriteAllText(absent, """{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mo""");
+
+            Assert.Equal(SubtitleDepthSettings.Disabled, OptionsFrom((WrapperSettingsFile.EnvironmentVariable, absent)).SubtitleDepth);
+
+            Directory.CreateDirectory(unreadable);
+
+            Assert.Equal(SubtitleDepthSettings.Disabled, OptionsFrom((WrapperSettingsFile.EnvironmentVariable, unreadable)).SubtitleDepth);
+        }
+        finally
+        {
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void ASettingsDocumentLeavesTheProcessLimitsWhereTheDeploymentPutThem()
+    {
+        // The document is the plugin's channel and the environment is the deployment's, and the
+        // two are not allowed to dispute a setting: a file in a data directory does not decide how
+        // many FFmpeg processes this server starts, and it does not move where the running jobs
+        // are counted - a limit nobody can find is a limit nobody can explain.
+        var directory = TemporaryDirectory();
+
+        try
+        {
+            var path = Path.Combine(directory, WrapperSettingsFile.DefaultFileName);
+
+            File.WriteAllText(
+                path,
+                """
+                {
+                  "schemaVersion": 1,
+                  "subtitleDepth": { "enabled": true, "mode": "automatic", "shiftPixels": 0, "plane": 0 },
+                  "maxConcurrentTranscodes": 99,
+                  "lockDirectory": "/somewhere/else",
+                  "realFFmpeg": "/bin/false"
+                }
+                """);
+
+            var configured = OptionsFrom(
+                (WrapperSettingsFile.EnvironmentVariable, path),
+                (FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable, "3"),
+                (FFmpegWrapperOptions.LockDirectoryEnvironmentVariable, "/var/lib/anaglyfin/slots"));
+
+            Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0), configured.SubtitleDepth);
+            Assert.Equal(3, configured.MaxConcurrentTranscodes);
+            Assert.Equal("/var/lib/anaglyfin/slots", configured.LockDirectory);
+
+            // And the document does not get to set them by being the only source either: with no
+            // variables, the shipped defaults stand whatever it claims.
+            var unconfigured = OptionsFrom((WrapperSettingsFile.EnvironmentVariable, path));
+
+            Assert.Equal(FFmpegWrapperOptions.DefaultMaxConcurrentTranscodes, unconfigured.MaxConcurrentTranscodes);
+            Assert.Equal(FFmpegWrapperOptions.DefaultLockDirectory, unconfigured.LockDirectory);
+            Assert.Equal(FFmpegWrapperOptions.FFmpegExecutableName, unconfigured.RealFFmpegPath);
+            Assert.True(unconfigured.SubtitleDepth.Enabled);
+        }
+        finally
+        {
+            TryDelete(directory);
+        }
     }
 
     /// <summary>

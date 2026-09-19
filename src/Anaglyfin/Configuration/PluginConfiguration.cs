@@ -121,4 +121,59 @@ public class PluginConfiguration : BasePluginConfiguration
     /// nothing but three bytes in <c>0..255</c> can travel towards an encoder.
     /// </remarks>
     public string CustomRightEyeColor { get; set; } = ProfileCatalog.DefaultCustomRightEyeColor.ToHexString();
+
+    /// <summary>
+    /// Gets or sets whether Anaglyfin asks FFmpeg-mvc to place subtitles in depth.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Off in the shipped settings, and off is the whole of the safe default: an
+    /// installation that has never seen this setting, a settings file written before it
+    /// existed, and an administrator who ticked the box on a server whose FFmpeg has no
+    /// <c>mvcsubdepth</c> filter all describe the same flat subtitles.
+    /// </para>
+    /// <para>
+    /// Nothing here asserts that the configured FFmpeg offers the filter, the same way
+    /// <see cref="EncoderPolicy"/> does not assert that one offers a hardware encoder: the
+    /// setting records the request, and the deployment is what names the binary that has to
+    /// honour it.
+    /// </para>
+    /// </remarks>
+    public bool SubtitleDepthEnabled { get; set; }
+
+    /// <summary>
+    /// Gets or sets which reading of the subtitle depth is asked for.
+    /// </summary>
+    /// <remarks>
+    /// Meaningful only while <see cref="SubtitleDepthEnabled"/> is on, and read through
+    /// <see cref="PluginConfigurationExtensions.GetEffectiveSubtitleDepth"/>, which treats a
+    /// mode no name declares as "off" rather than as a guess.
+    /// </remarks>
+    public SubtitleDepthMode SubtitleDepthMode { get; set; }
+
+    /// <summary>
+    /// Gets or sets the constant eye shift asked for in
+    /// <see cref="Anaglyfin.Configuration.SubtitleDepthMode.ConstantShift"/> mode, in native picture
+    /// pixels, positive toward the viewer.
+    /// </summary>
+    /// <remarks>
+    /// Stored as typed, and only honoured inside
+    /// <see cref="SubtitleDepthSettings.MinShiftPixels"/>..<see cref="SubtitleDepthSettings.MaxShiftPixels"/>
+    /// - the distance FFmpeg-mvc travels without clamping - which
+    /// <see cref="PluginConfigurationExtensions.GetEffectiveSubtitleDepth"/> enforces. The
+    /// admin page restricts entry to the same range; the check is not on the page because
+    /// the page is not the only way a settings file gets written.
+    /// </remarks>
+    public int SubtitleDepthShift { get; set; }
+
+    /// <summary>
+    /// Gets or sets the authored depth sequence index read directly in
+    /// <see cref="Configuration.SubtitleDepthMode.Plane"/> mode.
+    /// </summary>
+    /// <remarks>
+    /// Only honoured inside <see cref="SubtitleDepthSettings.MinPlane"/>..
+    /// <see cref="SubtitleDepthSettings.MaxPlane"/>, the range an offset-metadata table can
+    /// hold, and ignored in every other mode.
+    /// </remarks>
+    public int SubtitleDepthPlane { get; set; }
 }

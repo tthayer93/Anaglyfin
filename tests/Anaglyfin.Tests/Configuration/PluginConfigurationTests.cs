@@ -29,6 +29,22 @@ public class PluginConfigurationTests
         Assert.Empty(configuration.DeviceDefaultProfiles);
         Assert.Equal("#FF0000", configuration.CustomLeftEyeColor);
         Assert.Equal("#00FFFF", configuration.CustomRightEyeColor);
+        Assert.False(configuration.SubtitleDepthEnabled);
+        Assert.Equal(SubtitleDepthMode.Automatic, configuration.SubtitleDepthMode);
+        Assert.Equal(0, configuration.SubtitleDepthShift);
+        Assert.Equal(0, configuration.SubtitleDepthPlane);
+    }
+
+    [Fact]
+    public void FreshSettingsAskForNoSubtitleDepth()
+    {
+        // The stored defaults and the read side have to say the same thing here: a fresh
+        // installation and a server reading its settings for the first time must both produce
+        // "flat subtitles", and not one of them by way of a fallback.
+        var configuration = new PluginConfiguration();
+
+        Assert.False(configuration.SubtitleDepthEnabled);
+        Assert.Equal(SubtitleDepthSettings.Disabled, configuration.GetEffectiveSubtitleDepth());
     }
 
     [Fact]
@@ -205,6 +221,294 @@ public class PluginConfigurationTests
         Assert.Equal(ProfileIds.CustomGrayscale, Assert.Single(reloaded.EnabledProfileIds));
         Assert.Equal("Web", Assert.Single(reloaded.DeviceDefaultProfiles).ClientName);
         Assert.Equal(ProfileIds.SideBySideFull, Assert.Single(reloaded.DeviceDefaultProfiles).ProfileId);
+    }
+
+    [Theory]
+    [InlineData(SubtitleDepthMode.Automatic, 0, 0)]
+    [InlineData(SubtitleDepthMode.ConstantShift, -8, 0)]
+    [InlineData(SubtitleDepthMode.ConstantShift, 64, 17)]
+    [InlineData(SubtitleDepthMode.ConstantShift, -64, 0)]
+    [InlineData(SubtitleDepthMode.Plane, 3, 7)]
+    [InlineData(SubtitleDepthMode.Plane, 0, 31)]
+    public void SubtitleDepthSettingsSurviveTheServerXmlRoundTrip(SubtitleDepthMode mode, int shift, int plane)
+    {
+        var configuration = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = mode,
+            SubtitleDepthShift = shift,
+            SubtitleDepthPlane = plane
+        };
+
+        var reloaded = RoundTripXml(configuration);
+
+        Assert.True(reloaded.SubtitleDepthEnabled);
+        Assert.Equal(mode, reloaded.SubtitleDepthMode);
+        Assert.Equal(shift, reloaded.SubtitleDepthShift);
+        Assert.Equal(plane, reloaded.SubtitleDepthPlane);
+
+        // Stored is one thing and acted on is another: the request the settings describe has to
+        // arrive intact, including the sign of a shift, which is the difference between a
+        // caption in front of the screen and one behind it.
+        var effective = reloaded.GetEffectiveSubtitleDepth();
+
+        Assert.True(effective.Enabled);
+        Assert.Equal(mode, effective.Mode);
+        Assert.Equal(mode == SubtitleDepthMode.ConstantShift ? shift : 0, effective.ShiftPixels);
+        Assert.Equal(mode == SubtitleDepthMode.Plane ? plane : 0, effective.Plane);
+    }
+
+    [Fact]
+    public void SubtitleDepthSettingsSurviveTheAdminUiJsonRoundTrip()
+    {
+        // The settings endpoint binds an enum by its name, so the depth mode has to travel as
+        // text in both directions - and a payload the page posts that the model cannot read
+        // would come back as "flat subtitles" with a successful save.
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            Converters = { new JsonStringEnumConverter() }
+        };
+
+        var configuration = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = SubtitleDepthMode.Plane,
+            SubtitleDepthPlane = 9
+        };
+
+        var payload = JsonSerializer.Serialize(configuration, options);
+        var reloaded = JsonSerializer.Deserialize<PluginConfiguration>(payload, options);
+
+        Assert.Contains("\"SubtitleDepthEnabled\":true", payload, StringComparison.Ordinal);
+        Assert.Contains("\"SubtitleDepthMode\":\"Plane\"", payload, StringComparison.Ordinal);
+        Assert.Contains("\"SubtitleDepthPlane\":9", payload, StringComparison.Ordinal);
+
+        var saved = Assert.IsAssignableFrom<PluginConfiguration>(reloaded);
+        Assert.True(saved.SubtitleDepthEnabled);
+        Assert.Equal(SubtitleDepthMode.Plane, saved.SubtitleDepthMode);
+        Assert.Equal(9, saved.SubtitleDepthPlane);
+        Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 9), saved.GetEffectiveSubtitleDepth());
+    }
+
+    [Fact]
+    public void ASettingsFileWrittenBeforeSubtitleDepthExistedAsksForNone()
+    {
+        // What an upgrading server has on disk: a settings file that names profiles, a limit
+        // and colours, and has never heard of depth. It has to load as the installation that
+        // was not asked for anything, because the alternative is an upgrade that starts moving
+        // captions without anybody asking it to.
+        const string PreDepthXml = """
+            <PluginConfiguration xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+              <DefaultProfileId>sbs_half</DefaultProfileId>
+              <FallbackProfileId>two_d_base</FallbackProfileId>
+              <MaxConcurrentTranscodes>2</MaxConcurrentTranscodes>
+              <EncoderPolicy>SoftwareOnly</EncoderPolicy>
+              <CustomLeftEyeColor>#00FF00</CustomLeftEyeColor>
+              <CustomRightEyeColor>#0000FF</CustomRightEyeColor>
+            </PluginConfiguration>
+            """;
+
+        var serializer = new XmlSerializer(typeof(PluginConfiguration));
+        using var reader = new StringReader(PreDepthXml);
+
+        var loaded = (PluginConfiguration?)serializer.Deserialize(reader)
+            ?? throw new InvalidOperationException("The pre-depth settings XML did not load a configuration.");
+
+        Assert.Equal(2, loaded.MaxConcurrentTranscodes);
+        Assert.False(loaded.SubtitleDepthEnabled);
+        Assert.Equal(SubtitleDepthMode.Automatic, loaded.SubtitleDepthMode);
+        Assert.Equal(0, loaded.SubtitleDepthShift);
+        Assert.Equal(0, loaded.SubtitleDepthPlane);
+        Assert.Equal(SubtitleDepthSettings.Disabled, loaded.GetEffectiveSubtitleDepth());
+    }
+
+    [Theory]
+    // The ends of the range are honoured as given: they are the travel the filter has, not an
+    // approximation of it.
+    [InlineData(-64)]
+    [InlineData(-1)]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(64)]
+    public void AShiftInsideTheTravelledRangeIsHonoured(int shift)
+    {
+        var configuration = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
+            SubtitleDepthShift = shift
+        };
+
+        Assert.Equal(
+            new SubtitleDepthSettings(true, SubtitleDepthMode.ConstantShift, shift, 0),
+            configuration.GetEffectiveSubtitleDepth());
+    }
+
+    [Theory]
+    // Past the clamp distance the filter either pulls the caption back towards the screen or
+    // refuses the value, and neither is a request Anaglyfin sends: the depth is off, and the
+    // stored number is left where it is for whoever narrows it.
+    [InlineData(-65)]
+    [InlineData(-1000)]
+    [InlineData(65)]
+    [InlineData(int.MaxValue)]
+    [InlineData(int.MinValue)]
+    public void AShiftOutsideTheTravelledRangeIsReadAsNoDepth(int shift)
+    {
+        var configuration = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
+            SubtitleDepthShift = shift
+        };
+
+        Assert.Equal(SubtitleDepthSettings.Disabled, configuration.GetEffectiveSubtitleDepth());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(16)]
+    [InlineData(31)]
+    public void APlaneIndexAnAuthoredDiscCanCarryIsHonoured(int plane)
+    {
+        var configuration = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = SubtitleDepthMode.Plane,
+            SubtitleDepthPlane = plane
+        };
+
+        Assert.Equal(
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, plane),
+            configuration.GetEffectiveSubtitleDepth());
+    }
+
+    [Theory]
+    // There are at most 32 sequences to read, so a bigger index has no sequence behind it.
+    [InlineData(-1)]
+    [InlineData(32)]
+    [InlineData(4096)]
+    public void APlaneIndexOffTheAuthoredTableIsReadAsNoDepth(int plane)
+    {
+        var configuration = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = SubtitleDepthMode.Plane,
+            SubtitleDepthPlane = plane
+        };
+
+        Assert.Equal(SubtitleDepthSettings.Disabled, configuration.GetEffectiveSubtitleDepth());
+    }
+
+    [Fact]
+    public void AStoredModeDecidesWhichNumberIsRead()
+    {
+        // The number the picked mode does not use is neither checked nor sent: it is what the
+        // page keeps for the other mode, and an administrator who set a plane index and then
+        // picked a constant shift is asking for the shift, not for a decision between the two.
+        var shiftWithAPlaneStowed = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
+            SubtitleDepthShift = 12,
+            SubtitleDepthPlane = 99
+        };
+
+        Assert.Equal(
+            new SubtitleDepthSettings(true, SubtitleDepthMode.ConstantShift, 12, 0),
+            shiftWithAPlaneStowed.GetEffectiveSubtitleDepth());
+
+        var planeWithAShiftStowed = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = SubtitleDepthMode.Plane,
+            SubtitleDepthShift = 999,
+            SubtitleDepthPlane = 4
+        };
+
+        Assert.Equal(
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 4),
+            planeWithAShiftStowed.GetEffectiveSubtitleDepth());
+    }
+
+    [Fact]
+    public void TheNumbersAreInertUntilTheSwitchIsOn()
+    {
+        // "Mode is meaningful only when enabled" is the rule that lets the page keep a mode and
+        // two numbers stored while the feature is off, and it is also what makes a settings file
+        // full of left-over numbers a request for nothing.
+        var unticked = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = false,
+            SubtitleDepthMode = SubtitleDepthMode.Plane,
+            SubtitleDepthShift = 40,
+            SubtitleDepthPlane = 11
+        };
+
+        Assert.Equal(SubtitleDepthSettings.Disabled, unticked.GetEffectiveSubtitleDepth());
+    }
+
+    [Fact]
+    public void AutomaticModeCarriesNoNumberAtAll()
+    {
+        // Depth from the disc needs neither number, and the read side states neither - so what
+        // travels towards a filter graph cannot be a number that was left in the box.
+        var configuration = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = SubtitleDepthMode.Automatic,
+            SubtitleDepthShift = -30,
+            SubtitleDepthPlane = 12
+        };
+
+        Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0), configuration.GetEffectiveSubtitleDepth());
+    }
+
+    [Fact]
+    public void AModeNoNameDeclaresIsReadAsNoDepth()
+    {
+        // Both settings serialisers can hand back an ordinal nobody declared: the XML one puts a
+        // number into an enum without asking whether anybody named it, so a settings file from a
+        // future build carries a mode this build cannot honour. Flat is the answer that cannot be
+        // wrong.
+        var configuration = new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = (SubtitleDepthMode)77,
+            SubtitleDepthShift = 8
+        };
+
+        Assert.False(SubtitleDepthSettings.IsDeclaredMode(configuration.SubtitleDepthMode));
+        Assert.Equal(SubtitleDepthSettings.Disabled, configuration.GetEffectiveSubtitleDepth());
+    }
+
+    [Fact]
+    public void SubtitleDepthHelperRejectsAMissingConfiguration()
+    {
+        Assert.Throws<ArgumentNullException>(() => ((PluginConfiguration)null!).GetEffectiveSubtitleDepth());
+    }
+
+    [Theory]
+    [InlineData(-65, false)]
+    [InlineData(-64, true)]
+    [InlineData(0, true)]
+    [InlineData(64, true)]
+    [InlineData(65, false)]
+    public void TheShiftRangeIsTheTravelTheFilterMakes(int candidate, bool expected)
+    {
+        Assert.Equal(expected, SubtitleDepthSettings.IsShiftInRange(candidate));
+    }
+
+    [Theory]
+    [InlineData(-1, false)]
+    [InlineData(0, true)]
+    [InlineData(31, true)]
+    [InlineData(32, false)]
+    public void ThePlaneRangeIsTheTableAnAuthoredDiscCarries(int candidate, bool expected)
+    {
+        Assert.Equal(expected, SubtitleDepthSettings.IsPlaneInRange(candidate));
     }
 
     private static PluginConfiguration RoundTripXml(PluginConfiguration configuration)

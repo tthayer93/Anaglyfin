@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Anaglyfin.Configuration;
+using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.VersionItems;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
@@ -25,6 +26,17 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// </remarks>
     public static readonly Guid PluginId = Guid.Parse("c7f4a1d9-3b58-4e2a-9d6c-84f0b1e5a723");
 
+    /// <summary>
+    /// The server's paths, kept for the settings-save path.
+    /// </summary>
+    /// <remarks>
+    /// Nullable because a base-class settings path can call <see cref="SaveConfiguration"/> before
+    /// this derived constructor has assigned its fields. At that moment the plugin has no path to
+    /// write the wrapper document through, and a write attempted that early would only race the one
+    /// startup publication and later save paths perform.
+    /// </remarks>
+    private readonly IApplicationPaths? _applicationPaths;
+
     private readonly IProfileVersionReconcileTrigger? _versionReconcileTrigger;
 
     /// <summary>
@@ -37,12 +49,20 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// plugin that cannot reach its own queue is still a plugin that loads, and a version pass that
     /// never starts costs a user nothing but a version list filled in at playback time instead.
     /// </param>
+    /// <remarks>
+    /// The constructor deliberately does not read <see cref="BasePlugin{PluginConfiguration}.Configuration"/>:
+    /// the settings are loaded lazily, and touching them here would make plugin construction write a
+    /// default settings file. The wrapper's settings are handed over after construction by
+    /// <see cref="WrapperSettingsPublicationService"/>, and again whenever a save reaches
+    /// <see cref="SaveConfiguration"/>.
+    /// </remarks>
     public Plugin(
         IApplicationPaths applicationPaths,
         IXmlSerializer xmlSerializer,
         IProfileVersionReconcileTrigger? versionReconcileTrigger = null)
         : base(applicationPaths, xmlSerializer)
     {
+        _applicationPaths = applicationPaths;
         _versionReconcileTrigger = versionReconcileTrigger;
     }
 
@@ -80,11 +100,65 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// decision of its own and cannot disagree with it - and an administrator who saves the page
     /// six times in a row costs one pass, because the requests coalesce.
     /// </para>
+    /// <para>
+    /// The same save also hands the settings to the wrapper, which cannot read them for itself;
+    /// see <see cref="PublishWrapperSettings"/>. Doing it here rather than in a settings-changed
+    /// event of its own is what makes the file and the stored settings move together: one write
+    /// the server already ordered, one document describing it. Startup reaches the same helper from
+    /// <see cref="WrapperSettingsPublicationService"/>, which runs after the plugin and its settings
+    /// seam exist.
+    /// </para>
     /// </remarks>
     public override void SaveConfiguration(PluginConfiguration config)
     {
         base.SaveConfiguration(config);
 
+        PublishWrapperSettings(config);
+
         _versionReconcileTrigger?.RequestFullPass();
+    }
+
+    /// <summary>
+    /// Writes the settings the FFmpeg wrapper is allowed to know.
+    /// </summary>
+    /// <param name="configuration">
+    /// The settings being published; <c>null</c> is read as "not loaded yet" and published as the
+    /// shipped defaults, which is the honest reading of a plugin whose settings file has not been
+    /// read - and the same answer a fresh installation gives.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// The wrapper is started by the server rather than by this plugin, so it runs outside the
+    /// plugin's process and outside its container, and the environment it inherits was written by
+    /// the deployment rather than by the administrator editing this page. The document
+    /// <see cref="WrapperSettingsFile"/> writes is the one channel that reaches it, and it carries
+    /// the subtitle depth request and nothing else - not the profile list, not the colours, and no
+    /// credential, because the settings hold none and the wrapper has no use for any of them.
+    /// </para>
+    /// <para>
+    /// <b>A failed write is not a failed save.</b> An unwritable directory, a full disk or a file
+    /// another process holds open costs the deployment a depth setting that does not take effect -
+    /// the wrapper plays the flat way it played yesterday - rather than a plugin that cannot load or
+    /// a settings page that reports an error for a change the server did store. The administrator
+    /// who wonders why a depth request did not arrive finds the answer in the file's absence, and
+    /// the variable that names it is the same one the admin page already lists as deployment
+    /// guidance.
+    /// </para>
+    /// </remarks>
+    private void PublishWrapperSettings(PluginConfiguration? configuration)
+    {
+        // Nothing to write to until the constructor has the server's paths; see the field.
+        if (_applicationPaths is null)
+        {
+            return;
+        }
+
+        var request = (configuration ?? new PluginConfiguration()).GetEffectiveSubtitleDepth();
+
+        var path = WrapperSettingsFile.ResolveWritePath(
+            Environment.GetEnvironmentVariable,
+            _applicationPaths.PluginConfigurationsPath);
+
+        WrapperSettingsFile.TryWrite(path, request, out _);
     }
 }

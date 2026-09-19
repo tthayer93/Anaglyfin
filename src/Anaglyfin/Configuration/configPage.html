@@ -92,6 +92,13 @@
                 display: none;
             }
 
+            /* The subtitle depth fields are shown one mode at a time, by the same mechanism
+               and for the same reason: an attribute alone does not hide anything once the
+               dashboard's sheet has an opinion about div and label elements. */
+            .anaglyfin-depthField[hidden] {
+                display: none;
+            }
+
             .anaglyfin-message {
                 min-height: 1.2em;
                 margin-top: 0.6em;
@@ -240,7 +247,69 @@
                                 <dd>The limit the wrapper enforces. Keep it equal to the value saved above: the wrapper starts in the server's environment and cannot read this page.</dd>
                                 <dt>ANAGLYFIN_LOCK_DIR</dt>
                                 <dd>The directory the wrapper counts running jobs in. Every wrapper process on the server has to see the same directory, which on a containerised server means a mounted shared one.</dd>
+                                <dt>ANAGLYFIN_WRAPPER_SETTINGS</dt>
+                                <dd>The file Anaglyfin writes the subtitle depth request into, and the one the wrapper reads it back from. The plugin writes it whether or not the variable is set - unset means its own settings directory - but the wrapper can only be told where to look by the deployment, so subtitle depth is only honoured where this names the same file the plugin writes.</dd>
                             </dl>
+                        </div>
+                    </div>
+
+                    <div class="section anaglyfin-section">
+                        <h2 class="sectionTitle">Subtitle depth</h2>
+                        <div class="fieldDescription">
+                            An FFmpeg-mvc build can place a burned-in subtitle in front of the
+                            screen plane instead of on it. This is a request: what it costs is a
+                            horizontal shift of the caption in the two eyes, and it takes effect
+                            on the FFmpeg the deployment hands the wrapper - a server whose
+                            FFmpeg has no depth support plays the captions flat, which is what it
+                            plays today.
+                        </div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input type="checkbox" is="emby-checkbox" id="AnaglyfinSubtitleDepthEnabled" data-anaglyfin-field="SubtitleDepthEnabled" data-anaglyfin-kind="boolean" data-anaglyfin-default="False">
+                                <span class="checkboxLabel">Enable FFmpeg-mvc subtitle depth</span>
+                            </label>
+                            <div class="fieldDescription">
+                                Unticked, and subtitles are placed on the screen plane, which is
+                                what every build does and what a build without depth support does
+                                with anything else. This is also the answer a settings file
+                                written before this setting existed loads as.
+                            </div>
+                        </div>
+
+                        <div class="selectContainer anaglyfin-depthField" data-anaglyfin-depth-field="mode">
+                            <label class="selectLabel" for="AnaglyfinSubtitleDepthMode">Depth source</label>
+                            <select is="emby-select" id="AnaglyfinSubtitleDepthMode" class="emby-select-withcolor emby-select" data-anaglyfin-field="SubtitleDepthMode" data-anaglyfin-kind="enumName" data-anaglyfin-default="Automatic">
+                                <option value="Automatic">Use the depth the disc carries</option>
+                                <option value="ConstantShift">One constant shift for every caption</option>
+                                <option value="Plane">Read one authored depth sequence</option>
+                            </select>
+                            <div class="fieldDescription">
+                                A disc with authored depth says so per frame, and that is the
+                                reading which needs no number here. The other two ask for one
+                                number each, below.
+                            </div>
+                        </div>
+
+                        <div class="inputContainer anaglyfin-depthField" data-anaglyfin-depth-field="shift" data-anaglyfin-depth-mode="ConstantShift">
+                            <label class="inputLabel inputLabelUnfixed" for="AnaglyfinSubtitleDepthShift">Constant shift (pixels)</label>
+                            <input type="number" is="emby-input" id="AnaglyfinSubtitleDepthShift" min="-64" max="64" step="1" data-anaglyfin-field="SubtitleDepthShift" data-anaglyfin-kind="boundedInteger" data-anaglyfin-default="0">
+                            <div class="fieldDescription">
+                                Positive puts the caption in front of the screen plane, negative
+                                behind it, counted in picture pixels. The range is how far the
+                                build travels without pulling a caption back towards the screen,
+                                so it is the whole range there is.
+                            </div>
+                        </div>
+
+                        <div class="inputContainer anaglyfin-depthField" data-anaglyfin-depth-field="plane" data-anaglyfin-depth-mode="Plane">
+                            <label class="inputLabel inputLabelUnfixed" for="AnaglyfinSubtitleDepthPlane">Depth sequence number</label>
+                            <input type="number" is="emby-input" id="AnaglyfinSubtitleDepthPlane" min="0" max="31" step="1" data-anaglyfin-field="SubtitleDepthPlane" data-anaglyfin-kind="boundedInteger" data-anaglyfin-default="0">
+                            <div class="fieldDescription">
+                                The number of the authored depth sequence to read directly, for a
+                                disc whose depth was cut for a different eye arrangement than the
+                                one this playback is using. A disc carries at most 32 of them.
+                            </div>
                         </div>
                     </div>
 
@@ -357,6 +426,30 @@
                         },
                         write: function (element, value) {
                             element.value = positiveInteger(value, positiveInteger(fieldDefault(element), 1));
+                        }
+                    },
+                    boolean: {
+                        read: function (element) {
+                            return element.checked === true;
+                        },
+                        write: function (element, value) {
+                            element.checked = booleanValue(value, fieldDefault(element));
+                        }
+                    },
+                    enumName: {
+                        read: function (element) {
+                            return enumName(element.value, element, fieldDefault(element));
+                        },
+                        write: function (element, value) {
+                            element.value = enumName(value, element, fieldDefault(element));
+                        }
+                    },
+                    boundedInteger: {
+                        read: function (element) {
+                            return boundedInteger(element.value, element, fieldDefault(element));
+                        },
+                        write: function (element, value) {
+                            element.value = boundedInteger(value, element, fieldDefault(element));
                         }
                     },
                     profileChoiceList: {
@@ -529,6 +622,107 @@
                     return encoderPolicyNames.indexOf(fallback) >= 0 ? fallback : encoderPolicyNames[0];
                 }
 
+                function booleanValue(value, fallback) {
+                    if (typeof value === 'boolean') {
+                        return value;
+                    }
+
+                    if (typeof value === 'string') {
+                        var stated = value.trim().toLowerCase();
+                        if (stated === 'true') {
+                            return true;
+                        }
+
+                        if (stated === 'false') {
+                            return false;
+                        }
+                    }
+
+                    // The markup names the shipped default in the words the settings endpoint
+                    // spells a boolean in, so "nobody has saved this yet" reads as the box
+                    // unticked rather than as a guess about what an absent value means.
+                    return typeof fallback === 'string' && fallback.trim().toLowerCase() === 'true';
+                }
+
+                function optionValues(select) {
+                    var options = select && select.options ? select.options : [];
+                    var values = [];
+
+                    for (var i = 0; i < options.length; i++) {
+                        values.push(options[i].value);
+                    }
+
+                    return values;
+                }
+
+                /*
+                 * What encoderPolicyName does for one enumeration the script names, done for any
+                 * enumeration the markup lists: the field's own options are what this build
+                 * offers, so a name outside them is one the browser cannot select and the
+                 * settings endpoint would not bind, and the default the markup declares is what
+                 * takes its place.
+                 *
+                 * A stored value is read in either spelling the settings layer answers with -
+                 * the name from the endpoint, the ordinal out of a hand written XML file.
+                 */
+                function enumName(value, select, fallback) {
+                    var names = optionValues(select);
+                    var stated = typeof value === 'string' ? value.trim() : '';
+
+                    if (names.indexOf(stated) >= 0) {
+                        return stated;
+                    }
+
+                    if (typeof value === 'number' && names[value]) {
+                        return names[value];
+                    }
+
+                    stated = typeof fallback === 'string' ? fallback.trim() : '';
+
+                    if (names.indexOf(stated) >= 0) {
+                        return stated;
+                    }
+
+                    return names.length > 0 ? names[0] : '';
+                }
+
+                function integerAttribute(element, name, fallback) {
+                    var parsed = parseInt(attributeName(element, name), 10);
+
+                    return isNaN(parsed) ? fallback : parsed;
+                }
+
+                /*
+                 * A number the settings model can act on, read through the bounds the field
+                 * declares for itself: the markup says how low and how high the value it asks for
+                 * may go, and anything else is answered with the bound or with the shipped
+                 * default rather than with the number. The range is a property of the setting,
+                 * not of whatever a browser happened to accept into the box.
+                 */
+                function boundedInteger(value, element, fallback) {
+                    var min = integerAttribute(element, 'min', 0);
+                    var max = integerAttribute(element, 'max', min);
+                    var parsed = parseInt(value, 10);
+
+                    if (isNaN(parsed)) {
+                        parsed = parseInt(fallback, 10);
+                    }
+
+                    if (isNaN(parsed)) {
+                        parsed = min;
+                    }
+
+                    if (parsed < min) {
+                        return min;
+                    }
+
+                    if (parsed > max) {
+                        return max;
+                    }
+
+                    return parsed;
+                }
+
                 function profileOption(value, text) {
                     var option = document.createElement('option');
                     option.setAttribute('value', value);
@@ -653,6 +847,43 @@
                     return row;
                 }
 
+                /*
+                 * One mode asks for one number, so the page shows the number the picked mode
+                 * uses, and shows nothing at all until the feature is asked for. The pairing is
+                 * declared on each field as data-anaglyfin-depth-mode, spelled with the enum value
+                 * the option stores, rather than inferred from the field's shorter layout key.
+                 * The field of the mode that was not picked is hidden rather than emptied: a save
+                 * still reads the value stored for it, so changing one's mind about which reading
+                 * of the depth to ask for does not cost the administrator the number for the other
+                 * one, and the settings keep the shape the server stored whatever the page is
+                 * displaying.
+                 */
+                function syncSubtitleDepthFields() {
+                    var page = pageElement();
+                    if (!page) {
+                        return;
+                    }
+
+                    var enabled = page.querySelector('#AnaglyfinSubtitleDepthEnabled');
+                    var mode = page.querySelector('#AnaglyfinSubtitleDepthMode');
+                    var wantedMode = mode && typeof mode.value === 'string' ? mode.value : '';
+                    var askedFor = !!(enabled && enabled.checked);
+
+                    var fields = page.querySelectorAll('[data-anaglyfin-depth-field]');
+                    for (var i = 0; i < fields.length; i++) {
+                        var when = attributeName(fields[i], 'data-anaglyfin-depth-field').toLowerCase();
+                        var modeForField = attributeName(fields[i], 'data-anaglyfin-depth-mode');
+                        var visible = askedFor && (when === 'mode' || (modeForField !== '' && modeForField === wantedMode));
+
+                        fields[i].hidden = !visible;
+
+                        var input = fields[i].querySelector('input, select');
+                        if (input) {
+                            input.disabled = !visible;
+                        }
+                    }
+                }
+
                 function applyConfiguration(config) {
                     var fields = fieldElements();
 
@@ -662,6 +893,8 @@
                             handler.write(fields[i], readProperty(config, attributeName(fields[i], 'data-anaglyfin-field')));
                         }
                     }
+
+                    syncSubtitleDepthFields();
                 }
 
                 function writeConfiguration(config) {
@@ -829,6 +1062,23 @@
                 }
 
                 applyShippedDefaults();
+
+                // The depth fields are laid out from the shipped defaults rather than from the
+                // read the page has not made yet: unticked is what the settings ship as, and an
+                // administrator who opens the page before the endpoint answers sees the fields
+                // the shipped request needs, which are none.
+                var subtitleDepthEnabled = document.querySelector('#AnaglyfinSubtitleDepthEnabled');
+                var subtitleDepthMode = document.querySelector('#AnaglyfinSubtitleDepthMode');
+
+                if (subtitleDepthEnabled) {
+                    subtitleDepthEnabled.addEventListener('change', syncSubtitleDepthFields);
+                }
+
+                if (subtitleDepthMode) {
+                    subtitleDepthMode.addEventListener('change', syncSubtitleDepthFields);
+                }
+
+                syncSubtitleDepthFields();
 
                 var deviceDefaults = document.querySelector('#AnaglyfinDeviceDefaults');
                 var addDeviceDefault = document.querySelector('#AnaglyfinAddDeviceDefault');

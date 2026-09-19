@@ -1,5 +1,6 @@
 using System;
 using Anaglyfin.Detection;
+using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
 using Anaglyfin.VersionItems;
@@ -67,6 +68,12 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         // stops it on shutdown, which is the only honest lifetime for something that
         // writes to the library on the library's own events.
         serviceCollection.Add(new ServiceDescriptor(typeof(IHostedService), typeof(ProfileVersionItemService), ServiceLifetime.Singleton));
+
+        // The wrapper settings bridge. The host starts it after plugin construction, which is the
+        // first moment the settings source can be read without making the plugin constructor write
+        // a default settings file. It publishes once and then leaves the live save path to refresh
+        // the document.
+        serviceCollection.Add(new ServiceDescriptor(typeof(IHostedService), typeof(WrapperSettingsPublicationService), ServiceLifetime.Singleton));
 
         // Media source providers are discovered by type scan and must not be registered
         // manually; an IFfmpegProfileArgumentBuilder registration would be dead weight

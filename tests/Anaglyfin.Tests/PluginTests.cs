@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.Versioning;
 using Anaglyfin.Configuration;
+using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.Profiles;
 using Anaglyfin.Tests.Stubs;
 using Anaglyfin.VersionItems;
@@ -17,8 +18,15 @@ namespace Anaglyfin.Tests;
 /// <summary>
 /// Verifies the plugin scaffold exposes what the Jellyfin server needs from it.
 /// </summary>
-public class PluginTests
+/// <remarks>
+/// The settings-document tests watch files, and each of them watches a directory of its own:
+/// several tests in this assembly build a plugin, they run in parallel, and the default fake
+/// application paths point all of them at the same folder.
+/// </remarks>
+public class PluginTests : IDisposable
 {
+    private readonly List<string> _roots = new();
+
     [Fact]
     public void PluginIsAJellyfinPluginWithAFixedIdentity()
     {
@@ -117,8 +125,125 @@ public class PluginTests
         Assert.Null(Record.Exception(() => plugin.UpdateConfiguration(new PluginConfiguration())));
     }
 
+    [Fact]
+    public void ASaveHandsTheWrapperWhatTheAdministratorAskedFor()
+    {
+        var paths = new FakeApplicationPaths(PrivateRoot());
+        var plugin = new Plugin(paths, new RecordingXmlSerializer());
+
+        plugin.UpdateConfiguration(new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = SubtitleDepthMode.Plane,
+            SubtitleDepthShift = 999,
+            SubtitleDepthPlane = 6
+        });
+
+        // What arrives is the settings read through the rules rather than as stored: the wrapper is
+        // not a second place the ranges get enforced, and the number this mode does not use does
+        // not travel with the one it does.
+        Assert.Equal(
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 6),
+            WrapperSettingsFile.Read(PluginSettingsTarget(paths)));
+    }
+
+    [Fact]
+    public void ASwitchedOffRequestIsHandedOverAsSwitchedOff()
+    {
+        var paths = new FakeApplicationPaths(PrivateRoot());
+        var plugin = new Plugin(paths, new RecordingXmlSerializer());
+
+        plugin.UpdateConfiguration(new PluginConfiguration
+        {
+            SubtitleDepthEnabled = false,
+            SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
+            SubtitleDepthShift = 30
+        });
+
+        // Unticking the box has to reach the wrapper, and it has to reach it as "off": numbers left
+        // in the boxes are kept for the next time the mode is picked, not sent out as a request.
+        Assert.Equal(
+            SubtitleDepthSettings.Disabled,
+            WrapperSettingsFile.Read(PluginSettingsTarget(paths)));
+    }
+
+    [Fact]
+    public void AWrapperSettingsFileThatCannotBeWrittenDoesNotStopThePlugin()
+    {
+        // A deployment that pointed the settings document at a location it cannot write - a read
+        // only mount, a path that is a file, a directory that cannot be created - loses the depth
+        // setting and nothing else. The plugin still loads, the save the server asked for still
+        // happens, and the version pass is still requested.
+        var root = PrivateRoot();
+        var paths = new FakeApplicationPaths(root);
+        var target = PluginSettingsTarget(paths);
+
+        // A directory standing in the document's place fails the wrapper write while leaving the
+        // server's own settings save path free to behave normally.
+        Directory.CreateDirectory(target);
+
+        var trigger = new RecordingTrigger();
+        Plugin? plugin = null;
+        var loadFailure = Record.Exception(() => plugin = new Plugin(paths, new RecordingXmlSerializer(), trigger));
+
+        Assert.Null(loadFailure);
+
+        Assert.Null(Record.Exception(() => plugin!.UpdateConfiguration(new PluginConfiguration
+        {
+            SubtitleDepthEnabled = true,
+            SubtitleDepthMode = SubtitleDepthMode.Automatic
+        })));
+
+        Assert.Equal(1, trigger.FullPassRequests);
+    }
+
     private static Plugin CreatePlugin()
         => new(new FakeApplicationPaths(), new FakeXmlSerializer());
+
+    /// <summary>
+    /// Where a plugin built over these paths hands its settings to the wrapper, resolved through the
+    /// same helper the plugin uses - including the deployment variable, so a test never asserts
+    /// about a file the production code would not have written.
+    /// </summary>
+    private static string PluginSettingsTarget(FakeApplicationPaths paths)
+        => WrapperSettingsFile.ResolveWritePath(Environment.GetEnvironmentVariable, paths.PluginConfigurationsPath);
+
+    /// <summary>
+    /// A directory of this test's own, so that the documents it watches are the ones it wrote: the
+    /// default application paths are shared by every test that builds a plugin, and those run in
+    /// parallel with each other.
+    /// </summary>
+    private string PrivateRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "anaglyfin-plugin-tests", Guid.NewGuid().ToString("N"));
+
+        _roots.Add(root);
+
+        return root;
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        foreach (var root in _roots)
+        {
+            try
+            {
+                if (Directory.Exists(root))
+                {
+                    Directory.Delete(root, recursive: true);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        _roots.Clear();
+    }
 
     /// <summary>
     /// Records the reconcile requests the settings-save path makes.
