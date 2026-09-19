@@ -2295,12 +2295,12 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
-    public void AProfileWhoseOnlyConversionIsTheComposedDecodeKeepsTheServersGraphAndWarns()
+    public void AFullSideBySideProfileCarriesDepthOnTheComposedPictureBeforeTheServerChain()
     {
         // Full SBS converts by decoding the views into one frame and writing nothing after that
-        // frame. There is no conversion chain for the depth stage to precede here, so the server's
-        // subtitle chain and overlay stay as written; a partial insertion into the middle of that
-        // graph would be worse than no depth at all.
+        // frame. That makes the composed stream the picture the depth filter belongs on: the server's
+        // subtitle chain and overlay are replaced, and the rest of its non-subtitle chain reads the
+        // depth filter's output directly.
         var arguments = new List<string>
         {
             "-i", Marker(ProfileIds.SideBySideFull, videoStreamIndex: 0),
@@ -2317,13 +2317,51 @@ public class WrapperArgumentRewriterTests
             {
                 "-view_ids", "-1",
                 "-i", SourcePath,
-                "-filter_complex", ServersSubtitleBurnGraph,
+                "-filter_complex",
+                "[0:0]format=rgba[anaglyfin_composed];"
+                + "[0:10]format=rgba[anaglyfin_subtitle];"
+                + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];"
+                + "[anaglyfin_depth]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+                + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[out]",
+                "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void AFullSideBySideProfileLeavesAnUnrecognizedGraphAloneAndSaysWhy()
+    {
+        var serverGraph =
+            "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[0:0]subtitles=filename='/movies/eng.srt'[txt];"
+            + "[txt]scale=1920:1080:flags=area,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]";
+
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull, videoStreamIndex: 0),
+            "-filter_complex", serverGraph,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0));
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex", serverGraph,
                 "-map", "[out]", "-map", "0:1", "playlist.m3u8"
             },
             result.Arguments);
 
         var warning = Assert.Single(result.Warnings);
-        Assert.Contains("composed decode itself", warning, StringComparison.Ordinal);
+        Assert.Contains("text filter", warning, StringComparison.Ordinal);
     }
 
     [Fact]

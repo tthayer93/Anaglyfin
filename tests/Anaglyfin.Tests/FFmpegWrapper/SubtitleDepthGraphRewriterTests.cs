@@ -498,6 +498,125 @@ public class SubtitleDepthGraphRewriterTests
             rewrite.Graph);
     }
 
+    // ----- the profile that is only the composed decode ------------------------------------
+
+    [Fact]
+    public void TheComposedDecodePlacesDepthBeforeTheServersNonSubtitleChain()
+    {
+        var rewrite = SubtitleDepthGraphRewriter.TryRewriteComposedPicture(
+            "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[0:0]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+            + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]",
+            videoStreamIndex: 0,
+            depthOption: "depth=auto");
+
+        Assert.True(rewrite.IsApplied, rewrite.Reason);
+        Assert.Equal(
+            "[0:0]format=rgba[anaglyfin_composed];"
+            + "[0:10]format=rgba[anaglyfin_subtitle];"
+            + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];"
+            + "[anaglyfin_depth]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+            + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[out]",
+            rewrite.Graph);
+    }
+
+    [Theory]
+    [InlineData("depth=auto")]
+    [InlineData("depth=shift=-8")]
+    [InlineData("depth=plane=3")]
+    public void TheComposedDecodeCarriesEveryModeIntoTheOneFilterStage(string depthOption)
+    {
+        var rewrite = SubtitleDepthGraphRewriter.TryRewriteComposedPicture(
+            "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[0:0]scale=1920:1080:flags=area,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass[out]",
+            videoStreamIndex: 0,
+            depthOption);
+
+        Assert.True(rewrite.IsApplied, rewrite.Reason);
+        Assert.Contains(
+            "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=" + depthOption + ":eof_action=pass[anaglyfin_depth];",
+            rewrite.Graph,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("overlay", rewrite.Graph, StringComparison.Ordinal);
+        Assert.DoesNotContain("[main]", rewrite.Graph, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(rewrite.Graph, "mvcsubdepth"));
+    }
+
+    [Fact]
+    public void TheComposedDecodeFollowsTheMarkersSpellingOfItsSourceStream()
+    {
+        var rewrite = SubtitleDepthGraphRewriter.TryRewriteComposedPicture(
+            "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[0:v]scale=1920:1080:flags=area,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass[out]",
+            videoStreamIndex: null,
+            depthOption: "depth=auto");
+
+        Assert.True(rewrite.IsApplied, rewrite.Reason);
+        Assert.Equal(
+            "[0:v]format=rgba[anaglyfin_composed];"
+            + "[0:10]format=rgba[anaglyfin_subtitle];"
+            + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];"
+            + "[anaglyfin_depth]scale=1920:1080:flags=area,format=yuv420p[out]",
+            rewrite.Graph);
+    }
+
+    [Fact]
+    public void TheComposedDecodeThreadsDepthThroughAChainedServerPicturePipeline()
+    {
+        var rewrite = SubtitleDepthGraphRewriter.TryRewriteComposedPicture(
+            "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[0:0]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709[graded];"
+            + "[graded]scale=1920:1080:flags=area,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass[out]",
+            videoStreamIndex: 0,
+            depthOption: "depth=plane=3");
+
+        Assert.True(rewrite.IsApplied, rewrite.Reason);
+        Assert.Equal(
+            "[0:0]format=rgba[anaglyfin_composed];"
+            + "[0:10]format=rgba[anaglyfin_subtitle];"
+            + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=plane=3:eof_action=pass[anaglyfin_depth];"
+            + "[anaglyfin_depth]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709[graded];"
+            + "[graded]scale=1920:1080:flags=area,format=yuv420p[out]",
+            rewrite.Graph);
+    }
+
+    [Fact]
+    public void TheComposedDecodeRefusesATextRendererInsteadOfDrawingItTwice()
+    {
+        var rewrite = SubtitleDepthGraphRewriter.TryRewriteComposedPicture(
+            "[0:10]scale=1920:1080[sub];"
+            + "[0:0]subtitles=filename='/movies/eng.srt'[txt];"
+            + "[txt]scale=1920:1080[main];[main][sub]overlay[out]",
+            videoStreamIndex: 0,
+            depthOption: "depth=auto");
+
+        Assert.False(rewrite.IsApplied);
+        Assert.Empty(rewrite.Graph);
+        Assert.Contains("text filter", rewrite.Reason, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    // A backslash and a quoted run are both punctuation this rewrite has to spend before reading a
+    // comma as a filter separator. An overlay option carrying either is still one overlay.
+    [InlineData("[main][sub]overlay=eof_action=pass:x=a\\,b[out]")]
+    [InlineData("[main][sub]overlay=x='a,b':eof_action=pass[out]")]
+    public void AnEscapedOrQuotedCommaInsideOneOverlayDoesNotMakeItTwoFilters(string overlayChain)
+    {
+        var graph =
+            "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[anaglyfin_profile]scale=1920:1080:flags=area,format=yuv420p[main];"
+            + overlayChain;
+
+        var rewrite = Rewrite(graph, "depth=auto");
+
+        Assert.True(rewrite.IsApplied, rewrite.Reason);
+        Assert.DoesNotContain("overlay", rewrite.Graph, StringComparison.Ordinal);
+    }
+
     private static SubtitleDepthGraphRewrite Rewrite(string serverGraph, string depthOption)
         => SubtitleDepthGraphRewriter.TryRewrite(serverGraph, ProfileLabel, ProfileSegment, ProfileSource, depthOption);
 

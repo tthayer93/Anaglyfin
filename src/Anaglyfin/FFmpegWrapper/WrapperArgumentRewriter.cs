@@ -138,9 +138,12 @@ namespace Anaglyfin.FFmpegWrapper;
 /// when the caller hands over a depth request that is the join <see
 /// cref="SubtitleDepthGraphRewriter"/> makes: the composed picture and the subtitle picture both
 /// put through RGBA, the depth filter between them, and the profile's conversion reading what the
-/// depth wrote. The subtitle's own chain and its overlay are the two chains removed by that
-/// rewrite, because a subtitle laid on twice would be one subtitle rendered flat on top of its
-/// own depth. Every other command shape is left exactly as it was, with the reason written to the
+/// depth wrote. A profile whose conversion is the composed decode itself - full SBS, which writes no
+/// conversion chain and no profile label - has no conversion to receive that output, so its depth
+/// graph hands the depth output directly to the server's non-subtitle chains. The subtitle's own
+/// chain and its overlay are the two chains removed by either rewrite, because a subtitle laid on
+/// twice would be one subtitle rendered flat on top of its own depth. Every other command shape is
+/// left exactly as it was, with the reason written to the
 /// log: depth is an enhancement, and unlike a marker that could not be resolved it has a
 /// fallback that is not a failure - the server's own flat subtitles. The one command that gets
 /// depth refused for a reason of the profile's own is a version carrying its own burn-in, which
@@ -764,7 +767,34 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
             insertions.Add(profileGraph);
         }
 
-        if (depthOption is not null && !mergesIntoServerGraph)
+        // Full SBS is the profile whose conversion is the composed decode itself. It writes no chain
+        // of its own, but a server graph that renders an image subtitle itself still carries the one
+        // shape a depth filter can answer: composed picture -> subtitle picture -> overlay. Put the
+        // depth on the composed stream and hand its result directly to the server's non-subtitle
+        // chains, exactly as the converting profiles hand it to their conversion chain first.
+        if (depthOption is not null
+            && !mergesIntoServerGraph
+            && rewrite.RequiresComposedViewInput
+            && rewrite.VideoFilter is null
+            && rewrite.FilterComplex is null
+            && rewrite.SubtitleFilter is null
+            && server.Graph is not null)
+        {
+            var composedDepth = SubtitleDepthGraphRewriter.TryRewriteComposedPicture(
+                server.Graph,
+                marker.VideoStreamIndex,
+                depthOption);
+
+            if (composedDepth.IsApplied)
+            {
+                replacements[server.GraphValueIndex] = composedDepth.Graph;
+            }
+            else
+            {
+                warnings.Add("subtitle depth was asked for and not applied: " + composedDepth.Reason);
+            }
+        }
+        else if (depthOption is not null && !mergesIntoServerGraph)
         {
             warnings.Add(SubtitleDepthNotPlaced(rewrite, server.Graph is not null));
         }

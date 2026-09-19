@@ -52,6 +52,22 @@ namespace Anaglyfin.FFmpegWrapper;
 /// refused instead: there is no label left to hand over.
 /// </para>
 /// <para>
+/// <b>The second shape: the composed decode profile.</b> Full SBS is the profile whose conversion is
+/// the composed decode itself, so it has no profile chain and no profile label to thread through the
+/// graph. Its answer is the same depth stage followed directly by the server's own non-subtitle
+/// chains:
+/// </para>
+/// <code>
+/// [0:0]format=rgba[anaglyfin_composed];
+/// [0:10]format=rgba[anaglyfin_subtitle];
+/// [anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];
+/// [anaglyfin_depth]setparams=...,format=yuv420p[out]
+/// </code>
+/// <para>
+/// <see cref="TryRewriteComposedPicture"/> recognises that second shape; <see cref="TryRewrite"/>
+/// recognises the first one, with a profile conversion chain after the depth.
+/// </para>
+/// <para>
 /// <b>Why the order is the order.</b> The depth an authored disc carries lives in the dependent
 /// view's offset metadata, so it exists only on the frames the composed decode produces, and it is a
 /// horizontal eye displacement - which means nothing on one eye alone and is undone by any anaglyph
@@ -408,7 +424,7 @@ public static class SubtitleDepthGraphRewriter
                 "the command's subtitle overlay draws its captions onto a picture that is not written once by one chain, so there is no label to carry the output in its place.");
         }
 
-        if (!TryTraceProfileOwnedPicturePath(
+        if (!TryTraceDepthSourcePicturePath(
                 chains,
                 producers,
                 profileLabel,
@@ -485,8 +501,283 @@ public static class SubtitleDepthGraphRewriter
     }
 
     /// <summary>
+    /// Rewrites the server's chains for a profile whose conversion is the composed decode itself.
+    /// </summary>
+    /// <param name="serverGraph">The server's filter graph as the command wrote it.</param>
+    /// <param name="videoStreamIndex">
+    /// The video stream index the marker named, or null when it named none. It is what tells this
+    /// rewrite which label in the server's graph names the composed picture.
+    /// </param>
+    /// <param name="depthOption">The <c>depth=</c> option from <see cref="BuildDepthOption"/>.</param>
+    /// <returns>
+    /// The merged graph with depth feeding the server's non-subtitle chains, or a refusal carrying
+    /// the one reason this graph is not the shape a composed depth stage can be placed in. A refusal
+    /// never holds a half-edited graph.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this needs its own answer.</b> Full SBS is the profile whose conversion is exactly the
+    /// composed decode: it adds no filter chain of its own and writes no new label. There is no
+    /// profile chain here to thread the depth through, so the depth stage writes the picture directly
+    /// into the server's own non-subtitle chains. The recognized graph is otherwise the same one the
+    /// converted profiles answer - one image-subtitle chain, one overlay, and the rest of the server's
+    /// chains leading from this input's video to the label the output maps - and everything else is
+    /// refused without touching it.
+    /// </para>
+    /// <para>
+    /// <b>The shape.</b> Before the rewrite, after the source label has been identified:</para>
+    /// <code>
+    /// [0:subtitle]scale=1920:1080:flags=area[sub];
+    /// [0:video]scale=1920:1080,format=yuv420p[main];
+    /// [main][sub]overlay=eof_action=pass[out]
+    /// </code>
+    /// <para>and after it:</para>
+    /// <code>
+    /// [0:video]format=rgba[anaglyfin_composed];
+    /// [0:subtitle]format=rgba[anaglyfin_subtitle];
+    /// [anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];
+    /// [anaglyfin_depth]scale=1920:1080,format=yuv420p[out]
+    /// </code>
+    /// <para>
+    /// The subtitle chain and overlay are removed because the depth filter now renders the subtitle;
+    /// every other chain travels behind the depth output, and the label the output maps is handed to
+    /// the chain that used to feed the overlay.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">Any text argument is blank.</exception>
+    public static SubtitleDepthGraphRewrite TryRewriteComposedPicture(
+        string serverGraph,
+        int? videoStreamIndex,
+        string depthOption)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(serverGraph);
+        ArgumentException.ThrowIfNullOrWhiteSpace(depthOption);
+
+        var sourceLabel = AnaglyfinFilterGraphComposer.ComposedVideoStreamLabel(videoStreamIndex);
+        var retargeted = AnaglyfinFilterGraphComposer.EditVideoSourceReferences(
+            serverGraph,
+            videoStreamIndex,
+            DepthLabel);
+
+        if (retargeted.CarriesViewSpecifier)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the command's filter graph names a view of the video stream this profile composes, so the composed picture this rewrite feeds to the depth filter is not the picture that graph reads.");
+        }
+
+        if (retargeted.Replacements == 0)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the command's filter graph never reads the video stream this profile composes, so there is no composed picture here for a subtitle depth to be placed on.");
+        }
+
+        if (!TrySplitChains(retargeted.Graph, out var chainTexts, out var splitReason))
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(splitReason!);
+        }
+
+        var chains = new List<Chain>(chainTexts.Count);
+
+        for (var index = 0; index < chainTexts.Count; index++)
+        {
+            if (!Chain.TryParse(chainTexts[index], index, out var chain, out var chainReason))
+            {
+                return SubtitleDepthGraphRewrite.NotSupported(
+                    $"chain {index + 1} of the command's filter graph is not a chain this wrapper can read ({chainReason}).");
+            }
+
+            chains.Add(chain!);
+        }
+
+        var refusal = RefuseForTextRendering(chains);
+
+        if (refusal is not null)
+        {
+            return refusal;
+        }
+
+        var producers = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        var readers = new Dictionary<string, int>(StringComparer.Ordinal);
+        var depthSourceName = LabelName(DepthLabel);
+
+        foreach (var chain in chains)
+        {
+            foreach (var label in chain.AllLabels)
+            {
+                // This graph has already been retargeted to read the label the depth filter writes.
+                // Any other Anaglyfin label in it means somebody else is already writing a pad this
+                // rewrite reserves for its own depth, composed, or subtitle picture.
+                var name = LabelName(label);
+
+                if (name.StartsWith(OwnedLabelPrefix, StringComparison.Ordinal)
+                    && !string.Equals(name, depthSourceName, StringComparison.Ordinal))
+                {
+                    return SubtitleDepthGraphRewrite.NotSupported(
+                        "the command's filter graph already carries a label this product writes, so the depth stage would have somewhere to write that somebody else already took.");
+                }
+            }
+
+            foreach (var input in chain.Inputs)
+            {
+                readers[input] = readers.TryGetValue(input, out var reads) ? reads + 1 : 1;
+            }
+
+            foreach (var output in chain.Outputs)
+            {
+                if (!producers.TryGetValue(output, out var written))
+                {
+                    written = new List<int>(1);
+                    producers[output] = written;
+                }
+
+                written.Add(chain.Index);
+            }
+        }
+
+        if (producers.ContainsKey(DepthLabel))
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the command's filter graph already writes the label the depth filter uses, so placing a depth stage before that graph would give one pad two producers.");
+        }
+
+        var overlays = chains.Where(chain => chain.IsSingleOverlay).ToList();
+
+        if (overlays.Count != 1)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(overlays.Count == 0
+                ? "the command's filter graph lays no subtitle picture onto the film, so there is nothing here for a depth stage to place."
+                : $"the command's filter graph lays {overlays.Count} subtitle pictures onto the film, and one depth stage can only be placed in front of one of them.");
+        }
+
+        var subtitleChains = chains
+            .Where(chain => chain.Inputs.Count == 1 && NamesSubtitleSourceOfFirstInput(chain.Inputs[0]))
+            .ToList();
+
+        if (subtitleChains.Count != 1)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(subtitleChains.Count == 0
+                ? "the command's filter graph reads no subtitle stream of the marker's input, so there is no subtitle picture here to give depth."
+                : $"the command's filter graph reads {subtitleChains.Count} subtitle streams of the marker's input, and one depth stage renders one of them.");
+        }
+
+        var overlay = overlays[0];
+        var subtitleChain = subtitleChains[0];
+
+        if (overlay.Outputs.Count > 1)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the command's subtitle overlay writes more than one picture, so which of them the output is drawn from is written nowhere in the command.");
+        }
+
+        if (subtitleChain.Outputs.Count != 1)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the command's subtitle chain does not write exactly one picture, so the sub2video chain this rewrite replaces is not the one the overlay reads.");
+        }
+
+        var mainLabel = overlay.Inputs.Count == 2 ? overlay.Inputs[0] : null;
+        var subtitleLabel = overlay.Inputs.Count == 2 ? overlay.Inputs[1] : null;
+
+        if (mainLabel is null || subtitleLabel is null)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                $"the command's subtitle overlay reads {overlay.Inputs.Count} pictures, and a depth stage is placed between one film picture and the one subtitle picture laid on it.");
+        }
+
+        if (!string.Equals(subtitleLabel, subtitleChain.Outputs[0], StringComparison.Ordinal)
+            || producers[subtitleLabel].Count != 1)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the command's subtitle chain does not write the picture its overlay reads, so the sub2video chain and its consumer are not the pair this rewrite replaces.");
+        }
+
+        if (readers[subtitleLabel] != 1)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the command's subtitle picture is read by more than the one overlay this rewrite replaces, so the other reader would be left reaching for a picture that no longer exists.");
+        }
+
+        if (string.Equals(mainLabel, DepthLabel, StringComparison.Ordinal))
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the command's subtitle overlay reads the composed picture directly, so removing it would leave the depth output with no server chain to feed.");
+        }
+
+        if (!producers.TryGetValue(mainLabel, out var mainWriters) || mainWriters.Count != 1)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the picture the command's subtitle overlay lays its captions onto is not written by exactly one chain of the graph, so there is nothing single to place a depth stage in front of.");
+        }
+
+        var mainChain = chains[mainWriters[0]];
+
+        if (mainChain.Index == subtitleChain.Index || mainChain.Outputs.Count != 1)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the command's subtitle overlay draws its captions onto a picture that is not written once by one chain, so there is no label to carry the output in its place.");
+        }
+
+        if (!TryTraceDepthSourcePicturePath(
+                chains,
+                producers,
+                DepthLabel,
+                mainChain,
+                subtitleChain,
+                overlay,
+                out var pathReason))
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(pathReason);
+        }
+
+        if (readers[mainLabel] != 1)
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the picture the command's subtitle overlay draws onto is read by more than that overlay, so it cannot simply be renamed to the label the output maps.");
+        }
+
+        var finalLabel = overlay.Outputs.Count == 1 ? overlay.Outputs[0] : null;
+
+        if (finalLabel is not null
+            && (readers.TryGetValue(finalLabel, out var finalReads) && finalReads > 0
+                || producers[finalLabel].Count != 1))
+        {
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the picture the command's subtitle overlay writes is itself filtered by a later chain, so the label the output maps is not the overlay's to hand over.");
+        }
+
+        var rewritten = new StringBuilder(retargeted.Graph.Length + 160);
+
+        rewritten
+            .Append(sourceLabel).Append(RgbaFormatFilter).Append(ComposedLabel).Append(';')
+            .Append(subtitleChain.Inputs[0]).Append(RgbaFormatFilter).Append(SubtitleLabel).Append(';')
+            .Append(ComposedLabel).Append(SubtitleLabel)
+            .Append(BuildDepthFilter(depthOption)).Append(DepthLabel);
+
+        foreach (var chain in chains)
+        {
+            if (chain.Index == subtitleChain.Index || chain.Index == overlay.Index)
+            {
+                continue;
+            }
+
+            rewritten.Append(';');
+
+            if (chain.Index == mainChain.Index && finalLabel is not null)
+            {
+                rewritten.Append(chain.Text, 0, chain.OutputStart).Append(finalLabel);
+            }
+            else
+            {
+                rewritten.Append(chain.Text);
+            }
+        }
+
+        return SubtitleDepthGraphRewrite.Applied(rewritten.ToString());
+    }
+
+    /// <summary>
     /// Whether the picture the overlay draws onto is fed, through one chain of the server's own
-    /// labels, from the profile's converted picture.
+    /// labels, from the picture this rewrite puts the depth on.
     /// </summary>
     /// <remarks>
     /// The server is allowed to split its picture pipeline into more than one chain, and the depth
@@ -496,10 +787,10 @@ public static class SubtitleDepthGraphRewriter
     /// source this rewrite cannot see - another stream, another overlay, or a cycle - is refused,
     /// because the output would no longer be provably the profile's picture with depth in it.
     /// </remarks>
-    private static bool TryTraceProfileOwnedPicturePath(
+    private static bool TryTraceDepthSourcePicturePath(
         IReadOnlyList<Chain> chains,
         Dictionary<string, List<int>> producers,
-        string profileLabel,
+        string sourcePictureLabel,
         Chain mainChain,
         Chain subtitleChain,
         Chain overlay,
@@ -531,11 +822,11 @@ public static class SubtitleDepthGraphRewriter
                 return false;
             }
 
-            if (currentChain.Inputs.Contains(profileLabel, StringComparer.Ordinal))
+            if (currentChain.Inputs.Contains(sourcePictureLabel, StringComparer.Ordinal))
             {
                 if (currentChain.Inputs.Count != 1)
                 {
-                    reason = "the chain that carries the profile's picture to the command's subtitle overlay also reads another picture, so the overlay is not drawing onto the profile's picture alone.";
+                    reason = "the chain that carries the picture being replaced to the command's subtitle overlay also reads another picture, so the overlay is not drawing onto that picture alone.";
 
                     return false;
                 }
@@ -547,7 +838,7 @@ public static class SubtitleDepthGraphRewriter
 
             if (currentChain.Inputs.Count != 1)
             {
-                reason = "the chain the command's subtitle overlay draws onto is joined from more pictures than this rewrite can prove came from the profile's converted frame.";
+                reason = "the chain the command's subtitle overlay draws onto is joined from more pictures than this rewrite can prove came from the frame being replaced.";
 
                 return false;
             }
@@ -1097,8 +1388,44 @@ public static class SubtitleDepthGraphRewriter
         /// means here: an <c>overlay</c> chained with anything else is no longer the single stage this
         /// rewrite can drop out of the graph.
         /// </summary>
+        /// <remarks>
+        /// The scan spends backslashes and quoted runs before it reads any comma as a separator, so a
+        /// comma escaped inside an option value - or carried inside a quoted option value - does not
+        /// turn one <c>overlay</c> into two filters. This is the same reading FFmpeg gives the text.
+        /// </remarks>
         private static bool AnotherFilterFollows(string body, int offset)
-            => body.IndexOf(',', offset, body.Length - offset) >= 0;
+        {
+            var index = offset;
+
+            while (index < body.Length)
+            {
+                var character = body[index];
+
+                if (character == '\\')
+                {
+                    index += 2;
+
+                    continue;
+                }
+
+                if (character == '\'')
+                {
+                    var closing = body.IndexOf('\'', index + 1);
+                    index = closing < 0 ? body.Length : closing + 1;
+
+                    continue;
+                }
+
+                if (character == ',')
+                {
+                    return true;
+                }
+
+                index++;
+            }
+
+            return false;
+        }
 
         /// <summary>One <c>[name]</c> pad label, with the offsets that put it back in its chain.</summary>
         private readonly record struct LabelToken(int Start, int End, string WithBrackets);
