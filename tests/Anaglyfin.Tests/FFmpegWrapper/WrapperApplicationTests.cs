@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using Anaglyfin.Configuration;
 using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.Markers;
 using Anaglyfin.Profiles;
@@ -276,6 +277,93 @@ public sealed class WrapperApplicationTests : IDisposable
         Assert.Single(nextLauncher.Launches);
     }
 
+    // ----- subtitle depth through the real settings channel --------------------------------
+
+    [Fact]
+    public void AnAutomaticDepthSettingReadFromThePluginFileStartsAConvertedGraphWithTheDepthFilter()
+    {
+        var serverGraph =
+            "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[0:v]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+            + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]";
+
+        var arguments = new List<string>
+        {
+            "-hide_banner",
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-filter_complex", serverGraph,
+            "-map", "[out]", "-map", "0:a",
+            "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
+        };
+
+        var (application, launcher) = CreateApplicationFromSettingsFile(
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0));
+
+        var exitCode = application.Run(arguments);
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, exitCode);
+        Assert.Equal(
+            new[]
+            {
+                "-hide_banner",
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex",
+                "[0:v]format=rgba[anaglyfin_composed];"
+                + "[0:10]format=rgba[anaglyfin_subtitle];"
+                + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];"
+                + "[anaglyfin_depth]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+                + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[out]",
+                "-map", "[out]", "-map", "0:a",
+                "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
+            },
+            Assert.Single(launcher.Launches).Arguments);
+        Assert.Equal(string.Empty, _diagnostics.ToString());
+    }
+
+    [Fact]
+    public void ADepthDeclinedByTheServerGraphStillStartsThePlaybackAndWritesADiagnostic()
+    {
+        var serverGraph =
+            "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[0:v]subtitles=filename='/movies/eng.srt'[txt];"
+            + "[txt]scale=1920:1080:flags=area,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]";
+
+        var arguments = new List<string>
+        {
+            "-hide_banner",
+            "-i", Marker(ProfileIds.SideBySideFull),
+            "-filter_complex", serverGraph,
+            "-map", "[out]", "-map", "0:a",
+            "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
+        };
+
+        var (application, launcher) = CreateApplicationFromSettingsFile(
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0));
+
+        var exitCode = application.Run(arguments);
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, exitCode);
+        Assert.Equal(
+            new[]
+            {
+                "-hide_banner",
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex", serverGraph,
+                "-map", "[out]", "-map", "0:a",
+                "-c:v", "libx264", "-f", "hls", "playlist.m3u8"
+            },
+            Assert.Single(launcher.Launches).Arguments);
+
+        var output = _diagnostics.ToString();
+        Assert.StartsWith(WrapperApplication.DiagnosticPrefix, output);
+        Assert.Contains("warning: subtitle depth was asked for and not applied", output, StringComparison.Ordinal);
+        Assert.Contains("text filter", output, StringComparison.Ordinal);
+    }
+
     // ----- refusals: nothing starts ---------------------------------------------------
 
     [Theory]
@@ -501,6 +589,37 @@ public sealed class WrapperApplicationTests : IDisposable
             RealFFmpegPath = realFFmpegPath ?? _realFFmpeg,
             RealFFmpegPathSource = FFmpegWrapperOptions.RealFFmpegEnvironmentVariable
         };
+
+        var launcher = new FakeFFmpegProcessLauncher();
+
+        return (
+            new WrapperApplication(options, launcher, new WrapperConcurrencyGuard(options), diagnostics: _diagnostics),
+            launcher);
+    }
+
+    /// <summary>
+    /// Builds one wrapper invocation from the real settings channel: the document the plugin writes,
+    /// pointed at by the same environment variable a deployment has to set for the wrapper.
+    /// </summary>
+    /// <param name="settings">The subtitle-depth request the plugin published.</param>
+    /// <returns>The application under test and its recording launcher.</returns>
+    private (WrapperApplication Application, FakeFFmpegProcessLauncher Launcher) CreateApplicationFromSettingsFile(
+        SubtitleDepthSettings settings)
+    {
+        var settingsPath = Path.Combine(_binaryDirectory, "wrapper-settings.json");
+        var wrote = WrapperSettingsFile.TryWrite(settingsPath, settings, out var failure);
+
+        Assert.True(wrote, failure?.Message ?? "The wrapper settings file could not be written.");
+
+        var environment = new Dictionary<string, string?>
+        {
+            [FFmpegWrapperOptions.RealFFmpegEnvironmentVariable] = _realFFmpeg,
+            [FFmpegWrapperOptions.LockDirectoryEnvironmentVariable] = _slots.Location,
+            [WrapperSettingsFile.EnvironmentVariable] = settingsPath
+        };
+
+        var options = FFmpegWrapperOptions.FromEnvironment(
+            name => environment.TryGetValue(name, out var value) ? value : null);
 
         var launcher = new FakeFFmpegProcessLauncher();
 
