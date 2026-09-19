@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using Anaglyfin.Configuration;
 using Anaglyfin.Ffmpeg;
 using Anaglyfin.Markers;
 using Anaglyfin.Profiles;
@@ -127,8 +128,27 @@ namespace Anaglyfin.FFmpegWrapper;
 /// consuming that label is the thing feeding the output picture, and mapping it as well would put
 /// a second video in the way of the one the server mapped.
 /// </para>
-/// <para>
-/// <b>Where it refuses.</b> A profile that owns the output's video pipeline cannot share that
+    /// <para>
+    /// <b>Where the depth goes.</b> A subtitle depth an authored disc carries is a horizontal eye
+    /// displacement recorded on the composed frame, which makes it a fact about the picture between
+    /// two moments: after the eyes have been composed into one frame, and before the profile's
+    /// conversion moves those eyes into an anaglyph or a half-frame. The one place on the command
+    /// that sits between them is a server graph that renders an image subtitle itself - the
+    /// sub2video chain reading the subtitle stream and the <c>overlay</c> laying it on the film - and
+    /// when the caller hands over a depth request that is the join <see
+    /// cref="SubtitleDepthGraphRewriter"/> makes: the composed picture and the subtitle picture both
+    /// put through RGBA, the depth filter between them, and the profile's conversion reading what the
+    /// depth wrote. The subtitle's own chain and its overlay are the two chains removed by that
+    /// rewrite, because a subtitle laid on twice would be one subtitle rendered flat on top of its
+    /// own depth. Every other command shape is left exactly as it was, with the reason written to the
+    /// log: depth is an enhancement, and unlike a marker that could not be resolved it has a
+    /// fallback that is not a failure - the server's own flat subtitles. The one command that gets
+    /// depth refused for a reason of the profile's own is a version carrying its own burn-in, which
+    /// renders its text flat by design and would otherwise have the server's subtitle rendered on top
+    /// of it.
+    /// </para>
+    /// <para>
+    /// <b>Where it refuses.</b> A profile that owns the output's video pipeline cannot share that
 /// pipeline with a filtergraph whose contents it cannot see, and cannot be joined to a graph that
 /// never asks for the picture it converts: this wrapper inserts a chain and retargets a label, it
 /// does not parse or graft foreign filter text (which is also a security requirement - nothing in
@@ -283,7 +303,7 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         new(new ProfileCatalog(), FfmpegProfileArgumentBuilder.Shared);
 
     /// <inheritdoc />
-    public WrapperRewriteResult Rewrite(IReadOnlyList<string> arguments)
+    public WrapperRewriteResult Rewrite(IReadOnlyList<string> arguments, SubtitleDepthSettings? subtitleDepth = null)
     {
         ArgumentNullException.ThrowIfNull(arguments);
 
@@ -365,7 +385,7 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
                 "More than one input of the command carries an Anaglyfin marker, and a rewrite resolves exactly one of them; the marker left behind would reach FFmpeg as an input file.");
         }
 
-        return RewriteMarker(arguments, marker.Marker!, markerIndex, firstInputIndex, lastInputIndex);
+        return RewriteMarker(arguments, marker.Marker!, markerIndex, firstInputIndex, lastInputIndex, subtitleDepth);
     }
 
     /// <summary>
@@ -376,13 +396,17 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
     /// <param name="markerIndex">Index of the token the marker arrived in.</param>
     /// <param name="firstInputIndex">Index of the first input value on the command.</param>
     /// <param name="lastInputIndex">Index of the last input value on the command.</param>
+    /// <param name="subtitleDepth">
+    /// The subtitle depth this invocation was asked to offer, or null for none.
+    /// </param>
     /// <returns>The rewrite outcome.</returns>
     private WrapperRewriteResult RewriteMarker(
         IReadOnlyList<string> arguments,
         ProfileMarker marker,
         int markerIndex,
         int firstInputIndex,
-        int lastInputIndex)
+        int lastInputIndex,
+        SubtitleDepthSettings? subtitleDepth)
     {
         // Every map value and every filter input label the builder emits addresses input
         // 0, which is the marker's own file only while the marker is the first input.
@@ -422,7 +446,7 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
             return WrapperRewriteResult.Failure(WrapperRewriteStatus.UnknownProfile, exception.Message);
         }
 
-        return ApplyRewrite(arguments, marker, markerIndex, lastInputIndex, rewrite);
+        return ApplyRewrite(arguments, marker, markerIndex, lastInputIndex, rewrite, subtitleDepth);
     }
 
     /// <summary>
@@ -444,7 +468,8 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
         ProfileMarker marker,
         int markerIndex,
         int lastInputIndex,
-        ProfileRewrite rewrite)
+        ProfileRewrite rewrite,
+        SubtitleDepthSettings? subtitleDepth)
     {
         // What this profile may insist on, read off the rewrite instead of off the argument
         // list it carries: only a profile that converts the picture has a video pipeline to
@@ -692,6 +717,19 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
 
         var insertions = new List<string>();
 
+        // What this rewrite was asked for and did not do. A depth the command cannot carry is not a
+        // reason to refuse a playback - the server's own graph plays the film with flat subtitles,
+        // which is what it played before the plugin existed - but a request that silently did
+        // nothing is indistinguishable from a setting nobody turned on, and the only place anybody
+        // can tell the two apart afterwards is this line in the transcode log.
+        var warnings = new List<string>();
+
+        // The one reading of the settings the filter accepts, or null where the request is off or
+        // states a number the filter would silently widen. Everything below is asked only when this
+        // is not null: a rewrite that was never asked for depth has nothing to decline, and a log
+        // line for every ordinary playback is noise that hides the one that matters.
+        var depthOption = SubtitleDepthGraphRewriter.BuildDepthOption(subtitleDepth);
+
         if (mergesIntoServerGraph)
         {
             // The profile's own text goes in as the graph's first chain - the composed stream
@@ -700,18 +738,35 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
             // it, unchanged but for the labels now naming what the profile produces. The server's
             // option keeps the position the server wrote it at: a graph is read as a whole, and
             // the whole of it belongs to the output that maps a pad out of it.
-            var profileSegment = rewrite.FilterComplex
-                ?? string.Concat(
-                    AnaglyfinFilterGraphComposer.ComposedVideoStreamLabel(marker.VideoStreamIndex),
-                    profileFilter!,
-                    AnaglyfinFilterGraphComposer.ProfileOutputLabel);
+            var profileLabel = rewrite.FilterComplex is not null
+                ? AnaglyfinFilterGraphComposer.CustomOutputLabel
+                : AnaglyfinFilterGraphComposer.ProfileOutputLabel;
 
-            replacements[server.GraphValueIndex] = profileSegment + ";" + graphEdit!.Graph;
+            var composedSourceLabel = AnaglyfinFilterGraphComposer.ComposedVideoStreamLabel(marker.VideoStreamIndex);
+
+            var profileSegment = rewrite.FilterComplex
+                ?? string.Concat(composedSourceLabel, profileFilter!, AnaglyfinFilterGraphComposer.ProfileOutputLabel);
+
+            replacements[server.GraphValueIndex] = depthOption is null
+                ? profileSegment + ";" + graphEdit!.Graph
+                : MergeSubtitleDepth(
+                    rewrite,
+                    graphEdit!,
+                    profileSegment,
+                    profileLabel,
+                    rewrite.FilterComplexInput ?? composedSourceLabel,
+                    depthOption,
+                    warnings);
         }
         else if (rewrite.FilterComplex is { } profileGraph)
         {
             insertions.Add(FilterComplexArgument);
             insertions.Add(profileGraph);
+        }
+
+        if (depthOption is not null && !mergesIntoServerGraph)
+        {
+            warnings.Add(SubtitleDepthNotPlaced(rewrite, server.Graph is not null));
         }
 
         if (mapsItsOwnVideo && rewrite.VideoMap is { } videoMap)
@@ -774,7 +829,112 @@ public sealed class WrapperArgumentRewriter : IWrapperArgumentRewriter
                     removals,
                     replacements),
                 marker),
-            rewrite.ProfileId);
+            rewrite.ProfileId,
+            warnings);
+    }
+
+    /// <summary>
+    /// The graph to write into the server's <c>-filter_complex</c>: the merged graph with a subtitle
+    /// depth in it where this command can carry one, and the plain merge where it cannot.
+    /// </summary>
+    /// <param name="rewrite">The profile's rewrite, whose burn-in decides whether depth belongs here at all.</param>
+    /// <param name="graphEdit">The server's graph, with its video labels already retargeted.</param>
+    /// <param name="profileSegment">The profile's own chain or graph.</param>
+    /// <param name="profileLabel">The label that segment writes.</param>
+    /// <param name="profileSourceLabel">The label that segment reads its composed picture from.</param>
+    /// <param name="depthOption">The <c>depth=</c> option the settings asked for.</param>
+    /// <param name="warnings">Where a declined request is recorded.</param>
+    /// <returns>The graph to write.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Why a decline and not a refusal.</b> Everything else this rewriter cannot do refuses the
+    /// job, because running the received command would put a marker URL in front of FFmpeg. That
+    /// argument does not reach the graph: a depth that cannot be placed leaves the server's own graph
+    /// in place, which is a command FFmpeg ran before this wrapper existed and runs the same way
+    /// afterwards. Refusing here would cost a film its playback to withhold an enhancement, and the
+    /// one thing a wrapper on the path of every transcode may not do is that.
+    /// </para>
+    /// <para>
+    /// <b>What this caller checks before asking.</b> The profile's burn-in. A version carrying a
+    /// subtitle ordinal renders that text itself, flat, as the last stage of its own chain - and
+    /// putting a depth stage over a graph whose subtitle is now rendered twice, once by the burn-in
+    /// and once by the filter, is the outcome every rule in this file exists to avoid. Where the two
+    /// are asked for together the version's own burn-in wins, because it is what the version item
+    /// promises, and the depth is declined with the reason said out loud.
+    /// </para>
+    /// </remarks>
+    private static string MergeSubtitleDepth(
+        ProfileRewrite rewrite,
+        AnaglyfinFilterGraphComposer.FilterGraphEdit graphEdit,
+        string profileSegment,
+        string profileLabel,
+        string profileSourceLabel,
+        string depthOption,
+        List<string> warnings)
+    {
+        var plain = profileSegment + ";" + graphEdit.Graph;
+
+        if (rewrite.SubtitleFilter is not null)
+        {
+            warnings.Add(
+                "subtitle depth was asked for and not applied: this version renders its own subtitle "
+                + "burn-in into the picture, and a depth stage would render the server's subtitle a second time on top of it.");
+
+            return plain;
+        }
+
+        var depth = SubtitleDepthGraphRewriter.TryRewrite(
+            graphEdit.Graph,
+            profileLabel,
+            profileSegment,
+            profileSourceLabel,
+            depthOption);
+
+        if (!depth.IsApplied)
+        {
+            warnings.Add("subtitle depth was asked for and not applied: " + depth.Reason);
+
+            return plain;
+        }
+
+        return depth.Graph;
+    }
+
+    /// <summary>
+    /// Why a depth request is not placed on a command this profile does not merge into a graph.
+    /// </summary>
+    /// <param name="rewrite">The profile's rewrite.</param>
+    /// <param name="hasServerGraph">Whether the command carries a filter graph at all.</param>
+    /// <returns>The reason to log.</returns>
+    private static string SubtitleDepthNotPlaced(ProfileRewrite rewrite, bool hasServerGraph)
+    {
+        if (!rewrite.RequiresComposedViewInput)
+        {
+            return "subtitle depth was asked for and not applied: this profile converts no picture of "
+                   + "its own, so there is no composed multiview frame in this command for a subtitle depth to be placed on.";
+        }
+
+        if (rewrite.SubtitleFilter is not null)
+        {
+            return "subtitle depth was asked for and not applied: this version renders its own subtitle "
+                   + "burn-in into the picture, and a depth stage would render the server's subtitle a second time on top of it.";
+        }
+
+        if (!hasServerGraph)
+        {
+            return "subtitle depth was asked for and not applied: the command carries no filter graph, "
+                   + "so it lays no subtitle picture onto the film for a depth stage to place.";
+        }
+
+        if (rewrite.VideoFilter is null && rewrite.FilterComplex is null)
+        {
+            return "subtitle depth was asked for and not applied: this profile's conversion is the "
+                   + "composed decode itself, which leaves no conversion chain a depth stage could be placed in front of.";
+        }
+
+        return "subtitle depth was asked for and not applied: this command's picture is not drawn from "
+               + "a filter graph this rewrite writes its conversion into, so there is no subtitle "
+               + "overlay here for a depth stage to be placed in front of.";
     }
 
     /// <summary>

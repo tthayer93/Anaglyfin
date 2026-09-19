@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Anaglyfin.Configuration;
 
 namespace Anaglyfin.FFmpegWrapper;
 
@@ -38,10 +39,19 @@ public interface IWrapperArgumentRewriter
     /// rewriter does not recognise are carried through untouched, so a caller may pass the
     /// argv it received verbatim.
     /// </param>
+    /// <param name="subtitleDepth">
+    /// The subtitle depth this invocation was asked to offer, or null for none. It is the one
+    /// setting the admin page owns that no argument of the command can carry, and it changes the
+    /// rewrite in exactly one way: where the command's own graph renders an image subtitle onto the
+    /// picture this profile converts, the depth is placed between the composed picture and that
+    /// rendering. A request the graph cannot take is declined - the command is rewritten the plain
+    /// way and <see cref="WrapperRewriteResult.Warnings"/> says why - because a depth that corrupts a
+    /// graph costs the playback, which is more than it buys.
+    /// </param>
     /// <returns>
     /// The decision. <see cref="WrapperRewriteResult.Arguments"/> is the vector to execute
     /// when <see cref="WrapperRewriteResult.IsSuccess"/> holds and is empty otherwise.
     /// </returns>
     /// <exception cref="System.ArgumentNullException"><paramref name="arguments"/> is null.</exception>
-    WrapperRewriteResult Rewrite(IReadOnlyList<string> arguments);
+    WrapperRewriteResult Rewrite(IReadOnlyList<string> arguments, SubtitleDepthSettings? subtitleDepth = null);
 }
