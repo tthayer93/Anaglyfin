@@ -63,6 +63,24 @@ public sealed record WrapperRewriteResult
     public MarkerParseStatus? MarkerStatus { get; init; }
 
     /// <summary>
+    /// Gets what the rewrite did not do, and why, in the words the wrapper logs.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A rewrite can be complete and still have declined something: the argument vector it returns
+    /// is the one to run, and a request it could not place - a subtitle depth the command's filter
+    /// graph has no shape for - is not a reason to refuse a playback, but it is a reason to say so.
+    /// Without this channel the difference between "depth is off" and "depth was asked for and this
+    /// graph could not take it" would be invisible to whoever is reading a transcode log.
+    /// </para>
+    /// <para>
+    /// Fixed descriptions authored by the rewriter, never text echoed from the command line - the
+    /// same rule <see cref="Error"/> follows, for the same reason: this text reaches a server log.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
+
+    /// <summary>
     /// Gets a value indicating whether the wrapper may execute <see cref="Arguments"/>.
     /// </summary>
     public bool IsSuccess => Status is WrapperRewriteStatus.PassedThrough or WrapperRewriteStatus.Rewritten;
@@ -93,15 +111,35 @@ public sealed record WrapperRewriteResult
     /// <exception cref="ArgumentNullException"><paramref name="arguments"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="profileId"/> is blank.</exception>
     public static WrapperRewriteResult Rewritten(IReadOnlyList<string> arguments, string profileId)
+        => Rewritten(arguments, profileId, Array.Empty<string>());
+
+    /// <summary>
+    /// Creates the rewritten outcome, along with what the rewrite declined to do.
+    /// </summary>
+    /// <param name="arguments">The rewritten vector to execute.</param>
+    /// <param name="profileId">The allowlisted profile id the rewrite applied.</param>
+    /// <param name="warnings">
+    /// What the rewrite declined and why, as authored descriptions - see
+    /// <see cref="Warnings"/>.
+    /// </param>
+    /// <returns>The outcome.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="arguments"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="profileId"/> is blank.</exception>
+    public static WrapperRewriteResult Rewritten(
+        IReadOnlyList<string> arguments,
+        string profileId,
+        IReadOnlyList<string> warnings)
     {
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
+        ArgumentNullException.ThrowIfNull(warnings);
 
         return new WrapperRewriteResult
         {
             Status = WrapperRewriteStatus.Rewritten,
             Arguments = arguments,
-            ProfileId = profileId
+            ProfileId = profileId,
+            Warnings = warnings
         };
     }
 

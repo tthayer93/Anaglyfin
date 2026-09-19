@@ -151,11 +151,21 @@ public sealed class WrapperApplication
     /// <returns>The exit code to report.</returns>
     private int Execute(IReadOnlyList<string> rawArguments)
     {
-        var rewrite = _rewriter.Rewrite(NormalizeIncomingArguments(rawArguments));
+        var rewrite = _rewriter.Rewrite(NormalizeIncomingArguments(rawArguments), _options.SubtitleDepth);
 
         if (!rewrite.IsSuccess)
         {
             return RefuseRewrite(rewrite);
+        }
+
+        // What the rewrite declined, and why. A rewrite that carried on without something it was
+        // asked for has already decided that the request is not worth a playback - a subtitle depth
+        // the command's filter graph has no shape for, say - and the only thing left to decide is
+        // whether anybody finds out afterwards. That is decided here, because this is the only place
+        // the wrapper has a log to write to.
+        foreach (var warning in rewrite.Warnings)
+        {
+            Report($"warning: {warning}");
         }
 
         if (!TryRealFFmpegPath(out var realFFmpegPath, out var reason))

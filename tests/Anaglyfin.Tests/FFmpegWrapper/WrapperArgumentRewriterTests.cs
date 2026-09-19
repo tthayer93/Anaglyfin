@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Anaglyfin.Configuration;
 using Anaglyfin.Ffmpeg;
 using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.Markers;
@@ -2175,6 +2176,271 @@ public class WrapperArgumentRewriterTests
         Assert.DoesNotContain("anaglyfin/profile", joined, StringComparison.Ordinal);
         Assert.DoesNotContain(Uri.EscapeDataString(marker), joined, StringComparison.Ordinal);
         Assert.Contains(SourcePath, joined, StringComparison.Ordinal);
+    }
+
+    // ----- subtitle depth on the command ---------------------------------------------------
+
+    [Fact]
+    public void ARealImageSubtitleCommandCarriesDepthBetweenCompositionAndConversion()
+    {
+        var arguments = new List<string>
+        {
+            "-hide_banner", "-loglevel", "warning",
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 0),
+            "-filter_complex", ServersSubtitleBurnGraph,
+            "-map", "[out]", "-map", "0:1", "-map", "-0:s",
+            "-c:v", "libx264", "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0));
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Empty(result.Warnings);
+        Assert.Equal(
+            new[]
+            {
+                "-hide_banner", "-loglevel", "warning",
+
+                // The composed decode, the marker's replacement, and the server's option stay in
+                // their established places. Only the graph text inside the option changes.
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex",
+                "[0:0]format=rgba[anaglyfin_composed];"
+                + "[0:10]format=rgba[anaglyfin_subtitle];"
+                + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];"
+                + "[anaglyfin_depth]scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p[anaglyfin_profile];"
+                + "[anaglyfin_profile]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+                + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[out]",
+                "-map", "[out]", "-map", "0:1", "-map", "-0:s",
+                "-c:v", "libx264", "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
+    public void ADepthSettingThatIsSwitchedOffWritesNoDepthArgumentAndNoWarning()
+    {
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 0),
+            "-filter_complex", ServersSubtitleBurnGraph,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(false, SubtitleDepthMode.Plane, 0, 17));
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex", MergedWith(
+                    "[0:0]scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p[anaglyfin_profile]"),
+                "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        Assert.DoesNotContain("mvcsubdepth", ValueAfter(result.Arguments, WrapperArgumentRewriter.FilterComplexArgument)!, StringComparison.Ordinal);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void AProfileThatConvertsNothingKeepsTheServersGraphAndSaysTheDepthHadNothingToUse()
+    {
+        // The server's graph remains the server's graph: there is no conversion chain here to put
+        // a depth stage in front of. The warning is not a failure - the film still plays, with the
+        // flat subtitles the server already wrote - but without it an administrator would have no
+        // way to distinguish "off" from "asked for, and not applicable".
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.TwoDBase),
+            "-filter_complex", ServersSubtitleBurnGraph,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(true, SubtitleDepthMode.ConstantShift, -8, 0));
+
+        Assert.Equal(
+            new[]
+            {
+                "-i", SourcePath,
+                "-filter_complex", ServersSubtitleBurnGraph,
+                "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Contains("converts no picture", warning, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ACommandWithNoMarkerIsNeitherRewrittenNorWarnedAbout()
+    {
+        var arguments = JellyfinLikeCommand("/library/movie.mkv");
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0));
+
+        Assert.Equal(WrapperRewriteStatus.PassedThrough, result.Status);
+        Assert.Equal(arguments.ToArray(), result.Arguments);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void AFullSideBySideProfileCarriesDepthOnTheComposedPictureBeforeTheServerChain()
+    {
+        // Full SBS converts by decoding the views into one frame and writing nothing after that
+        // frame. That makes the composed stream the picture the depth filter belongs on: the server's
+        // subtitle chain and overlay are replaced, and the rest of its non-subtitle chain reads the
+        // depth filter's output directly.
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull, videoStreamIndex: 0),
+            "-filter_complex", ServersSubtitleBurnGraph,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0));
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex",
+                "[0:0]format=rgba[anaglyfin_composed];"
+                + "[0:10]format=rgba[anaglyfin_subtitle];"
+                + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];"
+                + "[anaglyfin_depth]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+                + "scale=1920:1080:flags=area:original_ip=1920:1080:ow=1920:oh=1080,format=yuv420p[out]",
+                "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void AFullSideBySideProfileLeavesAnUnrecognizedGraphAloneAndSaysWhy()
+    {
+        var serverGraph =
+            "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[0:0]subtitles=filename='/movies/eng.srt'[txt];"
+            + "[txt]scale=1920:1080:flags=area,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]";
+
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull, videoStreamIndex: 0),
+            "-filter_complex", serverGraph,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0));
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex", serverGraph,
+                "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Contains("text filter", warning, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AServerGraphRenderingTextItselfKeepsItsFlatTextAndSaysTheRenderer()
+    {
+        var serverGraph =
+            "[0:0]subtitles=filename='/movies/eng.srt'[txt];"
+            + "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[txt]scale=1920:1080:flags=area,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]";
+
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 0),
+            "-filter_complex", serverGraph,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 3));
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex",
+                "[0:0]scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p[anaglyfin_profile];"
+                + "[anaglyfin_profile]subtitles=filename='/movies/eng.srt'[txt];"
+                + "[0:10]scale=1920:1080:flags=area[sub];"
+                + "[txt]scale=1920:1080:flags=area,format=yuv420p[main];"
+                + "[main][sub]overlay=eof_action=pass:repeatlast=0[out]",
+                "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Contains("text filter", warning, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AVersionWithItsOwnBurnInKeepsTheServerSubtitleAndRefusesTheDepth()
+    {
+        // The one decline that belongs to the profile rather than the server: the version carries a
+        // subtitle of its own, rendered flat inside its own chain, and placing depth over a graph
+        // whose subtitle is now drawn twice would render it twice. The version's own promise wins,
+        // and the reason is said rather than discovered as doubled captions on screen.
+        const string serverGraph = "[0:s:0]ass[s];[0:0]scale=1920:1080[m];[m][s]overlay[out]";
+        const string mergedGraph =
+            "[0:0]scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p,"
+            + "subtitles=filename='/movies/Movie (2010)/Movie.2010.3D.mkv':si=0[anaglyfin_profile];"
+            + "[0:s:0]ass[s];[anaglyfin_profile]scale=1920:1080[m];[m][s]overlay[out]";
+
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideHalf, subtitleOrdinal: 0, videoStreamIndex: 0),
+            "-filter_complex", serverGraph,
+            "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+        };
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0));
+
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex", mergedGraph,
+                "-map", "[out]", "-map", "0:1", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        Assert.DoesNotContain(WrapperArgumentRewriter.DisableSubtitlesArgument, result.Arguments, StringComparer.Ordinal);
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Contains("burn-in", warning, StringComparison.Ordinal);
     }
 
     // ----- fixture ------------------------------------------------------------------------
