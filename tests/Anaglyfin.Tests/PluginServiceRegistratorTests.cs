@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Anaglyfin.Detection;
+using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
 using Anaglyfin.Tests.Stubs;
@@ -47,15 +48,16 @@ public class PluginServiceRegistratorTests
     public void RegisterServicesRegistersThePluginOwnedSingletons()
     {
         // The deliberate set of registrations: the catalog, the detector the media source provider
-        // runs on, the settings seam, and the seven members of the version-item subsystem (its store,
+        // runs on, the settings seam, the seven members of the version-item subsystem (its store,
         // its event source, its reconciler, the queue, the narrow request interface over it, and the
-        // hosted service that drains it). A new service must be added here on purpose - this count is
-        // the review gate against silent registrations.
+        // hosted service that drains it), and the hosted service that publishes the wrapper settings
+        // document at startup. A new service must be added here on purpose - this count is the review
+        // gate against silent registrations.
         var services = new FakeServiceCollection();
 
         new PluginServiceRegistrator().RegisterServices(services, null!);
 
-        Assert.Equal(9, services.Count);
+        Assert.Equal(10, services.Count);
     }
 
     [Fact]
@@ -135,8 +137,27 @@ public class PluginServiceRegistratorTests
 
         new PluginServiceRegistrator().RegisterServices(services, null!);
 
-        var descriptor = Assert.Single(services, d => d.ServiceType == serviceType);
+        var descriptor = Assert.Single(
+            services,
+            d => d.ServiceType == serviceType && d.ImplementationType == implementationType);
+
         Assert.Equal(implementationType, descriptor.ImplementationType);
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void RegisterServicesRegistersTheWrapperSettingsPublicationAsAHostedService()
+    {
+        // The document has to be refreshed on a restart, not only when an administrator saves the
+        // page. Doing it as a hosted service keeps plugin construction free of settings reads.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        var descriptor = Assert.Single(
+            services,
+            d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(WrapperSettingsPublicationService));
+
         Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
     }
 
