@@ -291,7 +291,7 @@
                             </div>
                         </div>
 
-                        <div class="inputContainer anaglyfin-depthField" data-anaglyfin-depth-field="shift">
+                        <div class="inputContainer anaglyfin-depthField" data-anaglyfin-depth-field="shift" data-anaglyfin-depth-mode="ConstantShift">
                             <label class="inputLabel inputLabelUnfixed" for="AnaglyfinSubtitleDepthShift">Constant shift (pixels)</label>
                             <input type="number" is="emby-input" id="AnaglyfinSubtitleDepthShift" min="-64" max="64" step="1" data-anaglyfin-field="SubtitleDepthShift" data-anaglyfin-kind="boundedInteger" data-anaglyfin-default="0">
                             <div class="fieldDescription">
@@ -302,7 +302,7 @@
                             </div>
                         </div>
 
-                        <div class="inputContainer anaglyfin-depthField" data-anaglyfin-depth-field="plane">
+                        <div class="inputContainer anaglyfin-depthField" data-anaglyfin-depth-field="plane" data-anaglyfin-depth-mode="Plane">
                             <label class="inputLabel inputLabelUnfixed" for="AnaglyfinSubtitleDepthPlane">Depth sequence number</label>
                             <input type="number" is="emby-input" id="AnaglyfinSubtitleDepthPlane" min="0" max="31" step="1" data-anaglyfin-field="SubtitleDepthPlane" data-anaglyfin-kind="boundedInteger" data-anaglyfin-default="0">
                             <div class="fieldDescription">
@@ -849,11 +849,14 @@
 
                 /*
                  * One mode asks for one number, so the page shows the number the picked mode
-                 * uses, and shows nothing at all until the feature is asked for. The field of the
-                 * mode that was not picked is hidden rather than emptied: a save still reads the
-                 * value stored for it, so changing one's mind about which reading of the depth to
-                 * ask for does not cost the administrator the number for the other one, and the
-                 * settings keep the shape the server stored whatever the page is displaying.
+                 * uses, and shows nothing at all until the feature is asked for. The pairing is
+                 * declared on each field as data-anaglyfin-depth-mode, spelled with the enum value
+                 * the option stores, rather than inferred from the field's shorter layout key.
+                 * The field of the mode that was not picked is hidden rather than emptied: a save
+                 * still reads the value stored for it, so changing one's mind about which reading
+                 * of the depth to ask for does not cost the administrator the number for the other
+                 * one, and the settings keep the shape the server stored whatever the page is
+                 * displaying.
                  */
                 function syncSubtitleDepthFields() {
                     var page = pageElement();
@@ -863,13 +866,14 @@
 
                     var enabled = page.querySelector('#AnaglyfinSubtitleDepthEnabled');
                     var mode = page.querySelector('#AnaglyfinSubtitleDepthMode');
-                    var wanted = (mode && typeof mode.value === 'string' ? mode.value : '').toLowerCase();
+                    var wantedMode = mode && typeof mode.value === 'string' ? mode.value : '';
                     var askedFor = !!(enabled && enabled.checked);
 
                     var fields = page.querySelectorAll('[data-anaglyfin-depth-field]');
                     for (var i = 0; i < fields.length; i++) {
                         var when = attributeName(fields[i], 'data-anaglyfin-depth-field').toLowerCase();
-                        var visible = askedFor && (when === 'mode' || when === wanted);
+                        var modeForField = attributeName(fields[i], 'data-anaglyfin-depth-mode');
+                        var visible = askedFor && (when === 'mode' || (modeForField !== '' && modeForField === wantedMode));
 
                         fields[i].hidden = !visible;
 

@@ -519,6 +519,73 @@ public class ConfigurationPageTests
     }
 
     [Fact]
+    public void TheSubtitleDepthModeNamesChooseTheFieldsTheyReveal()
+    {
+        var html = ReadPageHtml();
+
+        // The layout keys (`shift`, `plane`) are not the spelling the mode option stores, so a
+        // field has to name the mode that reveals it. Inferring the pairing by lower-casing the
+        // enum name makes `ConstantShift` look for a field called `constantshift`, which hides a
+        // number the selected mode needs even though its field is present.
+        var expectedFieldByMode = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [nameof(SubtitleDepthMode.Automatic)] = string.Empty,
+            [nameof(SubtitleDepthMode.ConstantShift)] = "shift",
+            [nameof(SubtitleDepthMode.Plane)] = "plane"
+        };
+
+        Assert.Equal(
+            Enum.GetNames<SubtitleDepthMode>().OrderBy(name => name, StringComparer.Ordinal).ToArray(),
+            expectedFieldByMode.Keys.OrderBy(name => name, StringComparer.Ordinal).ToArray());
+
+        var actualFieldByMode = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [nameof(SubtitleDepthMode.Automatic)] = string.Empty
+        };
+
+        foreach (Match field in Regex.Matches(html, @"<div\b[^>]*data-anaglyfin-depth-field[^>]*>"))
+        {
+            var attributes = ReadAttributes(field.Value);
+            var fieldKey = attributes.GetValueOrDefault("data-anaglyfin-depth-field", string.Empty);
+            var modeName = attributes.GetValueOrDefault("data-anaglyfin-depth-mode", string.Empty);
+
+            if (fieldKey == "mode")
+            {
+                Assert.False(
+                    attributes.ContainsKey("data-anaglyfin-depth-mode"),
+                    "The mode selector is shown by the feature switch, not by one mode name.");
+
+                continue;
+            }
+
+            Assert.True(
+                expectedFieldByMode.TryGetValue(modeName, out var expectedField) && expectedField.Length > 0,
+                $"The depth field '{fieldKey}' names a mode no settings enum declares: '{modeName}'.");
+
+            Assert.Equal(expectedField, fieldKey);
+            Assert.True(actualFieldByMode.TryAdd(modeName, fieldKey), $"The mode '{modeName}' revealed more than one field.");
+        }
+
+        Assert.Equal(expectedFieldByMode, actualFieldByMode);
+
+        var sync = FunctionBody(html, "syncSubtitleDepthFields");
+
+        // The function compares the mode option's stored spelling to that attribute, and uses that
+        // answer for both visibility and whether the control can be typed into. That is the half
+        // that turns "Enable" plus "One constant shift" into an editable shift box.
+        Assert.Contains("#AnaglyfinSubtitleDepthEnabled", sync, StringComparison.Ordinal);
+        Assert.Contains("#AnaglyfinSubtitleDepthMode", sync, StringComparison.Ordinal);
+        Assert.Contains("data-anaglyfin-depth-mode", sync, StringComparison.Ordinal);
+        Assert.Contains("modeForField === wantedMode", sync, StringComparison.Ordinal);
+        Assert.Matches(
+            @"var visible\s*=\s*askedFor\s*&&\s*\(when\s*===\s*'mode'\s*\|\|\s*\(modeForField\s*!==\s*''\s*&&\s*modeForField\s*===\s*wantedMode\)\);",
+            sync);
+        Assert.Matches(@"fields\[i\]\.hidden\s*=\s*!visible;", sync);
+        Assert.Matches(@"input\.disabled\s*=\s*!visible;", sync);
+        Assert.DoesNotContain("wanted.toLowerCase", sync, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TheAdminPageCarriesNoFreeFormConversionInput()
     {
         var html = ReadPageHtml();
