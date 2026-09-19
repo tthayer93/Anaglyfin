@@ -239,6 +239,15 @@ public static class SubtitleDepthGraphRewriter
         ArgumentException.ThrowIfNullOrWhiteSpace(profileSourceLabel);
         ArgumentException.ThrowIfNullOrWhiteSpace(depthOption);
 
+        if (NamesViewSpecifier(profileSourceLabel))
+        {
+            // A view specifier names one eye. The depth filter works on the composed frame that the
+            // decoder puts both eyes on, so a profile reading its conversion from one eye cannot be
+            // threaded through a stage that belongs to the composed picture.
+            return SubtitleDepthGraphRewrite.NotSupported(
+                "the profile's conversion reads a view of its source instead of the composed picture this rewrite places depth on.");
+        }
+
         if (!profileSegment.StartsWith(profileSourceLabel, StringComparison.Ordinal)
             || !profileSegment.EndsWith(profileLabel, StringComparison.Ordinal)
             || profileSegment.Length <= profileSourceLabel.Length + profileLabel.Length)
@@ -281,6 +290,7 @@ public static class SubtitleDepthGraphRewriter
         // one of its readers, and a label written twice is a graph FFmpeg refuses to parse.
         var producers = new Dictionary<string, List<int>>(StringComparer.Ordinal);
         var readers = new Dictionary<string, int>(StringComparer.Ordinal);
+        var profileLabelName = LabelName(profileLabel);
 
         foreach (var chain in chains)
         {
@@ -291,8 +301,10 @@ public static class SubtitleDepthGraphRewriter
                 // for a pad the depth stage writes. The profile's own label is the one name with a
                 // right to be here: the caller put it there when it retargeted the server's video
                 // references onto the profile's conversion.
-                if (label.StartsWith(OwnedLabelPrefix, StringComparison.Ordinal)
-                    && !string.Equals(label, profileLabel, StringComparison.Ordinal))
+                var name = LabelName(label);
+
+                if (name.StartsWith(OwnedLabelPrefix, StringComparison.Ordinal)
+                    && !string.Equals(name, profileLabelName, StringComparison.Ordinal))
                 {
                     return SubtitleDepthGraphRewrite.NotSupported(
                         "the command's filter graph already carries a label this product writes, so the depth stage would have somewhere to write that somebody else already took.");
@@ -396,10 +408,16 @@ public static class SubtitleDepthGraphRewriter
                 "the command's subtitle overlay draws its captions onto a picture that is not written once by one chain, so there is no label to carry the output in its place.");
         }
 
-        if (!mainChain.Inputs.Contains(profileLabel, StringComparer.Ordinal))
+        if (!TryTraceProfileOwnedPicturePath(
+                chains,
+                producers,
+                profileLabel,
+                mainChain,
+                subtitleChain,
+                overlay,
+                out var pathReason))
         {
-            return SubtitleDepthGraphRewrite.NotSupported(
-                "the chain the command's subtitle overlay draws onto does not read the profile's converted picture, so these subtitles sit outside the pipeline the profile owns.");
+            return SubtitleDepthGraphRewrite.NotSupported(pathReason);
         }
 
         if (readers[mainLabel] != 1)
@@ -464,6 +482,94 @@ public static class SubtitleDepthGraphRewriter
         }
 
         return SubtitleDepthGraphRewrite.Applied(rewritten.ToString());
+    }
+
+    /// <summary>
+    /// Whether the picture the overlay draws onto is fed, through one chain of the server's own
+    /// labels, from the profile's converted picture.
+    /// </summary>
+    /// <remarks>
+    /// The server is allowed to split its picture pipeline into more than one chain, and the depth
+    /// stage still belongs behind all of those chains rather than beside one of them. Walking
+    /// backwards from the overlay's main picture proves where that pipeline starts without parsing
+    /// any more of the server's filter text than labels and positions. A path that branches into a
+    /// source this rewrite cannot see - another stream, another overlay, or a cycle - is refused,
+    /// because the output would no longer be provably the profile's picture with depth in it.
+    /// </remarks>
+    private static bool TryTraceProfileOwnedPicturePath(
+        IReadOnlyList<Chain> chains,
+        Dictionary<string, List<int>> producers,
+        string profileLabel,
+        Chain mainChain,
+        Chain subtitleChain,
+        Chain overlay,
+        out string reason)
+    {
+        var currentChain = mainChain;
+        var visited = new HashSet<int>();
+
+        while (true)
+        {
+            if (!visited.Add(currentChain.Index))
+            {
+                reason = "the chain the command's subtitle overlay draws onto is reached twice by the labels that feed it, so its picture cannot be traced back to one converted source.";
+
+                return false;
+            }
+
+            if (currentChain.Index == subtitleChain.Index || currentChain.Index == overlay.Index)
+            {
+                reason = "the chain the command's subtitle overlay draws onto is one of the chains this rewrite would remove, so the film picture and the subtitle picture are not separate here.";
+
+                return false;
+            }
+
+            if (currentChain.Inputs.Count == 0)
+            {
+                reason = "the chain the command's subtitle overlay draws onto is not fed by a label this rewrite can trace back to the profile's converted picture.";
+
+                return false;
+            }
+
+            if (currentChain.Inputs.Contains(profileLabel, StringComparer.Ordinal))
+            {
+                if (currentChain.Inputs.Count != 1)
+                {
+                    reason = "the chain that carries the profile's picture to the command's subtitle overlay also reads another picture, so the overlay is not drawing onto the profile's picture alone.";
+
+                    return false;
+                }
+
+                reason = string.Empty;
+
+                return true;
+            }
+
+            if (currentChain.Inputs.Count != 1)
+            {
+                reason = "the chain the command's subtitle overlay draws onto is joined from more pictures than this rewrite can prove came from the profile's converted frame.";
+
+                return false;
+            }
+
+            var sourceLabel = currentChain.Inputs[0];
+
+            if (!producers.TryGetValue(sourceLabel, out var sourceWriters) || sourceWriters.Count != 1)
+            {
+                reason = "the picture feeding the command's subtitle overlay is not written by exactly one earlier chain, so it cannot be traced back to one converted source.";
+
+                return false;
+            }
+
+            if (sourceWriters[0] == currentChain.Index)
+            {
+                reason = "the chain the command's subtitle overlay draws onto writes the picture it reads, so its labels form a cycle instead of a path to the profile.";
+
+                return false;
+            }
+
+            currentChain = chains[sourceWriters[0]];
+        }
     }
 
     /// <summary>
@@ -638,6 +744,21 @@ public static class SubtitleDepthGraphRewriter
         return int.TryParse(type, NumberStyles.None, CultureInfo.InvariantCulture, out _);
     }
 
+    /// <summary>Whether a filter-label source names a view of the marker's first input.</summary>
+    private static bool NamesViewSpecifier(string label)
+    {
+        if (label.Length < 5 || label[0] != '[' || label[^1] != ']'
+            || label[1] != '0' || label[2] != ':')
+        {
+            return false;
+        }
+
+        var specifier = label.Substring(3, label.Length - 4);
+        var separator = specifier.IndexOf(':');
+
+        return separator >= 0 && CarriesViewSpecifier(specifier.Substring(separator + 1));
+    }
+
     /// <summary>Whether a specifier detail asks for a view rather than for a stream.</summary>
     private static bool CarriesViewSpecifier(string detail)
     {
@@ -654,6 +775,12 @@ public static class SubtitleDepthGraphRewriter
 
         return false;
     }
+
+    /// <summary>The pad name inside a bracketed filter label.</summary>
+    private static string LabelName(string label)
+        => label.Length >= 2 && label[0] == '[' && label[^1] == ']'
+            ? label.Substring(1, label.Length - 2)
+            : label;
 
     private static bool IsNameStart(char value)
         => value is >= 'a' and <= 'z'

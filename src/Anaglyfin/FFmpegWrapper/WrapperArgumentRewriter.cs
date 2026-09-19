@@ -128,27 +128,27 @@ namespace Anaglyfin.FFmpegWrapper;
 /// consuming that label is the thing feeding the output picture, and mapping it as well would put
 /// a second video in the way of the one the server mapped.
 /// </para>
-    /// <para>
-    /// <b>Where the depth goes.</b> A subtitle depth an authored disc carries is a horizontal eye
-    /// displacement recorded on the composed frame, which makes it a fact about the picture between
-    /// two moments: after the eyes have been composed into one frame, and before the profile's
-    /// conversion moves those eyes into an anaglyph or a half-frame. The one place on the command
-    /// that sits between them is a server graph that renders an image subtitle itself - the
-    /// sub2video chain reading the subtitle stream and the <c>overlay</c> laying it on the film - and
-    /// when the caller hands over a depth request that is the join <see
-    /// cref="SubtitleDepthGraphRewriter"/> makes: the composed picture and the subtitle picture both
-    /// put through RGBA, the depth filter between them, and the profile's conversion reading what the
-    /// depth wrote. The subtitle's own chain and its overlay are the two chains removed by that
-    /// rewrite, because a subtitle laid on twice would be one subtitle rendered flat on top of its
-    /// own depth. Every other command shape is left exactly as it was, with the reason written to the
-    /// log: depth is an enhancement, and unlike a marker that could not be resolved it has a
-    /// fallback that is not a failure - the server's own flat subtitles. The one command that gets
-    /// depth refused for a reason of the profile's own is a version carrying its own burn-in, which
-    /// renders its text flat by design and would otherwise have the server's subtitle rendered on top
-    /// of it.
-    /// </para>
-    /// <para>
-    /// <b>Where it refuses.</b> A profile that owns the output's video pipeline cannot share that
+/// <para>
+/// <b>Where the depth goes.</b> A subtitle depth an authored disc carries is a horizontal eye
+/// displacement recorded on the composed frame, which makes it a fact about the picture between
+/// two moments: after the eyes have been composed into one frame, and before the profile's
+/// conversion moves those eyes into an anaglyph or a half-frame. The one place on the command
+/// that sits between them is a server graph that renders an image subtitle itself - the
+/// sub2video chain reading the subtitle stream and the <c>overlay</c> laying it on the film - and
+/// when the caller hands over a depth request that is the join <see
+/// cref="SubtitleDepthGraphRewriter"/> makes: the composed picture and the subtitle picture both
+/// put through RGBA, the depth filter between them, and the profile's conversion reading what the
+/// depth wrote. The subtitle's own chain and its overlay are the two chains removed by that
+/// rewrite, because a subtitle laid on twice would be one subtitle rendered flat on top of its
+/// own depth. Every other command shape is left exactly as it was, with the reason written to the
+/// log: depth is an enhancement, and unlike a marker that could not be resolved it has a
+/// fallback that is not a failure - the server's own flat subtitles. The one command that gets
+/// depth refused for a reason of the profile's own is a version carrying its own burn-in, which
+/// renders its text flat by design and would otherwise have the server's subtitle rendered on top
+/// of it.
+/// </para>
+/// <para>
+/// <b>Where it refuses.</b> A profile that owns the output's video pipeline cannot share that
 /// pipeline with a filtergraph whose contents it cannot see, and cannot be joined to a graph that
 /// never asks for the picture it converts: this wrapper inserts a chain and retargets a label, it
 /// does not parse or graft foreign filter text (which is also a security requirement - nothing in
