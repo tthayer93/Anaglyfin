@@ -1,19 +1,21 @@
 using System;
 using System.Globalization;
 using System.IO;
+using Anaglyfin.Configuration;
 
 namespace Anaglyfin.FFmpegWrapper;
 
 /// <summary>
-/// The configuration of one wrapper invocation, read from the process environment.
+/// The configuration of one wrapper invocation, read from the process environment and from
+/// the settings document the plugin leaves for it.
 /// </summary>
 /// <remarks>
 /// <para>
 /// The wrapper is a separate process started by Jellyfin once per playback, so it has
 /// no access to the plugin's configuration, its container, or its logging. The
-/// environment is the only channel that reaches it, and these are the three things it
-/// needs: which real binary to hand the command to, how many Anaglyfin transcodes may
-/// run at once, and where those jobs announce themselves.
+/// environment is the only channel that reaches it directly, and these are the three
+/// things it needs: which real binary to hand the command to, how many Anaglyfin
+/// transcodes may run at once, and where those jobs announce themselves.
 /// </para>
 /// <para>
 /// <b>Nothing here is a path the code invents.</b> The real FFmpeg binary is always a
@@ -32,6 +34,16 @@ namespace Anaglyfin.FFmpegWrapper;
 /// <see cref="RealFFmpegEnvironmentVariable"/> is the exception: it is not a tuning
 /// value but the binary itself, so it is reported by
 /// <see cref="WrapperApplication"/> instead of being quietly replaced.
+/// </para>
+/// <para>
+/// <b>Two channels, and they do not overlap.</b> The environment is the deployment's
+/// channel: it names the binary, the concurrency limit and the slot directory, and nothing
+/// read from a file can move those, because a document in a data directory cannot be the
+/// place a server's process limits are set. <see cref="WrapperSettingsFile"/> is the
+/// plugin's channel: it carries the one setting the admin page owns that the environment
+/// cannot - the subtitle depth request - and it is read after the environment, for that
+/// value only. A wrapper with no document pointed at it, or one it cannot read, runs with
+/// <see cref="SubtitleDepthSettings.Disabled"/>.
 /// </para>
 /// </remarks>
 public sealed record FFmpegWrapperOptions
@@ -107,6 +119,24 @@ public sealed record FFmpegWrapperOptions
     public string RealFFmpegPathSource { get; init; } = PathLookupSource;
 
     /// <summary>
+    /// Gets the subtitle depth this invocation was told to offer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The one setting that arrives from the plugin rather than from the deployment, through
+    /// <see cref="WrapperSettingsFile"/>: the admin page owns it, the environment cannot carry
+    /// it, and the wrapper never writes it.
+    /// </para>
+    /// <para>
+    /// <see cref="SubtitleDepth"/> is <see cref="SubtitleDepthSettings.Disabled"/> for every
+    /// case where no request reached this process - the variable unset, the file absent, the
+    /// document unreadable - which is the same answer an unconfigured server gives, and the
+    /// reason a settings channel that fails costs a deployment nothing but the enhancement.
+    /// </para>
+    /// </remarks>
+    public SubtitleDepthSettings SubtitleDepth { get; init; } = SubtitleDepthSettings.Disabled;
+
+    /// <summary>
     /// Gets the directory used when <see cref="LockDirectoryEnvironmentVariable"/> is unset.
     /// </summary>
     /// <remarks>
@@ -132,6 +162,14 @@ public sealed record FFmpegWrapperOptions
     /// that the resolution order below is testable without changing the process.
     /// </param>
     /// <returns>The options those variables describe.</returns>
+    /// <remarks>
+    /// The environment is read first and completely: the binary, the concurrency limit and
+    /// the slot directory are settled before anything is opened. The settings document comes
+    /// after, is addressed only by <see cref="WrapperSettingsFile.EnvironmentVariable"/>, and
+    /// is given one value. That order is what keeps the two channels from disputing a setting
+    /// - a file in a data directory is not where a server's process limits get set, and the
+    /// document does not try.
+    /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="readVariable"/> is null.</exception>
     public static FFmpegWrapperOptions FromEnvironment(Func<string, string?> readVariable)
     {
@@ -144,7 +182,8 @@ public sealed record FFmpegWrapperOptions
             MaxConcurrentTranscodes = ReadMaximum(readVariable(MaxConcurrentTranscodesEnvironmentVariable)),
             LockDirectory = ReadLockDirectory(readVariable(LockDirectoryEnvironmentVariable)),
             RealFFmpegPath = path,
-            RealFFmpegPathSource = source
+            RealFFmpegPathSource = source,
+            SubtitleDepth = WrapperSettingsFile.Read(WrapperSettingsFile.ReadConfiguredPath(readVariable))
         };
     }
 
