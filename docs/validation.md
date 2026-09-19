@@ -145,6 +145,10 @@ Check the rendered page against the shipped defaults:
 | Custom left eye colour | `#FF0000` | Color input defaults correctly |
 | Custom right eye colour | `#00FFFF` | Color input defaults correctly |
 | Maximum concurrent Anaglyfin transcodes | `1` | Number input defaults correctly |
+| Enable FFmpeg-mvc subtitle depth | Off | Checkbox defaults off |
+| Subtitle depth mode | `Automatic` | `Automatic`, `Constant shift`, and `Plane` are selectable |
+| Constant shift | `0` pixels | Only shown for `Constant shift`; range `-64`..`64` |
+| Depth plane | `0` | Only shown for `Plane`; range `0`..`31` |
 | Video encoder policy | `Automatic` | Select exists |
 
 - [ ] Save succeeds and the settings round-trip after reopening the page.
@@ -160,6 +164,7 @@ Check the rendered page against the shipped defaults:
   FFMPEG_MVC_PATH
   ANAGLYFIN_MAX_CONCURRENT_TRANSCODES
   ANAGLYFIN_LOCK_DIR
+  ANAGLYFIN_WRAPPER_SETTINGS
   ```
 
 - [ ] Disabling all enabled profiles is not accepted as an empty offer: saving that state
@@ -186,6 +191,7 @@ FFmpeg-mvc binary path:
 ffprobe path:
 ANAGLYFIN_LOCK_DIR:
 ANAGLYFIN_MAX_CONCURRENT_TRANSCODES:
+ANAGLYFIN_WRAPPER_SETTINGS:
 Jellyfin FFmpeg path setting:
 ```
 
@@ -194,6 +200,7 @@ Required deployment shape:
 ```text
 Jellyfin -> wrapper executable -> ANAGLYFIN_REAL_FFMPEG -> FFmpeg-mvc
 Jellyfin -> real ffprobe, in the wrapper's own directory
+plugin -> ANAGLYFIN_WRAPPER_SETTINGS -> wrapper (one shared subtitle-depth document)
 ```
 
 The second line is not decoration. The server resolves `ffprobe` from the directory of the
@@ -207,7 +214,10 @@ signature of getting this wrong is one line at startup and a library that never 
       trying to start process '/config/anaglyfin/ffmpeg/ffprobe' ... No such file or directory
 ```
 
-- [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user.
+- [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
+  current subtitle-depth target is the official `n8.1.2-mvc7-jf4` build; an older FFmpeg-mvc may
+  run ordinary commands but cannot honour a depth request if it does not carry `mvcsubdepth`.
+- [ ] `FFmpeg -filters` names `mvcsubdepth` when subtitle depth is enabled.
 - [ ] FFprobe from the same FFmpeg-mvc build is installed, executable, **in the same
   directory as the wrapper**, because that is where the server will look for it.
 - [ ] The wrapper executable is deployed to a stable path and executable by the Jellyfin
@@ -227,8 +237,13 @@ signature of getting this wrong is one line at startup and a library that never 
   started helper processes. Setting them only in the administrator's login shell is not
   sufficient.
 - [ ] `ANAGLYFIN_LOCK_DIR` is writable by the Jellyfin service user.
+- [ ] `ANAGLYFIN_WRAPPER_SETTINGS` names the same absolute file to the plugin and to every wrapper
+  process that should see the subtitle-depth setting. Its directory must be writable by the Jellyfin
+  service user, because the plugin writes it and the wrapper only reads it.
 - [ ] For container deployments, every wrapper process that should share one concurrency
   limit sees the same lock directory.
+- [ ] For container deployments, every wrapper process that should see one subtitle-depth request
+  reads the same settings document.
 
 Example environment block, adjusted to your deployment:
 
@@ -236,12 +251,17 @@ Example environment block, adjusted to your deployment:
 ANAGLYFIN_REAL_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg-mvc
 ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1
 ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin/ffmpeg-wrapper
+ANAGLYFIN_WRAPPER_SETTINGS=/var/lib/jellyfin/anaglyfin/wrapper/anaglyfin-wrapper-settings.json
 ```
 
 Notes:
 
 - The wrapper checks the configured real binary and refuses if it is missing or points back
   at the wrapper itself.
+- The wrapper reads the subtitle-depth request from the document named by
+  `ANAGLYFIN_WRAPPER_SETTINGS`. If that variable is unset or the document cannot be read, the
+  wrapper does not fail the playback: it uses flat subtitles, the same answer it gives when depth is
+  switched off in the admin page.
 - The wrapper resolves the real FFmpeg binary in this order:
   1. `ANAGLYFIN_REAL_FFMPEG`
   2. `FFMPEG_MVC_PATH`
@@ -931,21 +951,42 @@ source video through its colour and scale chain into `[main]`, and overlays the 
 The profile's conversion belongs at the head of that graph - in front of the server's own scale,
 which is sized for the converted frame - and the server's reference to the source video is
 retargeted onto what the conversion produced. For a red-cyan version of a source whose video is
-stream 0:
+stream 0, with subtitle depth **off**:
 
 ```text
 -filter_complex [0:0]stereo3d=sbsl:arcd,format=yuv420p[anaglyfin_profile];[0:10]scale=1920:1080:flags=area[sub];[anaglyfin_profile]setparams=...,format=yuv420p[main];[main][sub]overlay=eof_action=pass:repeatlast=0[out]
 -view_ids -1 -i <real source path>            (in front of the input)
 ```
 
+With subtitle depth **on** for the same converting profile, the recognized image-subtitle graph is
+rewritten instead of merely merged. The subtitle chain and overlay are removed, and the depth filter
+takes their place between the composed picture and the profile conversion:
+
+```text
+-filter_complex [0:0]format=rgba[anaglyfin_composed];[0:10]format=rgba[anaglyfin_subtitle];[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];[anaglyfin_depth]stereo3d=sbsl:arcd,format=yuv420p[anaglyfin_profile];[anaglyfin_profile]setparams=...,format=yuv420p[out]
+-view_ids -1 -i <real source path>
+```
+
+For full SBS, whose conversion is the composed decode itself, the depth output feeds the server's
+non-subtitle chain directly:
+
+```text
+-filter_complex [0:0]format=rgba[anaglyfin_composed];[0:10]format=rgba[anaglyfin_subtitle];[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];[anaglyfin_depth]setparams=...,format=yuv420p[out]
+-view_ids -1 -i <real source path>
+```
+
 - [ ] The job runs. A version of a film with a burned-in subtitle used to fail before FFmpeg was
       started, with `IncompatibleFilterGraph` and exit code `65`.
-- [ ] The profile chain is the graph's first chain and the server's chains follow it, so the
-      profile converts before the server scales.
-- [ ] The subtitle chain, the overlay and the label the output maps are the server's, byte for
-      byte: only the label naming the source video moved.
-- [ ] Stream `10` is still addressed by the graph: a subtitle stream is not this source's video,
-      whatever number it carries.
+- [ ] With depth off, the profile chain is the graph's first chain and the server's chains follow
+      it, so the profile converts before the server scales.
+- [ ] With depth off, the subtitle chain, the overlay and the label the output maps are the server's,
+      byte for byte: only the label naming the source video moved.
+- [ ] With depth on, the launched `-filter_complex` carries one `mvcsubdepth` stage and its exact
+      `depth=` option: `depth=auto`, `depth=shift=<pixels>`, or `depth=plane=<index>`.
+- [ ] With depth on, the original subtitle chain and `overlay` are gone: the subtitle is rendered by
+      the depth filter, not again flat on top of it.
+- [ ] Stream `10` is still addressed by the graph, now as the subtitle input to the depth stage: a
+      subtitle stream is not this source's video, whatever number it carries.
 - [ ] No `-sn`, and the server's subtitle maps and exclusions are where it wrote them - the server
       is already rendering this text, and a conversion has nothing to say about it.
 - [ ] Still one `-i`, one decode: the merge writes a chain, not a second input.
@@ -953,8 +994,13 @@ stream 0:
       server's filter and loses the marker: the sweep that keeps marker text out of the command
       reaches inside the filter value, and writes the real source path in the same escaping the
       server used.
-- [ ] Full SBS on the same server command leaves the graph alone - it has no chain to contribute -
-      and still gets its `-view_ids -1`.
+- [ ] With depth on, a graph rendering text itself through `subtitles=` or `ass` is **not** rewritten.
+      The playback keeps the server's flat text and the wrapper writes a `warning: subtitle depth
+      was asked for and not applied` diagnostic naming the text filter.
+- [ ] Full SBS with depth off leaves the graph alone - it has no chain to contribute - and still gets
+      its `-view_ids -1`; with depth on it receives the composed-picture depth graph above.
+- [ ] If the settings document is absent, unreadable, or carries an out-of-range value, the wrapper
+      behaves as if depth were off.
 
 Where no merge is possible the wrapper refuses, and the log says which rule the command broke:
 a graph read from `-filter_complex_script`; a graph that never names this input's video stream; a
@@ -1122,6 +1168,12 @@ Current state:
   `-sn` and removes the server's subtitle maps, and without one it leaves the server's subtitle
   selection - maps, exclusions, and the subtitle streams its own filter graph reads - alone.
 - Subtitle selection in a client does not yet produce a burned-in subtitle filter.
+- FFmpeg-mvc subtitle depth is available as an administrator request in three modes:
+  `automatic`, `constantShift`, and `plane`. The admin page has no `flat` mode; depth is enabled or
+  disabled, and disabled means the wrapper adds no `mvcsubdepth` stage at all.
+- The depth request travels through the settings document named by
+  `ANAGLYFIN_WRAPPER_SETTINGS`. The wrapper's view of that request is read once per invocation and
+  cannot be changed during a running transcode.
 
 Validation expectation:
 
@@ -1132,13 +1184,51 @@ Validation expectation:
       burn-in filter or overlay graph - survives the rewrite.
 - [ ] A converted version of a film the server is already burning subtitles into still shows those
       subtitles (see 7.9): this is the check that the old blanket `-sn`, which muted them, is gone.
+- [ ] With depth enabled, the command carries the requested `mvcsubdepth` mode and the subtitle is
+      rendered by that stage rather than by the server's overlay.
+- [ ] With depth enabled but no supported shape, the command starts the server's original graph and
+      the wrapper's log says the request was not applied.
+
+Supported image-subtitle shapes for depth:
+
+```text
+converting profile:
+  composed picture -> mvcsubdepth -> profile conversion -> server non-subtitle chain
+
+full SBS:
+  composed picture -> mvcsubdepth -> server non-subtitle chain
+```
+
+Both shapes require one numbered image-subtitle stream feeding one `overlay`. Other shapes fall back
+without corrupting the server's graph: text renderers such as `subtitles=` or `ass`, several subtitle
+pictures, several overlays, missing server video chains, a profile whose only work is a burn-in, and
+graphs whose labels or sources this wrapper cannot prove. The fallback keeps the server's flat
+subtitles and writes a diagnostic; it is not a command refusal.
 
 Expected command behavior today:
 
 ```text
 no -sn for a converting profile, because nothing renders text on its picture
 no "subtitles=filename=" inserted by Anaglyfin for the MVP provider path
+mvcsubdepth only when the admin request is enabled, the graph shape is supported, and the target
+FFmpeg-mvc binary carries the mvcsubdepth filter
 ```
+
+### Subtitle depth on hardware-accelerated hosts
+
+Current state:
+
+- The depth stage is inserted into the server's filter graph; it is not QSV-specific and no QSV
+  hardware-frame path is claimed by this documentation.
+- CI proves the rewritten command shapes, settings transport, and fallback warnings, but it does not
+  run a real FFmpeg-mvc binary, a real QSV device, or real MVC depth output.
+
+Validation expectation:
+
+- [ ] On QSV/NVENC/VA-API hosts, the server's hardware arguments still pass through unchanged (see
+      V7.10), and the depth stage appears in the filter graph only for the supported shapes above.
+- [ ] Record any depth result observed on real hardware as a manual runtime result. Until that result
+      is recorded, do **not** mark QSV or real MVC subtitle depth as validated.
 
 ### Encoder policy
 

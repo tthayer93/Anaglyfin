@@ -114,6 +114,7 @@ Environment=JELLYFIN_FFMPEG=/opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 Environment=ANAGLYFIN_REAL_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg-mvc
 Environment=ANAGLYFIN_LOCK_DIR=/var/lib/jellyfin/anaglyfin/lock
 Environment=ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1
+Environment=ANAGLYFIN_WRAPPER_SETTINGS=/var/lib/jellyfin/anaglyfin/wrapper/anaglyfin-wrapper-settings.json
 ```
 
 ```sh
@@ -121,11 +122,17 @@ sudo systemctl daemon-reload
 sudo systemctl restart jellyfin
 ```
 
-`ANAGLYFIN_LOCK_DIR` is the one path here the service has to write, so create it for that user,
-and check the wrapper reaches the binary it names before anything else:
+`ANAGLYFIN_LOCK_DIR` is the one path here the service has to write for concurrency slots, so create
+it for that user. `ANAGLYFIN_WRAPPER_SETTINGS` is the settings bridge between the plugin and the
+wrapper: the plugin writes the JSON document there when it starts and when settings are saved, and
+the wrapper reads the same path every time it starts. If it is unset, the plugin falls back to its
+own data directory - a path only the plugin knows - so the wrapper cannot see the subtitle-depth
+setting and playback stays flat. Both processes must therefore be able to reach the one file; the
+directory it lives in must be writable by the Jellyfin service user.
 
 ```sh
 sudo install -d -m 0755 -o jellyfin -g jellyfin /var/lib/jellyfin/anaglyfin/lock
+sudo install -d -m 0755 -o jellyfin -g jellyfin /var/lib/jellyfin/anaglyfin/wrapper
 sudo -u jellyfin /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg -version
 ```
 
@@ -176,12 +183,21 @@ docker compose exec jellyfin sh -c 'cp /usr/lib/jellyfin-ffmpeg/ffprobe /config/
 ```
 
 The FFmpeg-mvc build the wrapper runs is mounted the same way - it is not in the official
-image:
+image. The current subtitle-depth target is the official `n8.1.2-mvc7-jf4` build; an older
+build without the `mvcsubdepth` filter cannot honour a depth request even when the wrapper
+places one in the graph:
 
 ```sh
 mkdir -p ./jellyfin/config/anaglyfin/ffmpeg-mvc
-cp /path/to/ffmpeg-mvc-n8.1.2-mvc3-jf4 ./jellyfin/config/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
+cp /path/to/ffmpeg-mvc-n8.1.2-mvc7-jf4 ./jellyfin/config/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
 chmod 0755 ./jellyfin/config/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
+```
+
+The subtitle-depth settings document also has to be shared by the plugin and every wrapper process.
+Put it under `/config`, where the plugin can write it and the wrapper can read it:
+
+```sh
+mkdir -p ./jellyfin/config/anaglyfin/wrapper
 ```
 
 Compose, with the wrapper as the server's FFmpeg:
@@ -195,6 +211,7 @@ services:
       ANAGLYFIN_REAL_FFMPEG: /config/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
       ANAGLYFIN_LOCK_DIR: /config/anaglyfin/lock
       ANAGLYFIN_MAX_CONCURRENT_TRANSCODES: "1"
+      ANAGLYFIN_WRAPPER_SETTINGS: /config/anaglyfin/wrapper/anaglyfin-wrapper-settings.json
     volumes:
       - ./jellyfin/config:/config
       - ./jellyfin/cache:/cache
