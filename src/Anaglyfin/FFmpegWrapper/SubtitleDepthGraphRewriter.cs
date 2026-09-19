@@ -474,10 +474,12 @@ public static class SubtitleDepthGraphRewriter
             .Append(profileLabel);
 
         // What is left of the server's graph: every chain this rewrite does not remove, in the order
-        // the server wrote them, with the chain that fed the overlay writing the label the output
-        // maps. The subtitle's chain and the overlay are the two that are gone - the first because
-        // the depth stage reads that stream itself, the second because a subtitle laid on twice would
-        // be one subtitle rendered flat on top of its own depth.
+        // the server wrote them. The subtitle's chain and the overlay are the two that are gone - the
+        // first because the depth stage reads that stream itself, the second because a subtitle laid
+        // on twice would be one subtitle rendered flat on top of its own depth. Removing the overlay
+        // makes the chain that fed it the graph's last stage on the picture the output is drawn from,
+        // and that chain has to leave the graph in exactly the state the server left it in when its
+        // own overlay was the last stage - see the terminal-pad rule in the loop body.
         foreach (var chain in chains)
         {
             if (chain.Index == subtitleChain.Index || chain.Index == overlay.Index)
@@ -487,9 +489,11 @@ public static class SubtitleDepthGraphRewriter
 
             rewritten.Append(';');
 
-            if (chain.Index == mainChain.Index && finalLabel is not null)
+            if (chain.Index == mainChain.Index)
             {
-                rewritten.Append(chain.Text, 0, chain.OutputStart).Append(finalLabel);
+                rewritten
+                    .Append(chain.Text, 0, chain.OutputStart)
+                    .Append(TerminalLabel(finalLabel));
             }
             else
             {
@@ -499,6 +503,40 @@ public static class SubtitleDepthGraphRewriter
 
         return SubtitleDepthGraphRewrite.Applied(rewritten.ToString());
     }
+
+    /// <summary>
+    /// The label the graph's last picture-carrying chain has to write so the command binds one final
+    /// output, once the server's subtitle overlay - the chain that used to be last - is removed.
+    /// </summary>
+    /// <param name="finalLabel">
+    /// The label the removed overlay wrote, or null when it wrote none.
+    /// </param>
+    /// <returns>
+    /// <para>
+    /// <b>Where the overlay named its pad.</b> The server mapped that label (<c>-map [out]</c>), so
+    /// the chain now writes it in the overlay's place and the map still names a pad something
+    /// produces. Nothing else in the command moves.
+    /// </para>
+    /// <para>
+    /// <b>Where the overlay left its pad anonymous - the shape Jellyfin actually writes for an image
+    /// subtitle burn-in.</b> Then there is no label for the map to name: the server bound the encoder
+    /// to the graph's single anonymous output pad (FFmpeg links a <c>-map 0:v</c> / <c>-map 0:n</c>
+    /// that names a consumed input stream to that pad), and no <c>-map [label]</c> stands anywhere on
+    /// the command. The chain that fed the overlay now ends the graph; if it kept its own label
+    /// (<c>...format=yuv420p[main]</c>) that pad would be a labelled output with neither a reader nor
+    /// a map, which is the exact error FFmpeg refuses with - <c>Filter ... has output 0 (main)
+    /// unconnected / Error binding filtergraph inputs/outputs</c>. Dropping the label hands the graph
+    /// back the one anonymous pad the server's own map already binds, so the rewritten graph binds its
+    /// final output through the very map the server wrote: no label left dangling, and - because no
+    /// <c>-map</c> is inserted beside the server's own video selection - no second video and no
+    /// duplicate map. This is why the terminal is bound by removing the label rather than by writing a
+    /// fresh <c>-map [label]</c>: injecting one would stand beside the server's <c>-map 0:v</c> (and
+    /// its <c>-map -0:0</c>) and put two videos in the output, which is the duplicate this product
+    /// must never write.
+    /// </para>
+    /// </returns>
+    private static string TerminalLabel(string? finalLabel)
+        => finalLabel ?? string.Empty;
 
     /// <summary>
     /// Rewrites the server's chains for a profile whose conversion is the composed decode itself.
@@ -762,9 +800,15 @@ public static class SubtitleDepthGraphRewriter
 
             rewritten.Append(';');
 
-            if (chain.Index == mainChain.Index && finalLabel is not null)
+            // Same terminal-pad rule as the converting profiles: the chain that fed the removed
+            // overlay ends the graph now, and it writes the overlay's label where the overlay named
+            // one and no label at all where the server let the encoder bind the graph's anonymous
+            // output pad - see <see cref="TerminalLabel"/>.
+            if (chain.Index == mainChain.Index)
             {
-                rewritten.Append(chain.Text, 0, chain.OutputStart).Append(finalLabel);
+                rewritten
+                    .Append(chain.Text, 0, chain.OutputStart)
+                    .Append(TerminalLabel(finalLabel));
             }
             else
             {

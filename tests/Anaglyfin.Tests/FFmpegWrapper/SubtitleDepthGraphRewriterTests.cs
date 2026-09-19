@@ -178,11 +178,16 @@ public class SubtitleDepthGraphRewriterTests
     }
 
     [Fact]
-    public void AGraphWithoutAnOutputLabelLeavesTheMainChainLabelFinal()
+    public void AGraphWithoutAnOutputLabelEndsOnTheAnonymousPadTheOutputBinds()
     {
-        // The same graph as Jellyfin writes it when the output maps the graph's implicit pad instead
-        // of naming one: there is no [out] to hand over, and the last surviving chain's own label is
-        // what the output ends up drawn from.
+        // The exact graph Jellyfin writes for an image-subtitle burn-in: the last chain is the
+        // subtitle overlay and it labels NOTHING - the server binds the encoder to the graph's one
+        // anonymous output pad (a -map 0:0 that names the consumed video stream), with no
+        // -map [label] anywhere. Removing that overlay makes the picture chain the last chain, and
+        // if it kept its [main] label the graph would end on a labelled pad no reader and no map
+        // claims - the "Filter ... has output 0 (main) unconnected" FFmpeg refuses. So the terminal
+        // label is dropped: the rewritten graph hands back the same single anonymous pad the server's
+        // own -map already binds, so the command needs no new map and carries no dangling label.
         var graph =
             "[0:10]scale=1920:1080:flags=area[sub];"
             + "[anaglyfin_profile]scale=1920:1080:flags=area,format=yuv420p[main];"
@@ -196,8 +201,52 @@ public class SubtitleDepthGraphRewriterTests
             + "[0:10]format=rgba[anaglyfin_subtitle];"
             + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=auto:eof_action=pass[anaglyfin_depth];"
             + "[anaglyfin_depth]scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p[anaglyfin_profile];"
-            + "[anaglyfin_profile]scale=1920:1080:flags=area,format=yuv420p[main]",
+            + "[anaglyfin_profile]scale=1920:1080:flags=area,format=yuv420p",
             rewrite.Graph);
+
+        // No dangling pad and no second labelled output: [main] is gone entirely, and the graph does
+        // not end in a bracket - its last character is the terminal pad of the picture chain, exactly
+        // where the server's removed overlay used to sit.
+        Assert.DoesNotContain("[main]", rewrite.Graph, StringComparison.Ordinal);
+        Assert.False(rewrite.Graph.EndsWith("]", StringComparison.Ordinal), rewrite.Graph);
+        Assert.EndsWith("format=yuv420p", rewrite.Graph, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnExplicitlyLabelledOverlayStillHandsThatLabelToTheOutput()
+    {
+        // The other server spelling - the overlay writes [out] and the command maps [out]. Here the
+        // label is the output's, the server maps it, and the chain feeding the overlay takes it over
+        // unchanged: the map still names a pad something produces, so nothing is added or removed.
+        var rewrite = Rewrite(Sub2VideoGraph, "depth=auto");
+
+        Assert.True(rewrite.IsApplied, rewrite.Reason);
+        Assert.EndsWith("[out]", rewrite.Graph, StringComparison.Ordinal);
+        Assert.DoesNotContain("[main]", rewrite.Graph, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheComposedDecodeEndsOnTheAnonymousPadWhenTheServersOverlayLabelsNothing()
+    {
+        // Full SBS runs the same terminal-pad rule through the composed-picture rewrite: the graph
+        // ends where the server's unlabeled overlay used to end, so its own video map binds the one
+        // anonymous output pad instead of a dangling [main].
+        var rewrite = SubtitleDepthGraphRewriter.TryRewriteComposedPicture(
+            "[0:10]scale=1920:1080:flags=area[sub];"
+            + "[0:0]scale=1920:1080:flags=area,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass",
+            videoStreamIndex: 0,
+            depthOption: "depth=shift=24");
+
+        Assert.True(rewrite.IsApplied, rewrite.Reason);
+        Assert.Equal(
+            "[0:0]format=rgba[anaglyfin_composed];"
+            + "[0:10]format=rgba[anaglyfin_subtitle];"
+            + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=shift=24:eof_action=pass[anaglyfin_depth];"
+            + "[anaglyfin_depth]scale=1920:1080:flags=area,format=yuv420p",
+            rewrite.Graph);
+        Assert.DoesNotContain("[main]", rewrite.Graph, StringComparison.Ordinal);
+        Assert.EndsWith("format=yuv420p", rewrite.Graph, StringComparison.Ordinal);
     }
 
     [Theory]

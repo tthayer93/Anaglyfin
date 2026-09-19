@@ -2221,6 +2221,115 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
+    public void ACommandMappingTheGraphsAnonymousPadStillBindsOneOutputAfterDepth()
+    {
+        // The shape Jellyfin really writes for an image-subtitle burn-in: the overlay is the graph's
+        // last chain and labels nothing, and the video is selected by -map 0:0 (the consumed stream),
+        // never by -map [label]. This is the command the depth rewrite used to leave a dangling
+        // [main] on - "output 0 (main) unconnected". The rewrite now hands the graph back the single
+        // anonymous output pad the server's own -map 0:0 binds, and it changes NO map: the server's
+        // video selection and its exclusion stay exactly as written, so the output still carries one
+        // video, no second video, and no duplicate map.
+        const string AnonymousPadGraph =
+            "[0:10]scale,scale=960:540:fast_bilinear[sub];"
+            + "[0:0]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+            + "scale=960:540:flags=area,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass:repeatlast=0";
+
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideHalf, videoStreamIndex: 0),
+            "-filter_complex", AnonymousPadGraph,
+            "-map", "0:0", "-map", "0:1", "-map", "-0:0",
+            "-codec:v:0", "h264_qsv", "-preset", "veryfast", "out.ts"
+        };
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(true, SubtitleDepthMode.ConstantShift, 24, 0));
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Empty(result.Warnings);
+        Assert.Equal(
+            new[]
+            {
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-filter_complex",
+                "[0:0]format=rgba[anaglyfin_composed];"
+                + "[0:10]format=rgba[anaglyfin_subtitle];"
+                + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=shift=24:eof_action=pass[anaglyfin_depth];"
+                + "[anaglyfin_depth]scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p[anaglyfin_profile];"
+                + "[anaglyfin_profile]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+                + "scale=960:540:flags=area,format=yuv420p",
+
+                // The server's map set survives untouched - no map inserted, none removed.
+                "-map", "0:0", "-map", "0:1", "-map", "-0:0",
+                "-codec:v:0", "h264_qsv", "-preset", "veryfast", "out.ts"
+            },
+            result.Arguments);
+
+        // The proof against the runtime error: the graph names no map to satisfy and ends on an
+        // anonymous pad; [main] is gone and nothing trails the last chain in a bracket.
+        var graph = ValueAfter(result.Arguments, WrapperArgumentRewriter.FilterComplexArgument)!;
+        Assert.DoesNotContain("[main]", graph, StringComparison.Ordinal);
+        Assert.EndsWith("format=yuv420p", graph, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AFullSideBySideCommandMappingTheAnonymousPadStillBindsOneOutputAfterDepth()
+    {
+        // The same terminal-pad contract on the composed-decode profile: no profile chain, depth
+        // straight onto the composed picture, and the server's -map 0:0 binding the one anonymous pad
+        // left where its unlabeled overlay used to be.
+        const string AnonymousPadGraph =
+            "[0:10]scale,scale=960:540:fast_bilinear[sub];"
+            + "[0:0]scale=960:540:flags=area,format=yuv420p[main];"
+            + "[main][sub]overlay=eof_action=pass:repeatlast=0";
+
+        var arguments = new List<string>
+        {
+            "-i", Marker(ProfileIds.SideBySideFull, videoStreamIndex: 0),
+            "-filter_complex", AnonymousPadGraph,
+            "-map", "0:0", "-map", "0:1", "-map", "-0:0",
+            "-codec:v:0", "h264_qsv", "out.ts"
+        };
+
+        var result = _rewriter.Rewrite(
+            arguments,
+            new SubtitleDepthSettings(true, SubtitleDepthMode.ConstantShift, 24, 0));
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Empty(result.Warnings);
+
+        var graph = ValueAfter(result.Arguments, WrapperArgumentRewriter.FilterComplexArgument)!;
+        Assert.Equal(
+            "[0:0]format=rgba[anaglyfin_composed];"
+            + "[0:10]format=rgba[anaglyfin_subtitle];"
+            + "[anaglyfin_composed][anaglyfin_subtitle]mvcsubdepth=depth=shift=24:eof_action=pass[anaglyfin_depth];"
+            + "[anaglyfin_depth]scale=960:540:flags=area,format=yuv420p",
+            graph);
+        Assert.DoesNotContain("[main]", graph, StringComparison.Ordinal);
+
+        // Maps untouched: exactly the server's three, no fourth.
+        Assert.Equal(3, CountOption(result.Arguments, WrapperArgumentRewriter.MapArgument));
+    }
+
+    private static int CountOption(IEnumerable<string> arguments, string option)
+    {
+        var count = 0;
+        foreach (var argument in arguments)
+        {
+            if (string.Equals(argument, option, StringComparison.Ordinal))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    [Fact]
     public void ADepthSettingThatIsSwitchedOffWritesNoDepthArgumentAndNoWarning()
     {
         var arguments = new List<string>
