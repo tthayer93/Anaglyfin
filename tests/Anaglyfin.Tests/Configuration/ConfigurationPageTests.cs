@@ -513,7 +513,7 @@ public class ConfigurationPageTests
         // time the administrator changes the one depth control the page now has.
         Assert.Contains("syncSubtitleDepthFields();", FunctionBody(html, "applyConfiguration"), StringComparison.Ordinal);
         Assert.Equal(2, Regex.Matches(html, "syncSubtitleDepthFields\\(\\);").Count);
-        Assert.Equal(1, Regex.Matches(html, "addEventListener\\('change', syncSubtitleDepthFields\\)").Count);
+        Assert.Single(Regex.Matches(html, "addEventListener\\('change', syncSubtitleDepthFields\\)"));
 
         // The hidden attribute has to be backed by the page's own stylesheet, for the same reason
         // the dashboard notice is: the dashboard's sheet has an opinion about these elements.
