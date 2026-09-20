@@ -100,8 +100,17 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// now-retired element so the next load reads a clean file. A subtitle-depth change moves no
     /// profile, so it asks for no version pass and needs no wrapper hand-off of its own - startup
     /// publishes the wrapper document from the live settings a moment later, reading the migrated
-    /// value this wrote. A migration that cannot read or write its file is not worth failing a plugin
-    /// load over - the settings load is the place that decides what an unreadable file means.
+    /// value this wrote.
+    /// </para>
+    /// <para>
+    /// Every disk step is taken as best effort, in the same failure-is-the-answer shape the wrapper
+    /// hand-off uses, so that an unwritable settings file - a read-only mount, a locked file, a full
+    /// volume - costs an administrator a migration that does not persist and never a plugin that
+    /// cannot load: the constructor has no business failing startup over a subtitle-depth change.
+    /// The live settings still carry the migrated mode whenever the read and the decision succeeded,
+    /// so the wrapper sees it this run, and a decision that did not reach disk is simply re-attempted
+    /// on the next load. Where the read itself failed, the settings load is the authority on what an
+    /// unreadable file means, and this method does not second-guess it.
     /// </para>
     /// </remarks>
     private void MigrateSubtitleDepth()
@@ -109,32 +118,43 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         var path = ConfigurationFilePath;
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
+            // A fresh installation has no stored switch to retire and nothing to read, so there is
+            // nothing to write. Reading the live settings to check that would be exactly the
+            // default-file write the constructor comment guards against, so the shipped default
+            // (Automatic) is left to speak for itself.
             return;
         }
 
-        string storedXml;
+        // Read, decide, apply and persist are one best-effort step: any of them can meet an unwritable
+        // or unreadable file (the read and the write both touch the disk), and none of them is worth
+        // throwing out of a plugin constructor. Swallowing a deployment-shaped IO failure degrades to
+        // "no migration", which is the honest answer and the one that keeps the plugin loading.
         try
         {
-            storedXml = File.ReadAllText(path);
+            var storedXml = File.ReadAllText(path);
+
+            var migratedMode = PluginConfigurationMigration.ResolveStoredSubtitleDepthMode(storedXml);
+            if (migratedMode is null)
+            {
+                // A file this build already wrote states a mode and carries no legacy switch: the
+                // migration decides nothing about it and writes nothing, which is what keeps this a
+                // one-time step rather than a rewrite on every boot.
+                return;
+            }
+
+            var configuration = Configuration;
+            configuration.SubtitleDepthMode = migratedMode.Value;
+
+            // The base save path, not the overriding one: the migration changes no enabled profile, so
+            // there is no version pass to ask for, and the wrapper document is published from the live
+            // settings at startup. Writing the file is the whole of what this step owes the upgrade.
+            base.SaveConfiguration(configuration);
         }
         catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
         {
-            return;
+            // Nothing to do: a migration this could not carry out leaves the live settings holding
+            // whatever the read produced and is retried next load, exactly as the remarks describe.
         }
-
-        var migratedMode = PluginConfigurationMigration.ResolveStoredSubtitleDepthMode(storedXml);
-        if (migratedMode is null)
-        {
-            return;
-        }
-
-        var configuration = Configuration;
-        configuration.SubtitleDepthMode = migratedMode.Value;
-
-        // The base save path, not the overriding one: the migration changes no enabled profile, so
-        // there is no version pass to ask for, and the wrapper document is published from the live
-        // settings at startup. Writing the file is the whole of what this step owes the upgrade.
-        base.SaveConfiguration(configuration);
     }
 
     /// <inheritdoc />
