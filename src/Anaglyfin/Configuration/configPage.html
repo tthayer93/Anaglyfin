@@ -59,24 +59,11 @@
                 padding: 0.2em;
             }
 
-            .anaglyfin-envGuidance {
+            .anaglyfin-deployment {
                 margin: 1em 0;
                 padding: 0.8em 1em;
                 border-left: 0.25em solid rgba(255, 255, 255, 0.2);
                 background: rgba(0, 0, 0, 0.18);
-            }
-
-            .anaglyfin-envGuidance dl {
-                margin: 0;
-            }
-
-            .anaglyfin-envGuidance dt {
-                font-family: monospace;
-                margin-top: 0.6em;
-            }
-
-            .anaglyfin-envGuidance dd {
-                margin: 0 0 0 1em;
             }
 
             .anaglyfin-readonly {
@@ -194,28 +181,6 @@
                                 How many Anaglyfin jobs may run at once. One is the shipped default.
                             </div>
                         </div>
-
-                        <div class="anaglyfin-envGuidance">
-                            <div class="fieldDescription">
-                                The Anaglyfin FFmpeg wrapper is started by the server and not
-                                by this plugin, so it reads its own setup from the environment
-                                the server passes it. These variables are listed as guidance
-                                only: this page cannot write them, and a path typed into this
-                                page could not reach the wrapper anyway.
-                            </div>
-                            <dl>
-                                <dt>ANAGLYFIN_REAL_FFMPEG</dt>
-                                <dd>The real FFmpeg-mvc binary the wrapper hands commands to. Checked first.</dd>
-                                <dt>FFMPEG_MVC_PATH</dt>
-                                <dd>Where the same binary comes from when ANAGLYFIN_REAL_FFMPEG is unset, so a standard FFmpeg-mvc installation needs no second setting. The server's own <b>ffmpeg</b> on PATH is the last resort when neither names it.</dd>
-                                <dt>ANAGLYFIN_MAX_CONCURRENT_TRANSCODES</dt>
-                                <dd>The limit the wrapper enforces. Keep it equal to the value saved above: the wrapper starts in the server's environment and cannot read this page.</dd>
-                                <dt>ANAGLYFIN_LOCK_DIR</dt>
-                                <dd>The directory the wrapper counts running jobs in. Every wrapper process on the server has to see the same directory, which on a containerised server means a mounted shared one.</dd>
-                                <dt>ANAGLYFIN_WRAPPER_SETTINGS</dt>
-                                <dd>The file Anaglyfin writes the subtitle depth request into, and the one the wrapper reads it back from. The plugin writes it whether or not the variable is set - unset means its own settings directory - but the wrapper can only be told where to look by the deployment, so subtitle depth is only honoured where this names the same file the plugin writes.</dd>
-                            </dl>
-                        </div>
                     </div>
 
                     <div class="section anaglyfin-section">
@@ -255,6 +220,15 @@
                             <div class="fieldDescription">
                                 The authored depth sequence to read directly, 0 to 31.
                             </div>
+                        </div>
+                    </div>
+
+                    <div class="section anaglyfin-section">
+                        <h2 class="sectionTitle">Deployment</h2>
+                        <div class="fieldDescription anaglyfin-deployment">
+                            Requires a Jellyfin-compatible FFmpeg-mvc build. In Jellyfin's FFmpeg
+                            path, select the Anaglyfin FFmpeg entry point supplied with this plugin.
+                            Installation details are in the Anaglyfin documentation.
                         </div>
                     </div>
 

@@ -350,9 +350,17 @@ public sealed class WrapperApplication
     }
 
     /// <summary>The refusal line for a job the concurrency limit turned away.</summary>
+    /// <remarks>
+    /// Both places the limit can be raised are named, because the wrapper cannot tell which of them
+    /// stated the number it is refusing over: the admin page is the setting and
+    /// <see cref="FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable"/> is the override
+    /// that beat it, and an administrator reading this line has to be able to find the one that
+    /// applies to this server.
+    /// </remarks>
     private string ConcurrencyRefusal()
         => $"refused: {_guard.MaxConcurrentTranscodes} Anaglyfin transcode(s) are already running, which is the configured maximum, so FFmpeg was not started."
-           + $" Raise {FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable} to allow more,"
+           + " Raise the maximum concurrent Anaglyfin transcodes on the Anaglyfin settings page,"
+           + $" or {FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable} to override it from the deployment,"
            + $" or remove slot files left in the directory {FFmpegWrapperOptions.LockDirectoryEnvironmentVariable} names if a wrapper was killed without exiting.";
 
     /// <summary>

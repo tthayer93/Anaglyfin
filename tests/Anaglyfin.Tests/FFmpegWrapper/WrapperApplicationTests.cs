@@ -258,6 +258,33 @@ public sealed class WrapperApplicationTests : IDisposable
     }
 
     [Fact]
+    public void TheLimitThePluginPublishedIsTheLimitTheWrapperCounts()
+    {
+        // The admin page owns this number and the settings document is the only way it reaches this
+        // process. One of the two slots the document states is already held, so the shipped limit of
+        // one would turn this command away and the published limit of two admits it. That difference
+        // is the whole of the test: it is the difference between a saved setting and a decoration.
+        var running = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 2);
+        Assert.True(running.TryAcquire());
+
+        try
+        {
+            var (application, launcher) = CreateApplicationFromSettingsFile(
+                SubtitleDepthSettings.Disabled, maxConcurrentTranscodes: 2);
+
+            Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(JellyfinLikeCommand(Marker(ProfileIds.AnaglyphRedCyanDubois))));
+            Assert.Single(launcher.Launches);
+            Assert.Empty(_diagnostics.ToString());
+        }
+        finally
+        {
+            running.Release();
+        }
+
+        Assert.Empty(_slots.SlotFiles());
+    }
+
+    [Fact]
     public void AJobWhoseBinaryCouldNotBeStartedGivesTheSlotBack()
     {
         var (application, launcher) = CreateApplication();
@@ -602,12 +629,17 @@ public sealed class WrapperApplicationTests : IDisposable
     /// pointed at by the same environment variable a deployment has to set for the wrapper.
     /// </summary>
     /// <param name="settings">The subtitle-depth request the plugin published.</param>
+    /// <param name="maxConcurrentTranscodes">
+    /// The limit the published document states. The shipped one by default, so a test that is not
+    /// about the limit sees the same wrapper it saw before this setting travelled in the document.
+    /// </param>
     /// <returns>The application under test and its recording launcher.</returns>
     private (WrapperApplication Application, FakeFFmpegProcessLauncher Launcher) CreateApplicationFromSettingsFile(
-        SubtitleDepthSettings settings)
+        SubtitleDepthSettings settings,
+        int maxConcurrentTranscodes = 1)
     {
         var settingsPath = Path.Combine(_binaryDirectory, "wrapper-settings.json");
-        var wrote = WrapperSettingsFile.TryWrite(settingsPath, settings, out var failure);
+        var wrote = WrapperSettingsFile.TryWrite(settingsPath, settings, maxConcurrentTranscodes, out var failure);
 
         Assert.True(wrote, failure?.Message ?? "The wrapper settings file could not be written.");
 

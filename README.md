@@ -74,15 +74,20 @@ Runtime-validation state - a throwaway Jellyfin config, cache, and media mount -
 
 ## Wrapper environment
 
-The wrapper is started by Jellyfin, not by the plugin, so it reads its setup from
+The wrapper is started by Jellyfin, not by the plugin, so deployment settings come from
 the server environment:
 
 ```text
 ANAGLYFIN_REAL_FFMPEG
 FFMPEG_MVC_PATH
-ANAGLYFIN_MAX_CONCURRENT_TRANSCODES
 ANAGLYFIN_LOCK_DIR
+ANAGLYFIN_WRAPPER_SETTINGS
 ```
+
+The admin page owns the subtitle-depth request and the concurrency limit. The plugin publishes both
+to the settings document named by `ANAGLYFIN_WRAPPER_SETTINGS`. Optional
+`ANAGLYFIN_MAX_CONCURRENT_TRANSCODES` overrides the page's concurrency limit for wrapper processes
+that receive that environment.
 
 Real deployment details and expected validation results are in
 `docs/validation.md`.

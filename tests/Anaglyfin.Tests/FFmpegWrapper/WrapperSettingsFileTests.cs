@@ -38,29 +38,123 @@ public sealed class WrapperSettingsFileTests : IDisposable
     }
 
     [Fact]
-    public void TheDocumentIsTheSchemaVersionAndTheDepthRequestAndNothingElse()
+    public void TheDocumentIsTheSchemaVersionTheDepthRequestTheLimitAndNothingElse()
     {
         // The rule "do not expose the full settings object to the wrapper" is a shape, and a shape
-        // is testable: two keys at the root, four in the request, and no name in the document that
-        // belongs to a setting the wrapper has no business reading.
-        var document = JsonNode.Parse(WrapperSettingsFile.ToJson(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 6)))!
+        // is testable: three keys at the root, four in the depth request, one in the limit, and no
+        // name in the document that belongs to a setting the wrapper has no business reading.
+        var document = JsonNode.Parse(WrapperSettingsFile.ToJson(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 6), 3))!
             .AsObject();
 
         Assert.Equal(
-            new[] { "schemaVersion", "subtitleDepth" },
+            new[] { "schemaVersion", "subtitleDepth", "transcoding" },
             document.Select(pair => pair.Key).ToArray());
 
         var depth = document["subtitleDepth"]!.AsObject();
 
+        // The depth section is version 1's section, spelled the same way, in the same order. A
+        // wrapper that only ever read version 1 has to read this one unchanged.
         Assert.Equal(
             new[] { "enabled", "mode", "shiftPixels", "plane" },
             depth.Select(pair => pair.Key).ToArray());
 
+        var transcoding = document["transcoding"]!.AsObject();
+
+        Assert.Equal(
+            new[] { "maxConcurrentTranscodes" },
+            transcoding.Select(pair => pair.Key).ToArray());
+
         Assert.Equal(WrapperSettingsFile.SchemaVersion, document["schemaVersion"]!.GetValue<int>());
+        Assert.Equal(2, WrapperSettingsFile.SchemaVersion);
         Assert.True(depth["enabled"]!.GetValue<bool>());
         Assert.Equal("plane", depth["mode"]!.GetValue<string>());
         Assert.Equal(0, depth["shiftPixels"]!.GetValue<int>());
         Assert.Equal(6, depth["plane"]!.GetValue<int>());
+        Assert.Equal(3, transcoding["maxConcurrentTranscodes"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public void TheLimitTheWriterStatesIsTheLimitTheReaderReads()
+    {
+        // The admin page owns this number and the wrapper acts on it, so the one thing that cannot
+        // happen is for it to arrive as something else - including as the shipped default, which is
+        // what a silently dropped field would look like.
+        foreach (var limit in new[] { 1, 2, 7, 40 })
+        {
+            var read = WrapperSettingsFile.Parse(WrapperSettingsFile.ToJson(SubtitleDepthSettings.Disabled, limit));
+
+            Assert.Equal(limit, read.MaxConcurrentTranscodes);
+        }
+    }
+
+    [Fact]
+    public void AVersionOneDocumentIsReadForItsDepthAndStatesNoLimit()
+    {
+        // The document a server that has not been restarted since the upgrade still has on disk. Its
+        // depth is a complete statement and is honoured; the limit it never stated is nobody's
+        // opinion, which is null here and not the shipped one.
+        const string VersionOne = """
+            { "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "plane", "shiftPixels": 0, "plane": 5 } }
+            """;
+
+        var read = WrapperSettingsFile.Parse(VersionOne);
+
+        Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 5), read.SubtitleDepth);
+        Assert.Null(read.MaxConcurrentTranscodes);
+    }
+
+    [Theory]
+    [InlineData("""{ "schemaVersion": 2 }""")]
+    [InlineData("""{ "schemaVersion": 2, "subtitleDepth": { "enabled": false } }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": null }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": [] }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": 3 }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": { } }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": { "maxConcurrentTranscodes": null } }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": { "maxConcurrentTranscodes": "3" } }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": { "maxConcurrentTranscodes": 0 } }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": { "maxConcurrentTranscodes": -4 } }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": { "maxConcurrentTranscodes": 1.5 } }""")]
+    [InlineData("""{ "schemaVersion": 2, "maxConcurrentTranscodes": 3 }""")]
+    public void ASectionThatStatesNoUsableLimitStatesNoLimit(string json)
+    {
+        // Everything a hand editor or a half-upgrade can leave in that one field, plus the number
+        // written at the root instead of in its section. Each is answered the way an absent section
+        // is, because the alternative is a wrapper that has to guess how many processes this server
+        // may start.
+        Assert.Null(WrapperSettingsFile.Parse(json).MaxConcurrentTranscodes);
+    }
+
+    [Fact]
+    public void TheTwoSectionsAreReadApartFromEachOther()
+    {
+        // A document that cannot state its depth still states its limit, and the other way round.
+        // The two settings have different fallbacks, so losing one is not a reason to lose the
+        // other - and a reader that refused the whole file over one section would silently put an
+        // administrator's concurrency limit back to the default on the way past a typo in a mode.
+        var depthBroken = WrapperSettingsFile.Parse(
+            """{ "schemaVersion": 2, "subtitleDepth": { "enabled": true, "mode": "nonsense" }, "transcoding": { "maxConcurrentTranscodes": 5 } }""");
+
+        Assert.Equal(SubtitleDepthSettings.Disabled, depthBroken.SubtitleDepth);
+        Assert.Equal(5, depthBroken.MaxConcurrentTranscodes);
+
+        var limitBroken = WrapperSettingsFile.Parse(
+            """{ "schemaVersion": 2, "subtitleDepth": { "enabled": true, "mode": "plane", "plane": 3 }, "transcoding": { "maxConcurrentTranscodes": "five" } }""");
+
+        Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 3), limitBroken.SubtitleDepth);
+        Assert.Null(limitBroken.MaxConcurrentTranscodes);
+    }
+
+    [Theory]
+    [InlineData("""{ "schemaVersion": 3, "subtitleDepth": { "enabled": true, "mode": "plane", "plane": 5 }, "transcoding": { "maxConcurrentTranscodes": 5 } }""")]
+    [InlineData("""{ "schemaVersion": 99, "subtitleDepth": { "enabled": true, "mode": "automatic" }, "transcoding": { "maxConcurrentTranscodes": 5 } }""")]
+    public void ADocumentFromAVersionThisBuildHasNeverSeenIsNotReadAtAll(string json)
+    {
+        // Within a version this reader knows, sections are judged separately. Across versions it has
+        // nothing to judge with: a newer spelling of either section may mean something this build
+        // would read wrongly rather than fail to read, and "both settings at their defaults" is the
+        // one answer that is never wrong.
+        Assert.Equal(WrapperSettings.Unstated, WrapperSettingsFile.Parse(json));
     }
 
     [Fact]
@@ -80,7 +174,7 @@ public sealed class WrapperSettingsFileTests : IDisposable
 
         foreach (var settings in samples)
         {
-            var json = WrapperSettingsFile.ToJson(settings);
+            var json = WrapperSettingsFile.ToJson(settings, PluginConfiguration.DefaultMaxConcurrentTranscodes);
 
             foreach (var forbidden in new[] { "token", "secret", "password", "credential", "api", "path" })
             {
@@ -100,7 +194,7 @@ public sealed class WrapperSettingsFileTests : IDisposable
         // An absent field and a stated "off" are the same to this reader, but not to the next one,
         // and not to an administrator reading the file: off is a decision somebody took, and the
         // document says so.
-        var json = WrapperSettingsFile.ToJson(SubtitleDepthSettings.Disabled);
+        var json = WrapperSettingsFile.ToJson(SubtitleDepthSettings.Disabled, PluginConfiguration.DefaultMaxConcurrentTranscodes);
         var depth = JsonNode.Parse(json)!.AsObject()["subtitleDepth"]!.AsObject();
 
         Assert.False(depth["enabled"]!.GetValue<bool>());
@@ -118,9 +212,9 @@ public sealed class WrapperSettingsFileTests : IDisposable
     {
         var written = new SubtitleDepthSettings(true, mode, shift, plane);
 
-        var read = WrapperSettingsFile.Parse(WrapperSettingsFile.ToJson(written));
+        var read = WrapperSettingsFile.Parse(WrapperSettingsFile.ToJson(written, PluginConfiguration.DefaultMaxConcurrentTranscodes));
 
-        Assert.Equal(written, read);
+        Assert.Equal(written, read.SubtitleDepth);
     }
 
     [Fact]
@@ -128,7 +222,8 @@ public sealed class WrapperSettingsFileTests : IDisposable
     {
         Assert.Equal(
             SubtitleDepthSettings.Disabled,
-            WrapperSettingsFile.Parse(WrapperSettingsFile.ToJson(SubtitleDepthSettings.Disabled)));
+            WrapperSettingsFile.Parse(
+                WrapperSettingsFile.ToJson(SubtitleDepthSettings.Disabled, PluginConfiguration.DefaultMaxConcurrentTranscodes)).SubtitleDepth);
     }
 
     [Fact]
@@ -173,16 +268,15 @@ public sealed class WrapperSettingsFileTests : IDisposable
     [InlineData("null")]
     [InlineData("0")]
     [InlineData("\"automatic\"")]
-    [InlineData("{ \"schemaVersion\": 1, \"subtitleDepth\": { \"enabled\": true, ")]
+    [InlineData("{ \"schemaVersion\": 2, \"subtitleDepth\": { \"enabled\": true, ")]
     public void ADocumentThatIsNotADocumentIsReadAsNoDepth(string json)
     {
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Parse(json));
+        Assert.Equal(WrapperSettings.Unstated, WrapperSettingsFile.Parse(json));
     }
 
     [Theory]
     [InlineData("""{ "subtitleDepth": { "enabled": true, "mode": "plane", "plane": 4 } }""")]
     [InlineData("""{ "schemaVersion": 0, "subtitleDepth": { "enabled": true, "mode": "plane", "plane": 4 } }""")]
-    [InlineData("""{ "schemaVersion": 2, "subtitleDepth": { "enabled": true, "mode": "plane", "plane": 4 } }""")]
     [InlineData("""{ "schemaVersion": "1", "subtitleDepth": { "enabled": true, "mode": "plane", "plane": 4 } }""")]
     [InlineData("""{ "schemaVersion": 1 }""")]
     [InlineData("""{ "schemaVersion": 1, "subtitleDepth": null }""")]
@@ -201,13 +295,14 @@ public sealed class WrapperSettingsFileTests : IDisposable
     [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "constantShift", "shiftPixels": 65 } }""")]
     [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "constantShift", "shiftPixels": -65 } }""")]
     [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "constantShift", "shiftPixels": null } }""")]
-    public void ADocumentWhoseMeaningThisBuildDoesNotKnowIsReadAsNoDepth(string json)
+    [InlineData("""{ "schemaVersion": 2, "subtitleDepth": { "enabled": true, "mode": "depth", "plane": 4 }, "transcoding": { "maxConcurrentTranscodes": 2 } }""")]
+    public void ADocumentWhoseDepthThisBuildDoesNotKnowIsReadAsNoDepth(string json)
     {
         // The list is what a deployment produces when a file is edited by hand or written by a
         // build with different rules: a wrong shape, a wrong type, a number off the end of a range.
         // Each is answered the way an absent file is, because the alternative is a transcode that
         // refuses to start over a settings file.
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Parse(json));
+        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Parse(json).SubtitleDepth);
     }
 
     [Theory]
@@ -218,7 +313,7 @@ public sealed class WrapperSettingsFileTests : IDisposable
     {
         // Whatever the rest of a switched-off document says - or fails to say - it is a request for
         // nothing, and the reader does not go looking for a problem to find.
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Parse(json));
+        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Parse(json).SubtitleDepth);
     }
 
     [Theory]
@@ -235,7 +330,7 @@ public sealed class WrapperSettingsFileTests : IDisposable
         // judged the unused one would refuse requests that are perfectly well formed - including
         // every document an older build wrote, which is free to leave anything in the field nobody
         // asked it for.
-        Assert.Equal(new SubtitleDepthSettings(true, mode, shift, plane), WrapperSettingsFile.Parse(json));
+        Assert.Equal(new SubtitleDepthSettings(true, mode, shift, plane), WrapperSettingsFile.Parse(json).SubtitleDepth);
     }
 
     [Fact]
@@ -248,9 +343,14 @@ public sealed class WrapperSettingsFileTests : IDisposable
             { "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "plane", "plane": 5 }, "concurrency": 99, "notes": "hand written" }
             """;
 
-        Assert.Equal(
-            new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 5),
-            WrapperSettingsFile.Parse(NewerDocument));
+        var read = WrapperSettingsFile.Parse(NewerDocument);
+
+        Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 5), read.SubtitleDepth);
+
+        // Including a number for this build's own setting spelled somewhere else: the limit lives in
+        // its own section or it is not stated, and a reader that hunted for its name across the
+        // document would take an unrelated field for an instruction.
+        Assert.Null(read.MaxConcurrentTranscodes);
     }
 
     [Fact]
@@ -261,16 +361,19 @@ public sealed class WrapperSettingsFileTests : IDisposable
         Assert.True(WrapperSettingsFile.TryWrite(
             path,
             new SubtitleDepthSettings(true, SubtitleDepthMode.ConstantShift, -12, 0),
-            out var failure));
+            maxConcurrentTranscodes: 4,
+            failure: out var failure));
 
         Assert.Null(failure);
 
         // The plugin writes on startup, into a directory a fresh deployment has not created yet:
         // "could not find a path" is not an acceptable answer from a best-effort write.
         Assert.True(File.Exists(path));
-        Assert.Equal(
-            new SubtitleDepthSettings(true, SubtitleDepthMode.ConstantShift, -12, 0),
-            WrapperSettingsFile.Read(path));
+
+        var read = WrapperSettingsFile.Read(path);
+
+        Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.ConstantShift, -12, 0), read.SubtitleDepth);
+        Assert.Equal(4, read.MaxConcurrentTranscodes);
     }
 
     [Fact]
@@ -279,16 +382,18 @@ public sealed class WrapperSettingsFileTests : IDisposable
         var directory = Path.Combine(_root, "once");
         var path = Path.Combine(directory, WrapperSettingsFile.DefaultFileName);
 
-        WrapperSettingsFile.TryWrite(path, new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 3), out _);
-        WrapperSettingsFile.TryWrite(path, new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 4), out _);
+        WrapperSettingsFile.TryWrite(path, new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 3), 2, out _);
+        WrapperSettingsFile.TryWrite(path, new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 4), 3, out _);
 
         // Two saves over the same target: the rename has to replace, and the temporary file it was
         // written as has to be gone. A leftover per save is a data directory filling up with
         // documents nobody reads.
         Assert.Equal(new[] { path }, Directory.GetFiles(directory));
-        Assert.Equal(
-            new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 4),
-            WrapperSettingsFile.Read(path));
+
+        var read = WrapperSettingsFile.Read(path);
+
+        Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 4), read.SubtitleDepth);
+        Assert.Equal(3, read.MaxConcurrentTranscodes);
     }
 
     [Fact]
@@ -301,7 +406,7 @@ public sealed class WrapperSettingsFileTests : IDisposable
 
         var path = Path.Combine(_root, "modes", WrapperSettingsFile.DefaultFileName);
 
-        WrapperSettingsFile.TryWrite(path, SubtitleDepthSettings.Disabled, out var failure);
+        WrapperSettingsFile.TryWrite(path, SubtitleDepthSettings.Disabled, PluginConfiguration.DefaultMaxConcurrentTranscodes, out var failure);
 
         Assert.Null(failure);
 
@@ -329,7 +434,7 @@ public sealed class WrapperSettingsFileTests : IDisposable
 
         var path = Path.Combine(blocker, WrapperSettingsFile.DefaultFileName);
 
-        var wrote = WrapperSettingsFile.TryWrite(path, SubtitleDepthSettings.Disabled, out var failure);
+        var wrote = WrapperSettingsFile.TryWrite(path, SubtitleDepthSettings.Disabled, 1, out var failure);
 
         Assert.False(wrote);
         Assert.NotNull(failure);
@@ -345,22 +450,22 @@ public sealed class WrapperSettingsFileTests : IDisposable
         var absent = Path.Combine(_root, "absent", WrapperSettingsFile.DefaultFileName);
         var unreadable = Path.Combine(_root, "unreadable");
 
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read(absent));
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read(null));
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read(string.Empty));
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read("   "));
+        Assert.Equal(WrapperSettings.Unstated, WrapperSettingsFile.Read(absent));
+        Assert.Equal(WrapperSettings.Unstated, WrapperSettingsFile.Read(null));
+        Assert.Equal(WrapperSettings.Unstated, WrapperSettingsFile.Read(string.Empty));
+        Assert.Equal(WrapperSettings.Unstated, WrapperSettingsFile.Read("   "));
 
         // A plugin that died mid-save leaves exactly this behind.
         Directory.CreateDirectory(Path.GetDirectoryName(absent)!);
-        File.WriteAllText(absent, "{ \"schemaVersion\": 1, \"subtitleDepth\": { \"enabled\": true, \"mo");
+        File.WriteAllText(absent, "{ \"schemaVersion\": 2, \"subtitleDepth\": { \"enabled\": true, \"mo");
 
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read(absent));
+        Assert.Equal(WrapperSettings.Unstated, WrapperSettingsFile.Read(absent));
 
         // A directory where the file was expected is a real misconfiguration rather than a
         // hypothetical, and it is answered the same way.
         Directory.CreateDirectory(unreadable);
 
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read(unreadable));
+        Assert.Equal(WrapperSettings.Unstated, WrapperSettingsFile.Read(unreadable));
     }
 
     [Fact]
@@ -371,10 +476,10 @@ public sealed class WrapperSettingsFileTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         File.WriteAllText(path, "this is not the document anybody expected");
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read(path));
+        Assert.Equal(WrapperSettings.Unstated, WrapperSettingsFile.Read(path));
 
         File.WriteAllText(path, string.Empty);
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read(path));
+        Assert.Equal(WrapperSettings.Unstated, WrapperSettingsFile.Read(path));
     }
 
     [Theory]
@@ -409,7 +514,7 @@ public sealed class WrapperSettingsFileTests : IDisposable
     public void TheVariableTheDeploymentSetsIsTheVariableBothSidesRead()
     {
         // One name, spelled once, is the whole of the interface between a deployment that wants the
-        // depth honoured and one that does not.
+        // plugin's settings to reach the wrapper and one that does not.
         Assert.Equal("ANAGLYFIN_WRAPPER_SETTINGS", WrapperSettingsFile.EnvironmentVariable);
 
         var view = new Dictionary<string, string?> { [WrapperSettingsFile.EnvironmentVariable] = "/tmp/x.json" };
@@ -427,10 +532,10 @@ public sealed class WrapperSettingsFileTests : IDisposable
         Assert.Throws<ArgumentNullException>(() => WrapperSettingsFile.ResolveWritePath(null!, "/var/lib"));
         Assert.Throws<ArgumentNullException>(() => WrapperSettingsFile.ReadConfiguredPath(null!));
         Assert.Throws<ArgumentException>(() => WrapperSettingsFile.ResolveWritePath(_ => null, "  "));
-        Assert.Throws<ArgumentNullException>(() => WrapperSettingsFile.ToJson(null!));
+        Assert.Throws<ArgumentNullException>(() => WrapperSettingsFile.ToJson(null!, 1));
         Assert.Throws<ArgumentNullException>(() => WrapperSettingsFile.Parse(null!));
-        Assert.Throws<ArgumentNullException>(() => WrapperSettingsFile.TryWrite("/tmp/x.json", null!, out _));
-        Assert.Throws<ArgumentException>(() => WrapperSettingsFile.TryWrite(" ", SubtitleDepthSettings.Disabled, out _));
+        Assert.Throws<ArgumentNullException>(() => WrapperSettingsFile.TryWrite("/tmp/x.json", null!, 1, out _));
+        Assert.Throws<ArgumentException>(() => WrapperSettingsFile.TryWrite(" ", SubtitleDepthSettings.Disabled, 1, out _));
     }
 
     [Fact]
@@ -462,7 +567,14 @@ public sealed class WrapperSettingsFileTests : IDisposable
             {
                 SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
                 SubtitleDepthShift = 500
-            }
+            },
+
+            // The same rule for the count: a stored limit nothing can act on is published as the one
+            // the settings read side answers with, so what the wrapper reads is what the plugin
+            // itself would enforce.
+            new PluginConfiguration { MaxConcurrentTranscodes = 0 },
+            new PluginConfiguration { MaxConcurrentTranscodes = -6 },
+            new PluginConfiguration { MaxConcurrentTranscodes = 4 }
         };
 
         var path = Path.Combine(_root, "model", WrapperSettingsFile.DefaultFileName);
@@ -470,12 +582,15 @@ public sealed class WrapperSettingsFileTests : IDisposable
         foreach (var configuration in stored)
         {
             var request = configuration.GetEffectiveSubtitleDepth();
+            var limit = configuration.GetEffectiveMaxConcurrentTranscodes();
 
-            Assert.True(WrapperSettingsFile.TryWrite(path, request, out var failure));
+            Assert.True(WrapperSettingsFile.TryWrite(path, request, limit, out var failure));
             Assert.Null(failure);
 
-            Assert.Equal(request, WrapperSettingsFile.Read(path));
-            Assert.Equal(request, WrapperSettingsFile.Parse(WrapperSettingsFile.ToJson(request)));
+            var read = WrapperSettingsFile.Read(path);
+
+            Assert.Equal(request, read.SubtitleDepth);
+            Assert.Equal(limit, read.MaxConcurrentTranscodes);
         }
     }
 
@@ -485,7 +600,7 @@ public sealed class WrapperSettingsFileTests : IDisposable
         // Not a style rule: this file is read over a shoulder, in a container, by somebody looking
         // for why a setting did not take. If it ever grows to the size of the settings object it
         // replaced, that is the moment to ask what is crossing the process boundary.
-        var json = WrapperSettingsFile.ToJson(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 31));
+        var json = WrapperSettingsFile.ToJson(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 31), 4);
 
         Assert.True(json.Length < 400, $"The settings document is {json.Length} characters.");
         Assert.EndsWith("}" + Environment.NewLine, json, StringComparison.Ordinal);

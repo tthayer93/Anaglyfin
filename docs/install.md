@@ -102,10 +102,10 @@ to hand commands to, so that probing and decoding agree:
 sudo install -m 0755 -o jellyfin -g jellyfin /path/to/ffprobe /opt/anaglyfin/ffmpeg/ffprobe
 ```
 
-Then point the server at it - `JELLYFIN_FFMPEG`, the `--ffmpeg` switch, or `<EncoderAppPath>` in
-`encoding.xml` - and give the wrapper the real FFmpeg-mvc build it is standing in for. On a
-system-package install, where Jellyfin runs as a systemd service, a drop-in is the place the
-server passes environment on to its helper processes:
+Then point the server at the Anaglyfin FFmpeg entry point - `JELLYFIN_FFMPEG`, the `--ffmpeg`
+switch, or `<EncoderAppPath>` in `encoding.xml` - and install a Jellyfin-compatible FFmpeg-mvc
+build as the binary it hands commands to. On a system-package install, where Jellyfin runs as a
+systemd service, a drop-in is the place the server passes environment on to its helper processes:
 
 ```sh
 # /etc/systemd/system/jellyfin.service.d/anaglyfin.conf
@@ -113,7 +113,6 @@ server passes environment on to its helper processes:
 Environment=JELLYFIN_FFMPEG=/opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 Environment=ANAGLYFIN_REAL_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg-mvc
 Environment=ANAGLYFIN_LOCK_DIR=/var/lib/jellyfin/anaglyfin/lock
-Environment=ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1
 Environment=ANAGLYFIN_WRAPPER_SETTINGS=/var/lib/jellyfin/anaglyfin/wrapper/anaglyfin-wrapper-settings.json
 ```
 
@@ -125,10 +124,17 @@ sudo systemctl restart jellyfin
 `ANAGLYFIN_LOCK_DIR` is the one path here the service has to write for concurrency slots, so create
 it for that user. `ANAGLYFIN_WRAPPER_SETTINGS` is the settings bridge between the plugin and the
 wrapper: the plugin writes the JSON document there when it starts and when settings are saved, and
-the wrapper reads the same path every time it starts. If it is unset, the plugin falls back to its
-own data directory - a path only the plugin knows - so the wrapper cannot see the subtitle-depth
-setting and playback stays flat. Both processes must therefore be able to reach the one file; the
-directory it lives in must be writable by the Jellyfin service user.
+the wrapper reads the same path every time it starts. That document carries the two settings the
+admin page owns that have no other way into the wrapper process: the subtitle-depth request and the
+maximum number of concurrent Anaglyfin transcodes. If the variable is unset, the plugin falls back
+to its own data directory - a path only the plugin knows - so the wrapper cannot see either setting
+and playback stays flat on the shipped one-job limit. Both processes must therefore be able to reach
+the one file; the directory it lives in must be writable by the Jellyfin service user.
+
+`ANAGLYFIN_MAX_CONCURRENT_TRANSCODES` is optional. Leave it unset when the admin page should decide
+the limit; set it when one server needs a limit different from the setting saved for the product. A
+valid value there overrides the page's number for every wrapper process that receives that
+environment.
 
 ```sh
 sudo install -d -m 0755 -o jellyfin -g jellyfin /var/lib/jellyfin/anaglyfin/lock
@@ -193,8 +199,9 @@ cp /path/to/ffmpeg-mvc-n8.1.2-mvc7-jf4 ./jellyfin/config/anaglyfin/ffmpeg-mvc/ff
 chmod 0755 ./jellyfin/config/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
 ```
 
-The subtitle-depth settings document also has to be shared by the plugin and every wrapper process.
-Put it under `/config`, where the plugin can write it and the wrapper can read it:
+The settings document also has to be shared by the plugin and every wrapper process that should see
+the admin page's subtitle-depth request or concurrency limit. Put it under `/config`, where the
+plugin can write it and the wrapper can read it:
 
 ```sh
 mkdir -p ./jellyfin/config/anaglyfin/wrapper
@@ -210,13 +217,16 @@ services:
       JELLYFIN_FFMPEG: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
       ANAGLYFIN_REAL_FFMPEG: /config/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
       ANAGLYFIN_LOCK_DIR: /config/anaglyfin/lock
-      ANAGLYFIN_MAX_CONCURRENT_TRANSCODES: "1"
       ANAGLYFIN_WRAPPER_SETTINGS: /config/anaglyfin/wrapper/anaglyfin-wrapper-settings.json
     volumes:
       - ./jellyfin/config:/config
       - ./jellyfin/cache:/cache
       - /path/to/media:/media
 ```
+
+Add `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES` only when this container should override the limit saved
+on the admin page. When it is unset, the plugin's settings document is the ordinary route for that
+setting.
 
 Restart the container, then confirm from the host that the files are where the server will look:
 

@@ -277,16 +277,123 @@ public sealed class FFmpegWrapperOptionsTests
             {
                 SubtitleDepthMode = SubtitleDepthMode.Plane,
                 SubtitleDepthShift = 12,
-                SubtitleDepthPlane = 6
+                SubtitleDepthPlane = 6,
+                MaxConcurrentTranscodes = 2
             };
 
             var request = configuration.GetEffectiveSubtitleDepth();
+            var limit = configuration.GetEffectiveMaxConcurrentTranscodes();
             var path = Path.Combine(directory, WrapperSettingsFile.DefaultFileName);
 
-            Assert.True(WrapperSettingsFile.TryWrite(path, request, out var failure));
+            Assert.True(WrapperSettingsFile.TryWrite(path, request, limit, out var failure));
             Assert.Null(failure);
 
-            Assert.Equal(request, OptionsFrom((WrapperSettingsFile.EnvironmentVariable, path)).SubtitleDepth);
+            var options = OptionsFrom((WrapperSettingsFile.EnvironmentVariable, path));
+
+            Assert.Equal(request, options.SubtitleDepth);
+            Assert.Equal(2, options.MaxConcurrentTranscodes);
+        }
+        finally
+        {
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void TheLimitTheDocumentStatesDecidesWhenTheDeploymentSaysNothing()
+    {
+        // The whole point of publishing the limit: an administrator set it on the page, no variable
+        // names it, and the wrapper counts the number the page was left on rather than the shipped
+        // one. This is the shape of an ordinary deployment.
+        Assert.Equal(5, LimitFromDocument("""{ "schemaVersion": 2, "transcoding": { "maxConcurrentTranscodes": 5 } }"""));
+    }
+
+    [Fact]
+    public void TheEnvironmentOverridesTheLimitTheDocumentStates()
+    {
+        // Two authorities stated a number, and the deployment's wins: the variable was written about
+        // this machine by whoever runs it, and the document is the product-wide answer the same
+        // person overrode.
+        var directory = TemporaryDirectory();
+
+        try
+        {
+            var path = Path.Combine(directory, WrapperSettingsFile.DefaultFileName);
+            File.WriteAllText(path, """{ "schemaVersion": 2, "transcoding": { "maxConcurrentTranscodes": 9 } }""");
+
+            var options = OptionsFrom(
+                (WrapperSettingsFile.EnvironmentVariable, path),
+                (FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable, "2"));
+
+            Assert.Equal(2, options.MaxConcurrentTranscodes);
+        }
+        finally
+        {
+            TryDelete(directory);
+        }
+    }
+
+    [Fact]
+    public void AnUnusableEnvironmentLimitLetsTheDocumentDecide()
+    {
+        // A knob the deployment set wrongly is not usable, and the next authority is the answer - the
+        // same way a typo lands on the shipped default when no document states anything either.
+        foreach (var unusable in new[] { "  ", "0", "-3", "many", "2.5" })
+        {
+            var directory = TemporaryDirectory();
+
+            try
+            {
+                var path = Path.Combine(directory, WrapperSettingsFile.DefaultFileName);
+                File.WriteAllText(path, """{ "schemaVersion": 2, "transcoding": { "maxConcurrentTranscodes": 6 } }""");
+
+                var options = OptionsFrom(
+                    (WrapperSettingsFile.EnvironmentVariable, path),
+                    (FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable, unusable));
+
+                Assert.Equal(6, options.MaxConcurrentTranscodes);
+            }
+            finally
+            {
+                TryDelete(directory);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("""{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "automatic" } }""")]
+    [InlineData("""{ "schemaVersion": 2, "subtitleDepth": { "enabled": true, "mode": "automatic" } }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": { "maxConcurrentTranscodes": 0 } }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": { "maxConcurrentTranscodes": "plenty" } }""")]
+    [InlineData("""{ "schemaVersion": 2, "transcoding": [] }""")]
+    [InlineData("not a document")]
+    public void ADocumentThatStatesNoUsableLimitLeavesTheLimitWhereItWas(string documentText)
+    {
+        // A version 1 file, a section written wrongly, and no file at all are the same answer for the
+        // limit: nobody stated one, so the shipped one stands. A wrapper does not invent a process
+        // count out of a file it could not read.
+        Assert.Equal(FFmpegWrapperOptions.DefaultMaxConcurrentTranscodes, LimitFromDocument(documentText));
+    }
+
+    [Fact]
+    public void AVersionOneDocumentStillCarriesItsDepth()
+    {
+        // The file a server that has not restarted since the upgrade still has on disk. Its depth is
+        // honoured exactly as it was, and the limit it never stated stays nobody's opinion: an
+        // upgrade must not cost a running server the one setting it had already published.
+        var directory = TemporaryDirectory();
+
+        try
+        {
+            var path = Path.Combine(directory, WrapperSettingsFile.DefaultFileName);
+            File.WriteAllText(
+                path,
+                """{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mode": "plane", "shiftPixels": 0, "plane": 7 } }""");
+
+            var options = OptionsFrom((WrapperSettingsFile.EnvironmentVariable, path));
+
+            Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 7), options.SubtitleDepth);
+            Assert.Equal(FFmpegWrapperOptions.DefaultMaxConcurrentTranscodes, options.MaxConcurrentTranscodes);
         }
         finally
         {
@@ -312,7 +419,7 @@ public sealed class FFmpegWrapperOptionsTests
             Assert.Equal(SubtitleDepthSettings.Disabled, OptionsFrom((WrapperSettingsFile.EnvironmentVariable, "  ")).SubtitleDepth);
             Assert.Equal(SubtitleDepthSettings.Disabled, OptionsFrom().SubtitleDepth);
 
-            File.WriteAllText(absent, """{ "schemaVersion": 1, "subtitleDepth": { "enabled": true, "mo""");
+            File.WriteAllText(absent, """{ "schemaVersion": 2, "subtitleDepth": { "enabled": true, "mo""");
 
             Assert.Equal(SubtitleDepthSettings.Disabled, OptionsFrom((WrapperSettingsFile.EnvironmentVariable, absent)).SubtitleDepth);
 
@@ -327,12 +434,12 @@ public sealed class FFmpegWrapperOptionsTests
     }
 
     [Fact]
-    public void ASettingsDocumentLeavesTheProcessLimitsWhereTheDeploymentPutThem()
+    public void ASettingsDocumentDoesNotGetToNameTheBinaryOrTheSlotDirectory()
     {
-        // The document is the plugin's channel and the environment is the deployment's, and the
-        // two are not allowed to dispute a setting: a file in a data directory does not decide how
-        // many FFmpeg processes this server starts, and it does not move where the running jobs
-        // are counted - a limit nobody can find is a limit nobody can explain.
+        // The document is the plugin's channel and the environment is the deployment's. The one
+        // setting they both may state is the limit, and the environment wins even there; the binary
+        // the commands go to and the directory running jobs are counted in stay the deployment's
+        // alone, because a file a plugin writes cannot know where a server chose to put them.
         var directory = TemporaryDirectory();
 
         try
@@ -343,9 +450,8 @@ public sealed class FFmpegWrapperOptionsTests
                 path,
                 """
                 {
-                  "schemaVersion": 1,
+                  "schemaVersion": 2,
                   "subtitleDepth": { "enabled": true, "mode": "automatic", "shiftPixels": 0, "plane": 0 },
-                  "maxConcurrentTranscodes": 99,
                   "lockDirectory": "/somewhere/else",
                   "realFFmpeg": "/bin/false"
                 }
@@ -353,21 +459,40 @@ public sealed class FFmpegWrapperOptionsTests
 
             var configured = OptionsFrom(
                 (WrapperSettingsFile.EnvironmentVariable, path),
-                (FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable, "3"),
                 (FFmpegWrapperOptions.LockDirectoryEnvironmentVariable, "/var/lib/anaglyfin/slots"));
 
             Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0), configured.SubtitleDepth);
-            Assert.Equal(3, configured.MaxConcurrentTranscodes);
             Assert.Equal("/var/lib/anaglyfin/slots", configured.LockDirectory);
 
             // And the document does not get to set them by being the only source either: with no
             // variables, the shipped defaults stand whatever it claims.
             var unconfigured = OptionsFrom((WrapperSettingsFile.EnvironmentVariable, path));
 
-            Assert.Equal(FFmpegWrapperOptions.DefaultMaxConcurrentTranscodes, unconfigured.MaxConcurrentTranscodes);
             Assert.Equal(FFmpegWrapperOptions.DefaultLockDirectory, unconfigured.LockDirectory);
             Assert.Equal(FFmpegWrapperOptions.FFmpegExecutableName, unconfigured.RealFFmpegPath);
+            Assert.Equal(FFmpegWrapperOptions.DefaultMaxConcurrentTranscodes, unconfigured.MaxConcurrentTranscodes);
             Assert.True(unconfigured.SubtitleDepth.Enabled);
+        }
+        finally
+        {
+            TryDelete(directory);
+        }
+    }
+
+    /// <summary>
+    /// Reads the concurrency limit an invocation sees when the settings document holds the given
+    /// text and no variable states a limit of its own.
+    /// </summary>
+    private static int LimitFromDocument(string documentText)
+    {
+        var directory = TemporaryDirectory();
+
+        try
+        {
+            var path = Path.Combine(directory, WrapperSettingsFile.DefaultFileName);
+            File.WriteAllText(path, documentText);
+
+            return OptionsFrom((WrapperSettingsFile.EnvironmentVariable, path)).MaxConcurrentTranscodes;
         }
         finally
         {

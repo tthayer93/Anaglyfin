@@ -36,21 +36,24 @@ namespace Anaglyfin.FFmpegWrapper;
 /// <see cref="WrapperApplication"/> instead of being quietly replaced.
 /// </para>
 /// <para>
-/// <b>Two channels, and they do not overlap.</b> The environment is the deployment's
-/// channel: it names the binary, the concurrency limit and the slot directory, and nothing
-/// read from a file can move those, because a document in a data directory cannot be the
-/// place a server's process limits are set. <see cref="WrapperSettingsFile"/> is the
-/// plugin's channel: it carries the one setting the admin page owns that the environment
-/// cannot - the subtitle depth request - and it is read after the environment, for that
-/// value only. A wrapper with no document pointed at it, or one it cannot read, runs with
-/// <see cref="SubtitleDepthSettings.Disabled"/>.
+/// <b>Two channels, one order of precedence.</b> The environment is the deployment's channel: it
+/// names the binary and the slot directory, and - when it names one at all - the concurrency limit.
+/// <see cref="WrapperSettingsFile"/> is the plugin's channel: it carries what the admin page owns,
+/// the subtitle depth request and the concurrency limit, and the wrapper never writes it. The two
+/// meet on the limit and nowhere else, and the environment wins there: a number written into the
+/// environment of the machine that starts the transcodes says something specific about that
+/// machine, and it is not silently overridden by a document in a data directory. Everywhere the
+/// deployment has no opinion, the document is how the admin page's setting reaches this process at
+/// all, which is the reason it is in the document. What neither channel states arrives as the
+/// shipped default.
 /// </para>
 /// </remarks>
 public sealed record FFmpegWrapperOptions
 {
     /// <summary>
     /// Name of the variable holding the maximum number of concurrent Anaglyfin
-    /// transcodes. Mirrors the admin setting of the same name (decision 10: default 1).
+    /// transcodes. Overrides the admin setting of the same name for this server
+    /// (decision 10: default 1).
     /// </summary>
     public const string MaxConcurrentTranscodesEnvironmentVariable = "ANAGLYFIN_MAX_CONCURRENT_TRANSCODES";
 
@@ -88,8 +91,15 @@ public sealed record FFmpegWrapperOptions
     /// Gets the maximum number of Anaglyfin transcodes allowed at the same time.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Always at least one: a zero or negative limit would refuse every Anaglyfin job,
     /// which is a configuration mistake rather than a policy anyone configures on purpose.
+    /// </para>
+    /// <para>
+    /// The deployment's variable first, the settings document's number second, the shipped default
+    /// third - in that order, and each one only when it states something usable. See the remarks on
+    /// this type for why the environment is the one that wins.
+    /// </para>
     /// </remarks>
     public int MaxConcurrentTranscodes { get; init; } = DefaultMaxConcurrentTranscodes;
 
@@ -123,9 +133,9 @@ public sealed record FFmpegWrapperOptions
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The one setting that arrives from the plugin rather than from the deployment, through
-    /// <see cref="WrapperSettingsFile"/>: the admin page owns it, the environment cannot carry
-    /// it, and the wrapper never writes it.
+    /// One of the two settings that arrive from the plugin rather than from the deployment, through
+    /// <see cref="WrapperSettingsFile"/>: the admin page owns it, the environment cannot carry it,
+    /// and the wrapper never writes it.
     /// </para>
     /// <para>
     /// <see cref="SubtitleDepth"/> is <see cref="SubtitleDepthSettings.Disabled"/> for every
@@ -163,12 +173,12 @@ public sealed record FFmpegWrapperOptions
     /// </param>
     /// <returns>The options those variables describe.</returns>
     /// <remarks>
-    /// The environment is read first and completely: the binary, the concurrency limit and
-    /// the slot directory are settled before anything is opened. The settings document comes
-    /// after, is addressed only by <see cref="WrapperSettingsFile.EnvironmentVariable"/>, and
-    /// is given one value. That order is what keeps the two channels from disputing a setting
-    /// - a file in a data directory is not where a server's process limits get set, and the
-    /// document does not try.
+    /// The environment is read first and completely: the binary and the slot directory are settled
+    /// before anything is opened, and the concurrency limit is read from the variable before the
+    /// document is opened, so the order of precedence in
+    /// <see cref="ReadMaximum"/> is the order this method reads them in. The settings
+    /// document is addressed only by <see cref="WrapperSettingsFile.EnvironmentVariable"/> and is
+    /// given the two values the admin page owns.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="readVariable"/> is null.</exception>
     public static FFmpegWrapperOptions FromEnvironment(Func<string, string?> readVariable)
@@ -176,14 +186,17 @@ public sealed record FFmpegWrapperOptions
         ArgumentNullException.ThrowIfNull(readVariable);
 
         var (path, source) = ResolveRealFFmpeg(readVariable);
+        var published = WrapperSettingsFile.Read(WrapperSettingsFile.ReadConfiguredPath(readVariable));
 
         return new FFmpegWrapperOptions
         {
-            MaxConcurrentTranscodes = ReadMaximum(readVariable(MaxConcurrentTranscodesEnvironmentVariable)),
+            MaxConcurrentTranscodes = ReadMaximum(
+                readVariable(MaxConcurrentTranscodesEnvironmentVariable),
+                published.MaxConcurrentTranscodes),
             LockDirectory = ReadLockDirectory(readVariable(LockDirectoryEnvironmentVariable)),
             RealFFmpegPath = path,
             RealFFmpegPathSource = source,
-            SubtitleDepth = WrapperSettingsFile.Read(WrapperSettingsFile.ReadConfiguredPath(readVariable))
+            SubtitleDepth = published.SubtitleDepth
         };
     }
 
@@ -288,26 +301,41 @@ public sealed record FFmpegWrapperOptions
     }
 
     /// <summary>
-    /// Reads the concurrency limit, falling back to the shipped default.
+    /// Reads the concurrency limit from the two channels that may state it.
     /// </summary>
     /// <param name="value">The raw variable value, if any.</param>
+    /// <param name="published">
+    /// The limit the settings document stated, or <c>null</c> when it stated none. Its own reader
+    /// already refused anything below one, so a value that arrives can be used as it stands.
+    /// </param>
     /// <returns>At least <see cref="DefaultMaxConcurrentTranscodes"/>.</returns>
     /// <remarks>
-    /// Unset, blank, unparseable and non-positive all land on the default, and the
-    /// difference between them is not visible to the wrapper: every one of them is a
-    /// knob an administrator set wrong, and the shipped default is the safe reading.
+    /// <para>
+    /// The variable wins while it is usable. Unset, blank, unparseable and non-positive each fail to
+    /// be usable, and the difference between them is not visible to the wrapper: every one of them is
+    /// a knob an administrator set wrong, and the next authority is the answer.
+    /// </para>
+    /// <para>
+    /// The document is second rather than first for one reason. A deployment that named a limit in
+    /// the environment of the server that starts these processes made that statement about the
+    /// machine - its cores, its GPU, what else it hosts - and a page setting written for the product
+    /// generally should not quietly outrank it. What the document is for is the server where nobody
+    /// set the variable, which is the ordinary deployment, and there the administrator's number
+    /// decides.
+    /// </para>
     /// </remarks>
-    private static int ReadMaximum(string? value)
+    private static int ReadMaximum(string? value, int? published)
     {
         var text = ReadNonBlank(value);
-        if (text is null
-            || !int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
-            || parsed < 1)
+
+        if (text is not null
+            && int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            && parsed >= 1)
         {
-            return DefaultMaxConcurrentTranscodes;
+            return parsed;
         }
 
-        return parsed;
+        return published ?? DefaultMaxConcurrentTranscodes;
     }
 
     /// <summary>

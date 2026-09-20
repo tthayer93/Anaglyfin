@@ -9,7 +9,6 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Anaglyfin.Configuration;
-using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.Profiles;
 using Anaglyfin.Tests.Stubs;
 using MediaBrowser.Model.Plugins;
@@ -27,9 +26,10 @@ namespace Anaglyfin.Tests.Configuration;
 /// The page is one embedded HTML document with its stylesheet and script inline, because a
 /// v12 dashboard page is exactly the resource a <see cref="PluginPageInfo"/> names. These
 /// tests therefore read that document back out of the plugin assembly and compare it
-/// against the model it is the only interface to: a profile added to the catalog, a setting
-/// added to the model or an environment variable renamed by the wrapper fails here instead
-/// of silently disappearing from, or silently appearing on, the UI.
+/// against the model it is the only interface to: a profile added to the catalog or a setting
+/// added to the model fails here instead of silently disappearing from, or silently appearing
+/// on, the UI. What the page must never carry again - the names a deployment is arranged with -
+/// is pinned the same way, because the only thing between that list and this page is a test.
 /// </para>
 /// <para>
 /// What no test here can prove is the browser half: that the dashboard raises the event the
@@ -54,6 +54,23 @@ public class ConfigurationPageTests
         "binary",
         "shell",
         "executable"
+    ];
+
+    /// <summary>
+    /// Spellings the page document may not carry at all: the names a deployment is arranged with.
+    /// None of them is editable from this page, so naming one invites an edit that cannot be made -
+    /// and each belongs to the install guide, where the person setting it up actually is.
+    /// </summary>
+    private static readonly string[] ForbiddenPageText =
+    [
+        "ANAGLYFIN_REAL_FFMPEG",
+        "FFMPEG_MVC_PATH",
+        "ANAGLYFIN_LOCK_DIR",
+        "ANAGLYFIN_WRAPPER_SETTINGS",
+        "ANAGLYFIN_MAX_CONCURRENT_TRANSCODES",
+        "JELLYFIN_FFMPEG",
+        "FFMPEG_PATH",
+        "ANAGLYFIN_"
     ];
 
     [Fact]
@@ -704,21 +721,39 @@ public class ConfigurationPageTests
     }
 
     [Fact]
-    public void TheAdminPageExplainsTheWrapperEnvironmentItCannotWrite()
+    public void TheAdminPageCarriesNoDeploymentInternals()
     {
+        // Everything on this page is a choice the administrator can make there. What the deployment
+        // has to arrange - which binary the server runs, where the running jobs are counted, which
+        // file carries the settings across the process boundary - is not editable here, was never
+        // the administrator's to guess at, and belongs in the install guide. A variable name on this
+        // page is a thing an administrator can do nothing about while looking at it.
         var html = ReadPageHtml();
 
-        // Naming the variables the wrapper reads is the whole of the page's deployment
-        // guidance: the wrapper is started by the server and cannot see plugin settings.
-        Assert.Contains(FFmpegWrapperOptions.RealFFmpegEnvironmentVariable, html, StringComparison.Ordinal);
-        Assert.Contains(FFmpegWrapperOptions.RealFFmpegAlternateEnvironmentVariable, html, StringComparison.Ordinal);
-        Assert.Contains(FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable, html, StringComparison.Ordinal);
-        Assert.Contains(FFmpegWrapperOptions.LockDirectoryEnvironmentVariable, html, StringComparison.Ordinal);
+        Assert.DoesNotContain("wrapper", html, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("environment", html, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("variable", html, StringComparison.OrdinalIgnoreCase);
 
-        // ... and the one variable that decides whether a subtitle depth request reaches the
-        // wrapper at all belongs with them, because an administrator wondering why a saved
-        // setting did nothing needs to know that a file on disk is between the two.
-        Assert.Contains(WrapperSettingsFile.EnvironmentVariable, html, StringComparison.Ordinal);
+        foreach (var internalName in ForbiddenPageText)
+        {
+            Assert.DoesNotContain(internalName, html, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void TheAdminPageStatesTheDeploymentRequirementOnce()
+    {
+        // Removing the internals left the page saying nothing about what the server has to be running
+        // for any of this to happen, which is worse in the other direction. One blurb says it, and it
+        // says it once: a page that repeated the requirement in three places would be the same page
+        // that used to list the variables.
+        var html = ReadPageHtml();
+
+        Assert.Contains("Requires a Jellyfin-compatible FFmpeg-mvc build", html, StringComparison.Ordinal);
+        Assert.Contains("FFmpeg entry point supplied with this plugin", html, StringComparison.Ordinal);
+
+        Assert.Single(Regex.Matches(html, @"Installation\s+details\s+are\s+in\s+the\s+Anaglyfin\s+documentation"));
+        Assert.Single(Regex.Matches(html, @"Requires\s+a\s+Jellyfin-compatible\s+FFmpeg-mvc\s+build"));
     }
 
     [Fact]

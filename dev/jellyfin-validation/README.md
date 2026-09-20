@@ -469,7 +469,7 @@ config.
 | Server starts, plugin list has no Anaglyfin | `/config/plugins/Anaglyfin/Anaglyfin.dll` is a directory: the bind source was not readable to the daemon, see step 3's split-path box |
 | `FFmpeg validation: The process returned no result` + `Path set by command line or environment variable is invalid`, then the container exits | the wrapper is in place but `ANAGLYFIN_REAL_FFMPEG` names something that is not in the container. The message blames the wrapper path; the variable to fix is the other one. Verified with `ANAGLYFIN_REAL_FFMPEG=/config/anaglyfin/ffmpeg-mvc/ffmpeg-mvc` and no mount behind it |
 | `Running /config/anaglyfin/ffmpeg/ffprobe ... No such file or directory` | no ffprobe beside the wrapper: `sh harness.sh ffprobe`, then restart |
-| `anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running`, child exit `75` | the concurrency limit doing its job with `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1`; stop the first job or raise the limit |
+| `anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running`, child exit `75` | the concurrency limit doing its job; the harness sets the optional `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1` override, so stop the first job or raise the limit on the admin page or that override |
 | `anaglyfin-wrapper: refused: the command was not started (RejectedMarker/...)` | a marker the parser rejected. The line never contains the marker or the path, so look at the playback-info response (step 7) to see what was offered |
 | `anaglyfin-wrapper: refused: the command was not started (ServerChoseVideoCopy)`, child exit `65` | the server asked for a video copy of an Anaglyfin version, so the profile had nothing to write into. Expected after a codec report the client can copy, which the step 7 `MediaStreams` check should have caught first; the reported `mvc` codec exists to make this line rare |
 | Anaglyfin versions never appear for a file you expect | the name has no MVC marker, or the provider is not eligible: step 6's Debug lines say which decision was made |
@@ -563,7 +563,7 @@ above, and the file is removed when the job finishes.
 With the first marker job still running, a second marker job produces:
 
 ```text
-anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running, which is the configured maximum, so FFmpeg was not started. Raise ANAGLYFIN_MAX_CONCURRENT_TRANSCODES to allow more, or remove slot files left in the directory ANAGLYFIN_LOCK_DIR names if a wrapper was killed without exiting.
+anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running, which is the configured maximum, so FFmpeg was not started. Raise the maximum concurrent Anaglyfin transcodes on the Anaglyfin settings page, or ANAGLYFIN_MAX_CONCURRENT_TRANSCODES to override it from the deployment, or remove slot files left in the directory ANAGLYFIN_LOCK_DIR names if a wrapper was killed without exiting.
 exit=75
 ```
 

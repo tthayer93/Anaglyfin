@@ -223,17 +223,25 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// plugin's process and outside its container, and the environment it inherits was written by
     /// the deployment rather than by the administrator editing this page. The document
     /// <see cref="WrapperSettingsFile"/> writes is the one channel that reaches it, and it carries
-    /// the subtitle depth request and nothing else - not the profile list, not the colours, and no
+    /// the two settings that page owns which have no other route - the subtitle depth request and
+    /// the concurrency limit - and nothing else: not the profile list, not the colours, and no
     /// credential, because the settings hold none and the wrapper has no use for any of them.
     /// </para>
     /// <para>
+    /// Both values are taken through the settings read side rather than as stored, so the wrapper is
+    /// handed the number the plugin would itself act on. The deployment can still name a limit of
+    /// its own, and when it does that one wins: the count of processes a server may start is
+    /// ultimately the deployment's decision, and this write is the administrator's answer to the
+    /// same question when the deployment has no opinion.
+    /// </para>
+    /// <para>
     /// <b>A failed write is not a failed save.</b> An unwritable directory, a full disk or a file
-    /// another process holds open costs the deployment a depth setting that does not take effect -
-    /// the wrapper plays the flat way it played yesterday - rather than a plugin that cannot load or
-    /// a settings page that reports an error for a change the server did store. The administrator
-    /// who wonders why a depth request did not arrive finds the answer in the file's absence, and
-    /// the variable that names it is the same one the admin page already lists as deployment
-    /// guidance.
+    /// another process holds open costs the deployment the settings that then do not take effect -
+    /// the wrapper plays the flat way it played yesterday and counts the slots it counted yesterday -
+    /// rather than a plugin that cannot load or a settings page that reports an error for a change
+    /// the server did store. The administrator who wonders why a request did not arrive finds the
+    /// answer in the file's absence, and the variable that names it is documented in the install
+    /// guide.
     /// </para>
     /// </remarks>
     private void PublishWrapperSettings(PluginConfiguration? configuration)
@@ -244,12 +252,16 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             return;
         }
 
-        var request = (configuration ?? new PluginConfiguration()).GetEffectiveSubtitleDepth();
+        var stored = configuration ?? new PluginConfiguration();
 
         var path = WrapperSettingsFile.ResolveWritePath(
             Environment.GetEnvironmentVariable,
             _applicationPaths.PluginConfigurationsPath);
 
-        WrapperSettingsFile.TryWrite(path, request, out _);
+        WrapperSettingsFile.TryWrite(
+            path,
+            stored.GetEffectiveSubtitleDepth(),
+            stored.GetEffectiveMaxConcurrentTranscodes(),
+            out _);
     }
 }
