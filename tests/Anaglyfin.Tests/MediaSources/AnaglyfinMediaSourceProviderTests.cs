@@ -1869,10 +1869,6 @@ public class AnaglyfinMediaSourceProviderTests
         public StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
             => _inner.GetDefaultProfile(configuration, deviceId, clientName);
 
-        public string ResolveFallbackProfileId(PluginConfiguration configuration) => _inner.ResolveFallbackProfileId(configuration);
-
-        public StereoProfile GetFallbackProfile(PluginConfiguration configuration) => _inner.GetFallbackProfile(configuration);
-
         public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
             => Array.Empty<StereoProfile>();
     }

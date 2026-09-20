@@ -133,7 +133,6 @@ public class PluginTests : IDisposable
 
         plugin.UpdateConfiguration(new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = SubtitleDepthMode.Plane,
             SubtitleDepthShift = 999,
             SubtitleDepthPlane = 6
@@ -148,20 +147,20 @@ public class PluginTests : IDisposable
     }
 
     [Fact]
-    public void ASwitchedOffRequestIsHandedOverAsSwitchedOff()
+    public void AFlatRequestIsHandedOverAsSwitchedOff()
     {
         var paths = new FakeApplicationPaths(PrivateRoot());
         var plugin = new Plugin(paths, new RecordingXmlSerializer());
 
         plugin.UpdateConfiguration(new PluginConfiguration
         {
-            SubtitleDepthEnabled = false,
-            SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
+            SubtitleDepthMode = SubtitleDepthMode.Flat,
             SubtitleDepthShift = 30
         });
 
-        // Unticking the box has to reach the wrapper, and it has to reach it as "off": numbers left
-        // in the boxes are kept for the next time the mode is picked, not sent out as a request.
+        // The one off position of the dropdown has to reach the wrapper as "off": numbers left in the
+        // boxes are kept for the next time a mode that carries them is picked, not sent out as a
+        // request.
         Assert.Equal(
             SubtitleDepthSettings.Disabled,
             WrapperSettingsFile.Read(PluginSettingsTarget(paths)));
@@ -190,7 +189,6 @@ public class PluginTests : IDisposable
 
         Assert.Null(Record.Exception(() => plugin!.UpdateConfiguration(new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = SubtitleDepthMode.Automatic
         })));
 

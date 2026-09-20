@@ -37,7 +37,6 @@ public sealed class WrapperSettingsPublicationServiceTests : IDisposable
             {
                 Configuration = new PluginConfiguration
                 {
-                    SubtitleDepthEnabled = true,
                     SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
                     SubtitleDepthShift = -18,
                     SubtitleDepthPlane = 7

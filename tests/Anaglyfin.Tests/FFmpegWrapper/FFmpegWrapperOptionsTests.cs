@@ -275,7 +275,6 @@ public sealed class FFmpegWrapperOptionsTests
         {
             var configuration = new PluginConfiguration
             {
-                SubtitleDepthEnabled = true,
                 SubtitleDepthMode = SubtitleDepthMode.Plane,
                 SubtitleDepthShift = 12,
                 SubtitleDepthPlane = 6
