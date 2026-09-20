@@ -245,8 +245,6 @@ public class ConfigurationPageTests
         // Every choice the page offers has to say what the model stores when nobody has
         // configured anything, or the page would present a decision as a saved setting.
         Assert.Contains(nameof(PluginConfiguration.DefaultProfileId), displayed.Keys);
-        Assert.Contains(nameof(PluginConfiguration.FallbackProfileId), displayed.Keys);
-        Assert.Contains(nameof(PluginConfiguration.EncoderPolicy), displayed.Keys);
         Assert.Contains(nameof(PluginConfiguration.MaxConcurrentTranscodes), displayed.Keys);
 
         foreach (var field in displayed)
@@ -292,14 +290,15 @@ public class ConfigurationPageTests
         var configuration = Assert.IsAssignableFrom<PluginConfiguration>(reloaded);
 
         Assert.Equal("sbs_half", configuration.DefaultProfileId);
-        Assert.Equal("sbs_full", configuration.FallbackProfileId);
         Assert.Equal(3, configuration.MaxConcurrentTranscodes);
-        Assert.Equal(VideoEncoderPolicy.SoftwareOnly, configuration.EncoderPolicy);
         Assert.Equal("#00FF00", configuration.CustomLeftEyeColor);
         Assert.Equal("#0000FF", configuration.CustomRightEyeColor);
         Assert.Equal(new[] { "sbs_full", "two_d_base" }, configuration.EnabledProfileIds);
-        Assert.True(configuration.SubtitleDepthEnabled);
-        Assert.Equal(SubtitleDepthMode.Plane, configuration.SubtitleDepthMode);
+
+        // The payload spells an enum with the last name the enumeration declares, which is the
+        // last position of the one dropdown - Flat. A mode the endpoint could not bind would come
+        // back as the shipped Automatic here and pass a weaker assertion.
+        Assert.Equal(SubtitleDepthMode.Flat, configuration.SubtitleDepthMode);
         Assert.Equal(3, configuration.SubtitleDepthShift);
         Assert.Equal(3, configuration.SubtitleDepthPlane);
 
@@ -386,15 +385,6 @@ public class ConfigurationPageTests
     }
 
     [Fact]
-    public void TheEncoderPolicyChoicesAreThePolicyEnumeration()
-    {
-        var options = ReadOptionValues(nameof(PluginConfiguration.EncoderPolicy));
-
-        Assert.Equal(Enum.GetNames<VideoEncoderPolicy>(), options.Select(option => option.Value).ToArray());
-        Assert.All(options, option => Assert.NotEmpty(option.Text));
-    }
-
-    [Fact]
     public void TheEyeColourPickersStoreCanonicalHexTriplets()
     {
         var colours = ReadFieldAttributes("data-anaglyfin-default")
@@ -432,26 +422,37 @@ public class ConfigurationPageTests
     }
 
     [Fact]
-    public void TheSubtitleDepthSwitchIsTheOneTheSettingsShipUnticked()
+    public void TheSubtitleDepthFeatureIsOneDropdownWithNoEnableSwitch()
     {
         var html = ReadPageHtml();
-        var attributes = ReadAttributes(ReadFieldTag(nameof(PluginConfiguration.SubtitleDepthEnabled)));
 
-        Assert.Equal("checkbox", attributes["type"]);
-        Assert.Equal("boolean", attributes["data-anaglyfin-kind"]);
+        // The switch and the mode picker are one dropdown now. Flat is a position on the mode
+        // select - the one that asks for nothing - and there is no separate enable box left behind
+        // to tick a request the mode dropdown cannot see, or to disagree with it.
+        Assert.Contains(
+            "Flat",
+            ReadOptionValues(nameof(PluginConfiguration.SubtitleDepthMode)).Select(option => option.Value).ToArray(),
+            StringComparer.Ordinal);
 
-        // Spelled the way the settings endpoint spells a boolean, because that is what the page
-        // reads back out of a stored setting - and off is what an installation that has never seen
-        // this setting, and one that upgraded out of a build without it, both store.
-        Assert.Equal("False", attributes["data-anaglyfin-default"]);
+        Assert.DoesNotContain("data-anaglyfin-field=\"SubtitleDepthEnabled\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-anaglyfin-kind=\"boolean\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Enable FFmpeg-mvc subtitle depth", html, StringComparison.Ordinal);
+    }
 
-        // The dashboard's own checkbox shape, so the box arrives as the control the dashboard
-        // upgrades and captions rather than as a bare input.
-        Assert.Matches(
-            @"<label class=""emby-checkbox-label"">\s*<input\s+type=""checkbox""\s+is=""emby-checkbox""\s+id=""AnaglyfinSubtitleDepthEnabled""",
-            html);
+    [Fact]
+    public void TheAdminPageCopyNoLongerNamesTheRetiredSettings()
+    {
+        // The page was rewritten around fewer decisions, and the prose is part of that change: a
+        // label left behind for a setting that is gone tells an administrator to look for a control
+        // that no longer exists. The structural tests already prove the controls are absent; this
+        // one proves the copy stopped promising them. ("fallback" survives only as a name inside the
+        // page's own helpers, never as text a reader sees, so the labels are what is pinned here.)
+        var html = ReadPageHtml();
 
-        Assert.Contains("Enable FFmpeg-mvc subtitle depth", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Fallback profile", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Video encoder policy", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Hardware only", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Software only", html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -497,10 +498,11 @@ public class ConfigurationPageTests
 
         var sync = FunctionBody(html, "syncSubtitleDepthFields");
 
-        // Decided from the two controls the page has, since the page has no view model to be told.
-        Assert.Contains("#AnaglyfinSubtitleDepthEnabled", sync, StringComparison.Ordinal);
+        // Decided from the one control the page has for the feature now, since there is no view
+        // model to be told and no switch left to consult.
         Assert.Contains("#AnaglyfinSubtitleDepthMode", sync, StringComparison.Ordinal);
         Assert.Contains("data-anaglyfin-depth-field", sync, StringComparison.Ordinal);
+        Assert.DoesNotContain("#AnaglyfinSubtitleDepthEnabled", sync, StringComparison.Ordinal);
 
         // Hidden rather than emptied: the field of the mode that was not picked keeps its value,
         // because a save reads it and the settings keep the shape the server stored.
@@ -508,10 +510,10 @@ public class ConfigurationPageTests
         Assert.DoesNotContain("value = string.Empty", sync, StringComparison.Ordinal);
 
         // Laid out from the shipped defaults and again once the stored settings arrive, and every
-        // time the administrator changes either of the two controls it reads.
+        // time the administrator changes the one depth control the page now has.
         Assert.Contains("syncSubtitleDepthFields();", FunctionBody(html, "applyConfiguration"), StringComparison.Ordinal);
         Assert.Equal(2, Regex.Matches(html, "syncSubtitleDepthFields\\(\\);").Count);
-        Assert.Equal(2, Regex.Matches(html, "addEventListener\\('change', syncSubtitleDepthFields\\)").Count);
+        Assert.Equal(1, Regex.Matches(html, "addEventListener\\('change', syncSubtitleDepthFields\\)").Count);
 
         // The hidden attribute has to be backed by the page's own stylesheet, for the same reason
         // the dashboard notice is: the dashboard's sheet has an opinion about these elements.
@@ -531,16 +533,22 @@ public class ConfigurationPageTests
         {
             [nameof(SubtitleDepthMode.Automatic)] = string.Empty,
             [nameof(SubtitleDepthMode.ConstantShift)] = "shift",
-            [nameof(SubtitleDepthMode.Plane)] = "plane"
+            [nameof(SubtitleDepthMode.Plane)] = "plane",
+
+            // Flat asks for nothing, so like Automatic it reveals no number field.
+            [nameof(SubtitleDepthMode.Flat)] = string.Empty
         };
 
         Assert.Equal(
             Enum.GetNames<SubtitleDepthMode>().OrderBy(name => name, StringComparer.Ordinal).ToArray(),
             expectedFieldByMode.Keys.OrderBy(name => name, StringComparer.Ordinal).ToArray());
 
+        // The modes that reveal no field are seeded in, rather than discovered from the markup,
+        // because there is nothing in the markup for them to be discovered from.
         var actualFieldByMode = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            [nameof(SubtitleDepthMode.Automatic)] = string.Empty
+            [nameof(SubtitleDepthMode.Automatic)] = string.Empty,
+            [nameof(SubtitleDepthMode.Flat)] = string.Empty
         };
 
         foreach (Match field in Regex.Matches(html, @"<div\b[^>]*data-anaglyfin-depth-field[^>]*>"))
@@ -553,7 +561,7 @@ public class ConfigurationPageTests
             {
                 Assert.False(
                     attributes.ContainsKey("data-anaglyfin-depth-mode"),
-                    "The mode selector is shown by the feature switch, not by one mode name.");
+                    "The mode selector reveals itself for every mode, so it is not keyed to one mode name.");
 
                 continue;
             }
@@ -572,13 +580,14 @@ public class ConfigurationPageTests
 
         // The function compares the mode option's stored spelling to that attribute, and uses that
         // answer for both visibility and whether the control can be typed into. That is the half
-        // that turns "Enable" plus "One constant shift" into an editable shift box.
-        Assert.Contains("#AnaglyfinSubtitleDepthEnabled", sync, StringComparison.Ordinal);
+        // that turns picking "One constant shift" into an editable shift box - and picking Flat or
+        // Automatic into no number box at all.
         Assert.Contains("#AnaglyfinSubtitleDepthMode", sync, StringComparison.Ordinal);
         Assert.Contains("data-anaglyfin-depth-mode", sync, StringComparison.Ordinal);
         Assert.Contains("modeForField === wantedMode", sync, StringComparison.Ordinal);
+        Assert.DoesNotContain("#AnaglyfinSubtitleDepthEnabled", sync, StringComparison.Ordinal);
         Assert.Matches(
-            @"var visible\s*=\s*askedFor\s*&&\s*\(when\s*===\s*'mode'\s*\|\|\s*\(modeForField\s*!==\s*''\s*&&\s*modeForField\s*===\s*wantedMode\)\);",
+            @"var visible\s*=\s*when\s*===\s*'mode'\s*\|\|\s*\(modeForField\s*!==\s*''\s*&&\s*modeForField\s*===\s*wantedMode\);",
             sync);
         Assert.Matches(@"fields\[i\]\.hidden\s*=\s*!visible;", sync);
         Assert.Matches(@"input\.disabled\s*=\s*!visible;", sync);
@@ -931,7 +940,6 @@ public class ConfigurationPageTests
         => fieldName switch
         {
             nameof(PluginConfiguration.DefaultProfileId) => "sbs_half",
-            nameof(PluginConfiguration.FallbackProfileId) => "sbs_full",
             nameof(PluginConfiguration.CustomLeftEyeColor) => "#00FF00",
             nameof(PluginConfiguration.CustomRightEyeColor) => "#0000FF",
             _ => ProfileIds.TwoDBase
