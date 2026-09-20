@@ -153,16 +153,16 @@ Check the rendered page against the shipped defaults:
 - [ ] Opening the page's own URL directly - outside the dashboard, so with no signed-in
   client - shows the shipped defaults behind a warning naming the dashboard route, and
   saving refuses without writing anything.
-- [ ] The wrapper environment guidance block lists:
-
-  ```text
-  ANAGLYFIN_REAL_FFMPEG
-  FFMPEG_MVC_PATH
-  ANAGLYFIN_MAX_CONCURRENT_TRANSCODES
-  ANAGLYFIN_LOCK_DIR
-  ANAGLYFIN_WRAPPER_SETTINGS
-  ```
-
+- [ ] The page states the deployment requirement once: it asks for a Jellyfin-compatible
+  FFmpeg-mvc build and the Anaglyfin FFmpeg entry point, then sends the reader to the
+  Anaglyfin documentation.
+- [ ] The page does not carry deployment internals: no word `wrapper`, `environment`, or
+  `variable`; and no `ANAGLYFIN_REAL_FFMPEG`, `FFMPEG_MVC_PATH`, `ANAGLYFIN_LOCK_DIR`,
+  `ANAGLYFIN_WRAPPER_SETTINGS`, `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES`, `JELLYFIN_FFMPEG`,
+  or `FFMPEG_PATH`.
+- [ ] When `ANAGLYFIN_WRAPPER_SETTINGS` is configured, changing **Maximum concurrent Anaglyfin
+  transcodes** and saving writes that number to the shared settings document; a wrapper started after
+  the save sees it without another deployment step.
 - [ ] Disabling all enabled profiles is not accepted as an empty offer: saving that state
   should come back as the shipped enabled set.
 - [ ] Changing the default profile changes the first Anaglyfin version offered to a client
@@ -188,7 +188,7 @@ Wrapper binary path:
 FFmpeg-mvc binary path:
 ffprobe path:
 ANAGLYFIN_LOCK_DIR:
-ANAGLYFIN_MAX_CONCURRENT_TRANSCODES:
+ANAGLYFIN_MAX_CONCURRENT_TRANSCODES (optional):
 ANAGLYFIN_WRAPPER_SETTINGS:
 Jellyfin FFmpeg path setting:
 ```
@@ -196,9 +196,9 @@ Jellyfin FFmpeg path setting:
 Required deployment shape:
 
 ```text
-Jellyfin -> wrapper executable -> ANAGLYFIN_REAL_FFMPEG -> FFmpeg-mvc
-Jellyfin -> real ffprobe, in the wrapper's own directory
-plugin -> ANAGLYFIN_WRAPPER_SETTINGS -> wrapper (one shared subtitle-depth document)
+Jellyfin -> Anaglyfin FFmpeg entry point -> ANAGLYFIN_REAL_FFMPEG -> FFmpeg-mvc
+Jellyfin -> real ffprobe, in the entry point's own directory
+plugin -> ANAGLYFIN_WRAPPER_SETTINGS -> wrapper (one shared admin-settings document)
 ```
 
 The second line is not decoration. The server resolves `ffprobe` from the directory of the
@@ -221,8 +221,8 @@ signature of getting this wrong is one line at startup and a library that never 
   directory as the wrapper**, because that is where the server will look for it.
 - [ ] The wrapper executable is deployed to a stable path and executable by the Jellyfin
   service user.
-- [ ] The server's FFmpeg path points at the wrapper, not directly at FFmpeg-mvc, if
-  wrapper-based rewriting is expected.
+- [ ] The server's FFmpeg path points at the Anaglyfin FFmpeg entry point, not directly at
+  FFmpeg-mvc, if wrapper-based rewriting is expected.
 - [ ] The server can still probe files with the real `ffprobe`.
 - [ ] The wrapper's real FFmpeg resolution is one of:
 
@@ -237,34 +237,44 @@ signature of getting this wrong is one line at startup and a library that never 
   sufficient.
 - [ ] `ANAGLYFIN_LOCK_DIR` is writable by the Jellyfin service user.
 - [ ] `ANAGLYFIN_WRAPPER_SETTINGS` names the same absolute file to the plugin and to every wrapper
-  process that should see the subtitle-depth setting. Its directory must be writable by the Jellyfin
-  service user, because the plugin writes it and the wrapper only reads it.
+  process that should see the admin page's subtitle-depth request and concurrency limit. Its
+  directory must be writable by the Jellyfin service user, because the plugin writes it and the
+  wrapper only reads it.
 - [ ] For container deployments, every wrapper process that should share one concurrency
   limit sees the same lock directory.
-- [ ] For container deployments, every wrapper process that should see one subtitle-depth request
+- [ ] For container deployments, every wrapper process that should see one admin-settings request
   reads the same settings document.
 
 Example environment block, adjusted to your deployment:
 
 ```sh
 ANAGLYFIN_REAL_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg-mvc
-ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1
 ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin/ffmpeg-wrapper
 ANAGLYFIN_WRAPPER_SETTINGS=/var/lib/jellyfin/anaglyfin/wrapper/anaglyfin-wrapper-settings.json
+# Optional override for the admin page's concurrency limit:
+# ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1
 ```
 
 Notes:
 
 - The wrapper checks the configured real binary and refuses if it is missing or points back
   at the wrapper itself.
-- The wrapper reads the subtitle-depth request from the document named by
+- The wrapper reads the subtitle-depth request and concurrency limit from the document named by
   `ANAGLYFIN_WRAPPER_SETTINGS`. If that variable is unset or the document cannot be read, the
-  wrapper does not fail the playback: it uses flat subtitles, the same answer it gives when depth is
-  switched off in the admin page.
+  wrapper does not fail the playback: it uses flat subtitles and falls back to its own configured or
+  shipped concurrency limit.
+- The settings document is schema version 2 when written by this build: a `subtitleDepth` section and
+  a `transcoding.maxConcurrentTranscodes` field. A schema version 1 document is still readable, but
+  it states only depth and states no concurrency limit. A newer or malformed schema version is
+  ignored rather than trusted.
 - The wrapper resolves the real FFmpeg binary in this order:
   1. `ANAGLYFIN_REAL_FFMPEG`
   2. `FFMPEG_MVC_PATH`
   3. `ffmpeg` found on `PATH`
+- The wrapper resolves the concurrency limit in this order:
+  1. a valid `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES` override
+  2. the settings document
+  3. the shipped default
 
 ## V4. MVC detection and item eligibility
 
@@ -1086,9 +1096,11 @@ no "anaglyfin-wrapper:" diagnostic for successful ordinary playback
 
 ## V9. Concurrency limit
 
-Set:
+Set the admin page's **Maximum concurrent Anaglyfin transcodes** to `1`, or use the optional
+environment override on the server environment that starts wrappers:
 
 ```sh
+# Optional only: leave unset to exercise the admin-page setting through the settings document.
 ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1
 ANAGLYFIN_LOCK_DIR=<shared writable directory>
 ```
@@ -1110,11 +1122,12 @@ Start one Anaglyfin profile version.
 - [ ] The wrapper diagnostic starts with:
 
   ```text
-  anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running
+  anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running, which is the configured maximum, so FFmpeg was not started. Raise the maximum concurrent Anaglyfin transcodes on the Anaglyfin settings page, or ANAGLYFIN_MAX_CONCURRENT_TRANSCODES to override it from the deployment, or remove slot files left in the directory ANAGLYFIN_LOCK_DIR names if a wrapper was killed without exiting.
   ```
 
 - [ ] After the first job finishes, the slot file disappears.
-- [ ] Raising `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES` raises the number of slots and the second
+- [ ] Raising the admin-page limit, or raising a valid optional
+  `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES` override, raises the number of slots and the second
   Anaglyfin job starts.
 
 Slot behavior notes:
@@ -1172,9 +1185,9 @@ Current state:
   `mvcsubdepth` stage at all. A fresh installation ships on `Automatic`; a server upgrading from a
   build whose depth was switched off, or that predates the feature, is migrated to `Flat` on load, so
   an upgrade never turns depth on by itself.
-- The depth request travels through the settings document named by
-  `ANAGLYFIN_WRAPPER_SETTINGS`. The wrapper's view of that request is read once per invocation and
-  cannot be changed during a running transcode.
+- The admin page's subtitle-depth request travels through the settings document named by
+  `ANAGLYFIN_WRAPPER_SETTINGS`, alongside the admin page's concurrency limit. The wrapper's view of
+  that document is read once per invocation and cannot be changed during a running transcode.
 
 Validation expectation:
 

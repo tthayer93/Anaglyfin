@@ -57,6 +57,8 @@ real FFmpeg should run** when a user picks one of those versions.
 | `ProfileMarkerParser` | Wrapper-side marker recognition and validation |
 | `FfmpegProfileArgumentBuilder` | Exact argument tokens per profile |
 | `WrapperArgumentRewriter` | Pure command decision: pass through, rewrite, or refuse |
+| `WrapperSettingsFile` | Settings document crossing the plugin/wrapper boundary |
+| `WrapperSettingsPublicationService` | Writes that document at plugin startup; `Plugin` rewrites it on save |
 | `Anaglyfin.FFmpegWrapper` | Out-of-process executable started by Jellyfin |
 | `WrapperApplication` | Wrapper outcome, exit codes, diagnostics, slot use |
 | `WrapperConcurrencyGuard` | File-slot concurrency limit for Anaglyfin jobs |
@@ -266,11 +268,18 @@ escaped the same way it was found.
 
 ## Current deployment assumptions
 
-- The server's FFmpeg path points at the wrapper executable.
-- The real FFmpeg-mvc binary is configured through `ANAGLYFIN_REAL_FFMPEG` or
-  `FFMPEG_MVC_PATH`, with plain `ffmpeg` on `PATH` only as a fallback.
+- The server's FFmpeg path points at the Anaglyfin FFmpeg entry point supplied with this plugin.
+- The deployment installs a Jellyfin-compatible FFmpeg-mvc build and names it to the entry point
+  through `ANAGLYFIN_REAL_FFMPEG` or `FFMPEG_MVC_PATH`, with plain `ffmpeg` on `PATH` only as a
+  fallback.
 - The wrapper lock directory must be shared by every wrapper process that should share one
   Anaglyfin concurrency limit.
+- `ANAGLYFIN_WRAPPER_SETTINGS` names one settings document shared by the plugin and every wrapper
+  process that should see the admin page's subtitle-depth request or concurrency limit. The plugin
+  writes schema version 2; the wrapper also reads schema version 1, which carries the depth request
+  but no concurrency limit.
+- The concurrency limit is resolved per wrapper invocation in this order: valid
+  `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES`, then the settings document, then the shipped default.
 - Manual plugin installation is currently expected because no packaging job is present.
 
 ## Current follow-up areas
