@@ -24,9 +24,10 @@ namespace Anaglyfin.FFmpegWrapper;
 /// Those are the two moments the wrapper's view can otherwise fall behind the server's.
 /// </para>
 /// <para>
-/// A failed write is deliberately swallowed. The deployment loses the subtitle-depth request and
-/// keeps ordinary playback; it does not lose a server that can start. The file's absence or stale
-/// content is what the wrapper reads as no depth.
+/// A failed write is deliberately swallowed. The deployment loses the settings the document carries -
+/// the depth request and the concurrency limit - and keeps ordinary playback; it does not lose a
+/// server that can start. What the wrapper reads when the document is absent or stale is the answer
+/// an unconfigured server gives: flat subtitles and whichever limit the deployment names.
 /// </para>
 /// </remarks>
 public sealed class WrapperSettingsPublicationService : IHostedService
@@ -59,13 +60,17 @@ public sealed class WrapperSettingsPublicationService : IHostedService
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var request = _configurationSource.GetConfiguration().GetEffectiveSubtitleDepth();
+        var configuration = _configurationSource.GetConfiguration();
 
         var path = WrapperSettingsFile.ResolveWritePath(
             Environment.GetEnvironmentVariable,
             _applicationPaths.PluginConfigurationsPath);
 
-        WrapperSettingsFile.TryWrite(path, request, out _);
+        WrapperSettingsFile.TryWrite(
+            path,
+            configuration.GetEffectiveSubtitleDepth(),
+            configuration.GetEffectiveMaxConcurrentTranscodes(),
+            out _);
 
         return Task.CompletedTask;
     }

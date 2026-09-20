@@ -147,7 +147,38 @@ public class PluginTests : IDisposable
         // not travel with the one it does.
         Assert.Equal(
             new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 6),
-            WrapperSettingsFile.Read(PluginSettingsTarget(paths)));
+            WrapperSettingsFile.Read(PluginSettingsTarget(paths)).SubtitleDepth);
+    }
+
+    [Fact]
+    public void ASaveHandsTheWrapperTheConcurrencyLimitTheAdministratorAskedFor()
+    {
+        // The admin page is the only place this number is set, and the wrapper is the only thing that
+        // enforces it, so the save path is the whole of the wire between the two. A limit that was
+        // stored but not published is a setting that silently stops meaning anything as soon as the
+        // page stops naming an environment variable nobody can type into.
+        var paths = new FakeApplicationPaths(PrivateRoot());
+        var plugin = new Plugin(paths, new RecordingXmlSerializer());
+
+        plugin.UpdateConfiguration(new PluginConfiguration { MaxConcurrentTranscodes = 4 });
+
+        Assert.Equal(4, WrapperSettingsFile.Read(PluginSettingsTarget(paths)).MaxConcurrentTranscodes);
+    }
+
+    [Fact]
+    public void ASavePublishesTheLimitTheSettingsReadSideAnswersWith()
+    {
+        // A stored number nothing can act on is published as the limit the plugin itself would
+        // enforce, not as the stored zero: the wrapper must never be handed a value it has to
+        // interpret, and "unconfigured" is the answer both halves already agree on.
+        var paths = new FakeApplicationPaths(PrivateRoot());
+        var plugin = new Plugin(paths, new RecordingXmlSerializer());
+
+        plugin.UpdateConfiguration(new PluginConfiguration { MaxConcurrentTranscodes = 0 });
+
+        Assert.Equal(
+            PluginConfiguration.DefaultMaxConcurrentTranscodes,
+            WrapperSettingsFile.Read(PluginSettingsTarget(paths)).MaxConcurrentTranscodes);
     }
 
     [Fact]
@@ -167,7 +198,7 @@ public class PluginTests : IDisposable
         // request.
         Assert.Equal(
             SubtitleDepthSettings.Disabled,
-            WrapperSettingsFile.Read(PluginSettingsTarget(paths)));
+            WrapperSettingsFile.Read(PluginSettingsTarget(paths)).SubtitleDepth);
     }
 
     [Fact]
@@ -355,7 +386,7 @@ public class PluginTests : IDisposable
         var handoff = new WrapperSettingsPublicationService(new LiveSettingsSource(plugin.Configuration), paths);
         await handoff.StartAsync(CancellationToken.None);
 
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read(PluginSettingsTarget(paths)));
+        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read(PluginSettingsTarget(paths)).SubtitleDepth);
     }
 
     private static Plugin CreatePlugin()

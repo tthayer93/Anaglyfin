@@ -22,13 +22,19 @@ namespace Anaglyfin.FFmpegWrapper;
 /// visible to the wrapper without a restart.
 /// </para>
 /// <para>
-/// <b>What it carries.</b> Exactly the subtitle depth request, and nothing else. The full
-/// settings object is deliberately not mirrored: it holds profile ids, colours and a
-/// concurrency limit that the wrapper either cannot use or already reads from its own
-/// environment, and a channel that grows towards "everything the plugin knows" is how a
-/// playback path ends up depending on a value its reader cannot validate. Everything here is
-/// one switch, one mode name and two numbers, so the reader can reject the whole document on
-/// a single shape check.
+/// <b>What it carries.</b> The two settings the admin page owns that have no other way into
+/// this process: the subtitle depth request and the concurrency limit. The full settings object
+/// is deliberately not mirrored - it holds profile ids and colours the wrapper has no use for,
+/// and a channel that grows towards "everything the plugin knows" is how a playback path ends up
+/// depending on a value its reader cannot validate. What is here is one switch, one mode name,
+/// two numbers and one count.
+/// </para>
+/// <para>
+/// <b>The two sections are read separately.</b> A document whose depth request this build cannot
+/// parse still states its concurrency limit, and a document whose limit it cannot parse still
+/// states a depth. Each section is answered on its own terms, because each one has its own
+/// fallback - flat subtitles for the depth, the configured limit for the count - and neither
+/// fallback is a reason to lose the other setting.
 /// </para>
 /// <para>
 /// <b>One definition, two users.</b> The plugin writes it and the wrapper reads it, from this
@@ -53,9 +59,24 @@ public static class WrapperSettingsFile
     public const string DefaultFileName = "anaglyfin-wrapper-settings.json";
 
     /// <summary>
-    /// The version of the document this build writes, and the only one it reads.
+    /// The version of the document this build writes.
     /// </summary>
-    public const int SchemaVersion = 1;
+    /// <remarks>
+    /// Version 2 is version 1's document plus the <c>transcoding</c> section. Nothing that version 1
+    /// spelled changed its name or its meaning, so a wrapper that only knows how to read this one
+    /// still reads an old file unchanged and simply has no limit to apply from it.
+    /// </summary>
+    public const int SchemaVersion = 2;
+
+    /// <summary>
+    /// The oldest document version this build still reads.
+    /// </summary>
+    /// <remarks>
+    /// Version 1 carried the depth request alone. It is a complete statement of the one setting it
+    /// does carry, so it is honoured: refusing a file written by the plugin that was running
+    /// yesterday would turn an upgrade into a settings loss.
+    /// </remarks>
+    public const int OldestReadableSchemaVersion = 1;
 
     /// <summary>The wire name of <see cref="SubtitleDepthMode.Automatic"/>.</summary>
     public const string AutomaticModeName = "automatic";
@@ -65,6 +86,9 @@ public static class WrapperSettingsFile
 
     /// <summary>The wire name of <see cref="SubtitleDepthMode.Plane"/>.</summary>
     public const string PlaneModeName = "plane";
+
+    /// <summary>The first document version whose <c>transcoding</c> section means anything.</summary>
+    private const int TranscodingSchemaVersion = 2;
 
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
@@ -126,18 +150,23 @@ public static class WrapperSettingsFile
     }
 
     /// <summary>
-    /// Renders the document for one subtitle depth request.
+    /// Renders the document for one depth request and one concurrency limit.
     /// </summary>
-    /// <param name="settings">The request to write out.</param>
+    /// <param name="settings">The depth request to write out.</param>
+    /// <param name="maxConcurrentTranscodes">
+    /// The limit to state. The writer states the number it is handed and judges nothing: the
+    /// settings read side has already clamped it, and a caller that handed over a number below one
+    /// finds the reader refusing it, which is the same answer an unreadable section gives.
+    /// </param>
     /// <returns>The JSON text, with a trailing newline.</returns>
     /// <remarks>
-    /// Fixed key order, fixed names, and only booleans, integers and one of the three declared
-    /// mode names - so the document cannot carry text an administrator typed, and cannot carry
+    /// Fixed key order, fixed names, and only booleans, integers and one of the declared mode
+    /// names - so the document cannot carry text an administrator typed, and cannot carry
     /// a credential, because the settings it is built from hold none. Indented because an
     /// administrator diagnosing a deployment opens this file with an editor.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="settings"/> is null.</exception>
-    public static string ToJson(SubtitleDepthSettings settings)
+    public static string ToJson(SubtitleDepthSettings settings, int maxConcurrentTranscodes)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
@@ -150,6 +179,10 @@ public static class WrapperSettingsFile
                 ["mode"] = ModeWireName(settings.Mode),
                 ["shiftPixels"] = settings.ShiftPixels,
                 ["plane"] = settings.Plane
+            },
+            ["transcoding"] = new JsonObject
+            {
+                ["maxConcurrentTranscodes"] = maxConcurrentTranscodes
             }
         };
 
@@ -161,17 +194,21 @@ public static class WrapperSettingsFile
     /// </summary>
     /// <param name="json">The file text.</param>
     /// <returns>
-    /// The request it states, or <see cref="SubtitleDepthSettings.Disabled"/> for anything this
-    /// build cannot read, including text that is not JSON.
+    /// What it states. A section the build cannot read comes back unstated -
+    /// <see cref="SubtitleDepthSettings.Disabled"/> for the depth and <c>null</c> for the limit -
+    /// and a text that is not a document at all leaves both unstated.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// The reader is as narrow as the writer: an unknown schema version, a missing object, a
-    /// mode no name declares, or a number outside the range the filter honours is a document
-    /// whose meaning this build does not know, and the one meaning it does know is "flat
-    /// subtitles". Never a clamp, and never a failure - this document is not worth a playback,
-    /// and a half-written one is a thing that happens when a plugin is saving while a wrapper is
-    /// starting.
+    /// The reader is as narrow as the writer, and it stops at the schema version: a version this
+    /// build has never seen is a document whose meaning it does not know, so nothing is taken from
+    /// it. Within a version it understands, each section is judged on its own - a mode no name
+    /// declares costs the depth request, not the concurrency limit, because the two have different
+    /// fallbacks and the file already lost one of them before the other one was asked.
+    /// </para>
+    /// <para>
+    /// Never a clamp, and never a failure - this document is not worth a playback, and a
+    /// half-written one is a thing that happens when a plugin is saving while a wrapper is starting.
     /// </para>
     /// <para>
     /// Only <c>null</c> is refused outright, because that is not a document but a caller that
@@ -179,7 +216,7 @@ public static class WrapperSettingsFile
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="json"/> is null.</exception>
-    public static SubtitleDepthSettings Parse(string json)
+    public static WrapperSettings Parse(string json)
     {
         ArgumentNullException.ThrowIfNull(json);
 
@@ -190,26 +227,20 @@ public static class WrapperSettingsFile
 
             if (root.ValueKind != JsonValueKind.Object
                 || !TryGetInt(root, "schemaVersion", out var schemaVersion)
-                || schemaVersion != SchemaVersion
-                || !root.TryGetProperty("subtitleDepth", out var depth)
-                || depth.ValueKind != JsonValueKind.Object)
+                || schemaVersion is < OldestReadableSchemaVersion or > SchemaVersion)
             {
-                return SubtitleDepthSettings.Disabled;
+                return WrapperSettings.Unstated;
             }
 
-            if (!depth.TryGetProperty("enabled", out var enabled)
-                || (enabled.ValueKind != JsonValueKind.True && enabled.ValueKind != JsonValueKind.False))
-            {
-                return SubtitleDepthSettings.Disabled;
-            }
-
-            return enabled.GetBoolean() ? ReadEnabled(depth) : SubtitleDepthSettings.Disabled;
+            return new WrapperSettings(
+                ReadDepthSection(root),
+                ReadLimitSection(root, schemaVersion));
         }
         catch (JsonException)
         {
             // Not JSON, or JSON nobody would call a document. Both settings processes are on the
             // other side of this, and neither is being told about it by exception.
-            return SubtitleDepthSettings.Disabled;
+            return WrapperSettings.Unstated;
         }
     }
 
@@ -221,20 +252,19 @@ public static class WrapperSettingsFile
     /// started without <see cref="EnvironmentVariable"/> stands.
     /// </param>
     /// <returns>
-    /// The stated request, or <see cref="SubtitleDepthSettings.Disabled"/> when the file does
-    /// not exist, cannot be opened, is not JSON, or states something this build does not
-    /// understand.
+    /// The stated request, or <see cref="WrapperSettings.Unstated"/> when the file does not exist,
+    /// cannot be opened, is not JSON, or states something this build does not understand.
     /// </returns>
     /// <remarks>
     /// Nothing about this file is worth failing a transcode over, so every read failure -
     /// absent, locked, half-written by a plugin that died mid-save, written by a newer build -
-    /// answers with the same flat subtitles an unconfigured server plays.
+    /// answers with no depth and no limit, which is what an unconfigured server plays and counts.
     /// </remarks>
-    public static SubtitleDepthSettings Read(string? path)
+    public static WrapperSettings Read(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
-            return SubtitleDepthSettings.Disabled;
+            return WrapperSettings.Unstated;
         }
 
         try
@@ -243,7 +273,7 @@ public static class WrapperSettingsFile
         }
         catch (Exception exception) when (IsReadFailure(exception))
         {
-            return SubtitleDepthSettings.Disabled;
+            return WrapperSettings.Unstated;
         }
     }
 
@@ -251,7 +281,8 @@ public static class WrapperSettingsFile
     /// Writes a document, in place, atomically.
     /// </summary>
     /// <param name="path">The file to write.</param>
-    /// <param name="settings">The request to state.</param>
+    /// <param name="settings">The depth request to state.</param>
+    /// <param name="maxConcurrentTranscodes">The concurrency limit to state.</param>
     /// <param name="failure">What stopped the write, when this returns <c>false</c>.</param>
     /// <returns><c>true</c> when the file now states the request.</returns>
     /// <remarks>
@@ -269,12 +300,16 @@ public static class WrapperSettingsFile
     /// <para>
     /// Failures come back as the answer rather than as an exception: the callers are the
     /// plugin's startup and save paths, where an unwritable directory has to cost an
-    /// administrator a depth setting that does not take effect, not a plugin that cannot load.
+    /// administrator the settings that do not take effect, not a plugin that cannot load.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="settings"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="path"/> is empty.</exception>
-    public static bool TryWrite(string path, SubtitleDepthSettings settings, out Exception? failure)
+    public static bool TryWrite(
+        string path,
+        SubtitleDepthSettings settings,
+        int maxConcurrentTranscodes,
+        out Exception? failure)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -296,7 +331,7 @@ public static class WrapperSettingsFile
             // editor last touched the deployment.
             File.WriteAllText(
                 temporary,
-                ToJson(settings),
+                ToJson(settings, maxConcurrentTranscodes),
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
             MakeWorldReadable(temporary);
@@ -368,6 +403,49 @@ public static class WrapperSettingsFile
 
         mode = default;
         return false;
+    }
+
+    /// <summary>
+    /// Reads the depth section, which is the one section every version of this document has carried.
+    /// </summary>
+    private static SubtitleDepthSettings ReadDepthSection(JsonElement root)
+    {
+        if (!root.TryGetProperty("subtitleDepth", out var depth)
+            || depth.ValueKind != JsonValueKind.Object)
+        {
+            return SubtitleDepthSettings.Disabled;
+        }
+
+        if (!depth.TryGetProperty("enabled", out var enabled)
+            || (enabled.ValueKind != JsonValueKind.True && enabled.ValueKind != JsonValueKind.False))
+        {
+            return SubtitleDepthSettings.Disabled;
+        }
+
+        return enabled.GetBoolean() ? ReadEnabled(depth) : SubtitleDepthSettings.Disabled;
+    }
+
+    /// <summary>
+    /// Reads the stated concurrency limit, which only exists from the version that introduced it.
+    /// </summary>
+    /// <remarks>
+    /// A version 1 document is not a malformed version 2 one - it states a depth and nothing else,
+    /// and its depth is honoured - so the absence of the section is the expected answer for it, and
+    /// <c>null</c> is the honest one: the document has no opinion, and the deployment's own setting
+    /// or the shipped default goes on deciding.
+    /// </remarks>
+    private static int? ReadLimitSection(JsonElement root, int schemaVersion)
+    {
+        if (schemaVersion < TranscodingSchemaVersion
+            || !root.TryGetProperty("transcoding", out var transcoding)
+            || transcoding.ValueKind != JsonValueKind.Object
+            || !TryGetInt(transcoding, "maxConcurrentTranscodes", out var stated)
+            || stated < 1)
+        {
+            return null;
+        }
+
+        return stated;
     }
 
     /// <summary>

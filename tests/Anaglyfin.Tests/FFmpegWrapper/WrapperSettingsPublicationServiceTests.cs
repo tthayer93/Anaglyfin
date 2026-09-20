@@ -39,7 +39,8 @@ public sealed class WrapperSettingsPublicationServiceTests : IDisposable
                 {
                     SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
                     SubtitleDepthShift = -18,
-                    SubtitleDepthPlane = 7
+                    SubtitleDepthPlane = 7,
+                    MaxConcurrentTranscodes = 3
                 }
             },
             paths);
@@ -50,9 +51,17 @@ public sealed class WrapperSettingsPublicationServiceTests : IDisposable
         var target = Path.Combine(paths.PluginConfigurationsPath, WrapperSettingsFile.DefaultFileName);
 
         Assert.True(File.Exists(target), $"The startup publication wrote no settings document at {target}.");
+
+        var published = WrapperSettingsFile.Read(target);
+
         Assert.Equal(
             new SubtitleDepthSettings(true, SubtitleDepthMode.ConstantShift, -18, 0),
-            WrapperSettingsFile.Read(target));
+            published.SubtitleDepth);
+
+        // The limit travels with the depth for the same reason the depth does: a wrapper cannot ask
+        // the plugin for either, and a restart nobody opened the page for still has to leave the
+        // administrator's number standing.
+        Assert.Equal(3, published.MaxConcurrentTranscodes);
     }
 
     [Fact]
@@ -71,9 +80,14 @@ public sealed class WrapperSettingsPublicationServiceTests : IDisposable
         // Flat before this ever runs - see PluginConfigurationMigrationTests - so it is not this
         // never-configured case, and it does not arrive here asking for Automatic.)
         Assert.True(File.Exists(target), $"The startup publication wrote no settings document at {target}.");
+
+        var published = WrapperSettingsFile.Read(target);
+
         Assert.Equal(
             new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0),
-            WrapperSettingsFile.Read(target));
+            published.SubtitleDepth);
+
+        Assert.Equal(PluginConfiguration.DefaultMaxConcurrentTranscodes, published.MaxConcurrentTranscodes);
     }
 
     [Fact]
