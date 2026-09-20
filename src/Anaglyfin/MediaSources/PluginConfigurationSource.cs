@@ -19,7 +19,7 @@ namespace Anaglyfin.MediaSources;
 /// Every failure to find the settings - plugin not loaded yet, settings file of a
 /// type this build does not know, configuration not loaded - yields a fresh default
 /// configuration: the callers sit on the playback path, and the shipped defaults
-/// (red/cyan first, 2D base as fallback, the MVP profile set) are a correct answer
+/// (red/cyan first, the MVP profile set, 2D Base offered last) are a correct answer
 /// for an installation nobody has configured. They are never a substitute for a
 /// loaded one: the live object is returned by reference, so an administrator's
 /// change is seen by the next call.

@@ -26,7 +26,7 @@ public static class ProfileIds
     public const string AnaglyphProfileIdPrefix = "anaglyph_";
 
     /// <summary>
-    /// Plain 2D output using the decoder's default base view. Also the shipped fallback profile.
+    /// Plain 2D output using the decoder's default base view: the version that plays everywhere.
     /// </summary>
     public const string TwoDBase = "two_d_base";
 
