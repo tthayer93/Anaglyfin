@@ -31,8 +31,7 @@ Before either is visited for real, `dev/jellyfin-validation/` runs the packaged 
 wrapper against a disposable `jellyfin/jellyfin:latest` mounted the way the target server is.
 
 Current implementation follow-ups are documented there and include subtitle ordinal
-wiring through the provider, applying device/client defaults in the provider path, and
-enforcing the stored encoder policy.
+wiring through the provider and applying device/client defaults in the provider path.
 
 ## Requirements
 

@@ -49,7 +49,7 @@ real FFmpeg should run** when a user picks one of those versions.
 | `Plugin` | Fixed plugin identity and admin page registration |
 | `PluginServiceRegistrator` | DI registration for catalog, detector, and settings source |
 | `ProfileCatalog` | Fixed profile allowlist and display metadata |
-| `PluginConfiguration` | Persisted profile ids, enabled profiles, concurrency, colors, encoder policy |
+| `PluginConfiguration` | Persisted profile ids, enabled profiles, concurrency, colors, subtitle depth |
 | `Configuration/configPage.html` | Dashboard-served settings page |
 | `MvcSourceDetector` | Conservative MVC eligibility from metadata and names |
 | `AnaglyfinMediaSourceProvider` | Alternate media sources carrying profile markers |
@@ -277,7 +277,5 @@ escaped the same way it was found.
 
 - Wire per-playback subtitle selection through marker subtitle ordinals and `SubtitleBurnIn`.
 - Apply device/client defaults in the provider path, not only in the profile catalog.
-- Enforce `EncoderPolicy` at the wrapper/command-building boundary, or remove it from the UI
-  until enforcement exists.
 - Merge wrapper signal forwarding from `task/T8-wrapper-signal-forwarding`.
 - Add packaging metadata if a plugin repository workflow is desired.
