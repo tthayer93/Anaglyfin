@@ -21,30 +21,27 @@ public class PluginConfigurationTests
         var configuration = new PluginConfiguration();
 
         Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, configuration.DefaultProfileId);
-        Assert.Equal(ProfileIds.TwoDBase, configuration.FallbackProfileId);
         Assert.Equal(PluginConfiguration.DefaultMaxConcurrentTranscodes, configuration.MaxConcurrentTranscodes);
         Assert.Equal(1, configuration.MaxConcurrentTranscodes);
-        Assert.Equal(VideoEncoderPolicy.Automatic, configuration.EncoderPolicy);
         Assert.Empty(configuration.EnabledProfileIds);
         Assert.Empty(configuration.DeviceDefaultProfiles);
         Assert.Equal("#FF0000", configuration.CustomLeftEyeColor);
         Assert.Equal("#00FFFF", configuration.CustomRightEyeColor);
-        Assert.False(configuration.SubtitleDepthEnabled);
         Assert.Equal(SubtitleDepthMode.Automatic, configuration.SubtitleDepthMode);
         Assert.Equal(0, configuration.SubtitleDepthShift);
         Assert.Equal(0, configuration.SubtitleDepthPlane);
     }
 
     [Fact]
-    public void FreshSettingsAskForNoSubtitleDepth()
+    public void FreshSettingsAskForAutomaticSubtitleDepth()
     {
-        // The stored defaults and the read side have to say the same thing here: a fresh
-        // installation and a server reading its settings for the first time must both produce
-        // "flat subtitles", and not one of them by way of a fallback.
+        // The shipped default of the one dropdown is Automatic, and the read side agrees: a
+        // fresh installation asks for the depth the disc carries, so the stored default and the
+        // effective request say the same thing rather than one of them hiding behind a switch.
         var configuration = new PluginConfiguration();
 
-        Assert.False(configuration.SubtitleDepthEnabled);
-        Assert.Equal(SubtitleDepthSettings.Disabled, configuration.GetEffectiveSubtitleDepth());
+        Assert.Equal(SubtitleDepthMode.Automatic, configuration.SubtitleDepthMode);
+        Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0), configuration.GetEffectiveSubtitleDepth());
     }
 
     [Fact]
@@ -54,7 +51,6 @@ public class PluginConfigurationTests
         configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault { DeviceId = "tv", ProfileId = ProfileIds.SideBySideHalf });
 
         Assert.True(ProfileIds.IsAllowed(configuration.DefaultProfileId));
-        Assert.True(ProfileIds.IsAllowed(configuration.FallbackProfileId));
         Assert.All(configuration.DeviceDefaultProfiles, entry => Assert.True(ProfileIds.IsAllowed(entry.ProfileId)));
     }
 
@@ -87,24 +83,16 @@ public class PluginConfigurationTests
     }
 
     [Fact]
-    public void EncoderPolicyStillSeparatesTheThreeChoices()
-    {
-        Assert.NotEqual(VideoEncoderPolicy.Automatic, VideoEncoderPolicy.HardwareOnly);
-        Assert.NotEqual(VideoEncoderPolicy.HardwareOnly, VideoEncoderPolicy.SoftwareOnly);
-        Assert.Equal(0, (int)VideoEncoderPolicy.Automatic);
-    }
-
-    [Fact]
     public void SettingsSurviveTheServerXmlRoundTrip()
     {
         var configuration = new PluginConfiguration
         {
             DefaultProfileId = ProfileIds.SideBySideHalf,
-            FallbackProfileId = ProfileIds.SideBySideFull,
             MaxConcurrentTranscodes = 3,
-            EncoderPolicy = VideoEncoderPolicy.SoftwareOnly,
             CustomLeftEyeColor = "#00FF00",
-            CustomRightEyeColor = "#0000FF"
+            CustomRightEyeColor = "#0000FF",
+            SubtitleDepthMode = SubtitleDepthMode.Plane,
+            SubtitleDepthPlane = 5
         };
         configuration.EnabledProfileIds.AddRange(new[] { ProfileIds.SideBySideFull, ProfileIds.SideBySideHalf, ProfileIds.CustomGrayscale });
         configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
@@ -122,11 +110,11 @@ public class PluginConfigurationTests
         var reloaded = RoundTripXml(configuration);
 
         Assert.Equal(ProfileIds.SideBySideHalf, reloaded.DefaultProfileId);
-        Assert.Equal(ProfileIds.SideBySideFull, reloaded.FallbackProfileId);
         Assert.Equal(3, reloaded.MaxConcurrentTranscodes);
-        Assert.Equal(VideoEncoderPolicy.SoftwareOnly, reloaded.EncoderPolicy);
         Assert.Equal("#00FF00", reloaded.CustomLeftEyeColor);
         Assert.Equal("#0000FF", reloaded.CustomRightEyeColor);
+        Assert.Equal(SubtitleDepthMode.Plane, reloaded.SubtitleDepthMode);
+        Assert.Equal(5, reloaded.SubtitleDepthPlane);
         Assert.Equal(
             new[] { ProfileIds.SideBySideFull, ProfileIds.SideBySideHalf, ProfileIds.CustomGrayscale },
             reloaded.EnabledProfileIds);
@@ -170,11 +158,14 @@ public class PluginConfigurationTests
             ?? throw new InvalidOperationException("The scaffold era settings XML did not load a configuration.");
 
         Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, loaded.DefaultProfileId);
-        Assert.Equal(ProfileIds.TwoDBase, loaded.FallbackProfileId);
         Assert.Equal(1, loaded.MaxConcurrentTranscodes);
-        Assert.Equal(VideoEncoderPolicy.Automatic, loaded.EncoderPolicy);
         Assert.Empty(loaded.EnabledProfileIds);
         Assert.Empty(loaded.DeviceDefaultProfiles);
+
+        // Raw deserialisation leaves the shipped default here: Automatic. This is the pre-depth
+        // file that the migration turns into Flat - see PluginConfigurationMigrationTests and the
+        // load path in PluginTests - and the reason a bare settings load is not enough on its own.
+        Assert.Equal(SubtitleDepthMode.Automatic, loaded.SubtitleDepthMode);
 
         // And the empty enabled list still offers the MVP formats.
         var catalog = new ProfileCatalog();
@@ -196,7 +187,7 @@ public class PluginConfigurationTests
         {
             DefaultProfileId = ProfileIds.CustomGrayscale,
             MaxConcurrentTranscodes = 4,
-            EncoderPolicy = VideoEncoderPolicy.HardwareOnly,
+            SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
             CustomLeftEyeColor = "#112233",
             CustomRightEyeColor = "#445566"
         };
@@ -209,14 +200,14 @@ public class PluginConfigurationTests
         Assert.NotNull(reloaded);
         Assert.Equal(ProfileIds.CustomGrayscale, reloaded!.DefaultProfileId);
         Assert.Equal(4, reloaded.MaxConcurrentTranscodes);
-        Assert.Equal(VideoEncoderPolicy.HardwareOnly, reloaded.EncoderPolicy);
+        Assert.Equal(SubtitleDepthMode.ConstantShift, reloaded.SubtitleDepthMode);
         Assert.Equal("#112233", reloaded.CustomLeftEyeColor);
 
         // The settings endpoint hands these collections back on every save, so they have
         // to travel in both directions, not just out.
         Assert.Contains("\"EnabledProfileIds\":[\"custom_grayscale\"]", payload);
         Assert.Contains("\"DeviceDefaultProfiles\":[", payload);
-        Assert.Contains("\"HardwareOnly\"", payload);
+        Assert.Contains("\"ConstantShift\"", payload);
 
         Assert.Equal(ProfileIds.CustomGrayscale, Assert.Single(reloaded.EnabledProfileIds));
         Assert.Equal("Web", Assert.Single(reloaded.DeviceDefaultProfiles).ClientName);
@@ -234,7 +225,6 @@ public class PluginConfigurationTests
     {
         var configuration = new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = mode,
             SubtitleDepthShift = shift,
             SubtitleDepthPlane = plane
@@ -242,7 +232,6 @@ public class PluginConfigurationTests
 
         var reloaded = RoundTripXml(configuration);
 
-        Assert.True(reloaded.SubtitleDepthEnabled);
         Assert.Equal(mode, reloaded.SubtitleDepthMode);
         Assert.Equal(shift, reloaded.SubtitleDepthShift);
         Assert.Equal(plane, reloaded.SubtitleDepthPlane);
@@ -272,7 +261,6 @@ public class PluginConfigurationTests
 
         var configuration = new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = SubtitleDepthMode.Plane,
             SubtitleDepthPlane = 9
         };
@@ -280,25 +268,27 @@ public class PluginConfigurationTests
         var payload = JsonSerializer.Serialize(configuration, options);
         var reloaded = JsonSerializer.Deserialize<PluginConfiguration>(payload, options);
 
-        Assert.Contains("\"SubtitleDepthEnabled\":true", payload, StringComparison.Ordinal);
         Assert.Contains("\"SubtitleDepthMode\":\"Plane\"", payload, StringComparison.Ordinal);
         Assert.Contains("\"SubtitleDepthPlane\":9", payload, StringComparison.Ordinal);
 
         var saved = Assert.IsAssignableFrom<PluginConfiguration>(reloaded);
-        Assert.True(saved.SubtitleDepthEnabled);
         Assert.Equal(SubtitleDepthMode.Plane, saved.SubtitleDepthMode);
         Assert.Equal(9, saved.SubtitleDepthPlane);
         Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, 9), saved.GetEffectiveSubtitleDepth());
     }
 
     [Fact]
-    public void ASettingsFileWrittenBeforeSubtitleDepthExistedAsksForNone()
+    public void ARetiredSettingInAStaleSettingsFileStillLoadsAgainstTheModel()
     {
-        // What an upgrading server has on disk: a settings file that names profiles, a limit
-        // and colours, and has never heard of depth. It has to load as the installation that
-        // was not asked for anything, because the alternative is an upgrade that starts moving
-        // captions without anybody asking it to.
-        const string PreDepthXml = """
+        // What an upgrading server has on disk: a settings file from a build that still had the
+        // fallback profile, the encoder policy and the depth switch. None of those is a property
+        // of this model any more, and the serialiser's job is to ignore what it cannot place - so
+        // the file must load with its surviving settings intact rather than fail on the extra
+        // elements. That an unrecognised element is dropped is exactly why the retired depth
+        // switch needs its own migration step (see PluginConfigurationMigrationTests and the load
+        // path in PluginTests): a bare settings load cannot tell a switch that was off from a
+        // fresh default, and lands on Automatic.
+        const string StaleXml = """
             <PluginConfiguration xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
               <DefaultProfileId>sbs_half</DefaultProfileId>
               <FallbackProfileId>two_d_base</FallbackProfileId>
@@ -306,21 +296,25 @@ public class PluginConfigurationTests
               <EncoderPolicy>SoftwareOnly</EncoderPolicy>
               <CustomLeftEyeColor>#00FF00</CustomLeftEyeColor>
               <CustomRightEyeColor>#0000FF</CustomRightEyeColor>
+              <SubtitleDepthEnabled>false</SubtitleDepthEnabled>
             </PluginConfiguration>
             """;
 
         var serializer = new XmlSerializer(typeof(PluginConfiguration));
-        using var reader = new StringReader(PreDepthXml);
+        using var reader = new StringReader(StaleXml);
 
         var loaded = (PluginConfiguration?)serializer.Deserialize(reader)
-            ?? throw new InvalidOperationException("The pre-depth settings XML did not load a configuration.");
+            ?? throw new InvalidOperationException("The stale settings XML did not load a configuration.");
 
+        // Surviving settings are intact; the three retired elements left no trace on the model.
+        Assert.Equal(ProfileIds.SideBySideHalf, loaded.DefaultProfileId);
         Assert.Equal(2, loaded.MaxConcurrentTranscodes);
-        Assert.False(loaded.SubtitleDepthEnabled);
+        Assert.Equal("#00FF00", loaded.CustomLeftEyeColor);
+        Assert.Equal("#0000FF", loaded.CustomRightEyeColor);
+
+        // The retired switch was dropped, so the mode reads as the shipped default. This is the
+        // silent-ON hazard the migration exists to close, not something this load fixes.
         Assert.Equal(SubtitleDepthMode.Automatic, loaded.SubtitleDepthMode);
-        Assert.Equal(0, loaded.SubtitleDepthShift);
-        Assert.Equal(0, loaded.SubtitleDepthPlane);
-        Assert.Equal(SubtitleDepthSettings.Disabled, loaded.GetEffectiveSubtitleDepth());
     }
 
     [Theory]
@@ -335,7 +329,6 @@ public class PluginConfigurationTests
     {
         var configuration = new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
             SubtitleDepthShift = shift
         };
@@ -358,7 +351,6 @@ public class PluginConfigurationTests
     {
         var configuration = new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
             SubtitleDepthShift = shift
         };
@@ -375,7 +367,6 @@ public class PluginConfigurationTests
     {
         var configuration = new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = SubtitleDepthMode.Plane,
             SubtitleDepthPlane = plane
         };
@@ -394,7 +385,6 @@ public class PluginConfigurationTests
     {
         var configuration = new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = SubtitleDepthMode.Plane,
             SubtitleDepthPlane = plane
         };
@@ -410,7 +400,6 @@ public class PluginConfigurationTests
         // picked a constant shift is asking for the shift, not for a decision between the two.
         var shiftWithAPlaneStowed = new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
             SubtitleDepthShift = 12,
             SubtitleDepthPlane = 99
@@ -422,7 +411,6 @@ public class PluginConfigurationTests
 
         var planeWithAShiftStowed = new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = SubtitleDepthMode.Plane,
             SubtitleDepthShift = 999,
             SubtitleDepthPlane = 4
@@ -434,20 +422,20 @@ public class PluginConfigurationTests
     }
 
     [Fact]
-    public void TheNumbersAreInertUntilTheSwitchIsOn()
+    public void FlatModeAsksForNothingEvenWhenNumbersAreStored()
     {
-        // "Mode is meaningful only when enabled" is the rule that lets the page keep a mode and
-        // two numbers stored while the feature is off, and it is also what makes a settings file
-        // full of left-over numbers a request for nothing.
-        var unticked = new PluginConfiguration
+        // Flat is the one dropdown position that switches the feature off, and it does so whatever
+        // numbers the other modes left behind: a settings file that names a plane index and a shift
+        // but picks Flat is a request for nothing, which is what lets the page keep the numbers
+        // stored for the next time a mode that carries them is picked.
+        var flatWithLeftoverNumbers = new PluginConfiguration
         {
-            SubtitleDepthEnabled = false,
-            SubtitleDepthMode = SubtitleDepthMode.Plane,
+            SubtitleDepthMode = SubtitleDepthMode.Flat,
             SubtitleDepthShift = 40,
             SubtitleDepthPlane = 11
         };
 
-        Assert.Equal(SubtitleDepthSettings.Disabled, unticked.GetEffectiveSubtitleDepth());
+        Assert.Equal(SubtitleDepthSettings.Disabled, flatWithLeftoverNumbers.GetEffectiveSubtitleDepth());
     }
 
     [Fact]
@@ -457,7 +445,6 @@ public class PluginConfigurationTests
         // travels towards a filter graph cannot be a number that was left in the box.
         var configuration = new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = SubtitleDepthMode.Automatic,
             SubtitleDepthShift = -30,
             SubtitleDepthPlane = 12
@@ -475,7 +462,6 @@ public class PluginConfigurationTests
         // wrong.
         var configuration = new PluginConfiguration
         {
-            SubtitleDepthEnabled = true,
             SubtitleDepthMode = (SubtitleDepthMode)77,
             SubtitleDepthShift = 8
         };
