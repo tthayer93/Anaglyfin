@@ -442,17 +442,15 @@ public sealed class WrapperSettingsFileTests : IDisposable
         var stored = new[]
         {
             new PluginConfiguration(),
-            new PluginConfiguration { SubtitleDepthEnabled = true },
+            new PluginConfiguration { SubtitleDepthMode = SubtitleDepthMode.Flat },
             new PluginConfiguration
             {
-                SubtitleDepthEnabled = true,
                 SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
                 SubtitleDepthShift = -48,
                 SubtitleDepthPlane = 9
             },
             new PluginConfiguration
             {
-                SubtitleDepthEnabled = true,
                 SubtitleDepthMode = SubtitleDepthMode.Plane,
                 SubtitleDepthShift = 33,
                 SubtitleDepthPlane = 30
@@ -462,7 +460,6 @@ public sealed class WrapperSettingsFileTests : IDisposable
             // an impossible number was meant to mean.
             new PluginConfiguration
             {
-                SubtitleDepthEnabled = true,
                 SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
                 SubtitleDepthShift = 500
             }

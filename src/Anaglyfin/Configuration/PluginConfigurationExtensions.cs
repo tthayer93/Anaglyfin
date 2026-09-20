@@ -48,10 +48,9 @@ public static class PluginConfigurationExtensions
     /// <list type="bullet">
     /// <item>
     /// <description>
-    /// Nothing is asked for unless <see cref="PluginConfiguration.SubtitleDepthEnabled"/> is
-    /// on. A stored mode, shift or plane is then not a request - which is what lets a
-    /// settings file that has never seen this feature load as "off" rather than as
-    /// "somebody asked for plane 0".
+    /// The single mode is read as it stands. <see cref="SubtitleDepthMode.Flat"/> is the off
+    /// position and answers with <see cref="SubtitleDepthSettings.Disabled"/>, so the one knob
+    /// has one off position and there is nothing else to consult.
     /// </description>
     /// </item>
     /// <item>
@@ -76,12 +75,6 @@ public static class PluginConfigurationExtensions
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
-        if (!configuration.SubtitleDepthEnabled
-            || !SubtitleDepthSettings.IsDeclaredMode(configuration.SubtitleDepthMode))
-        {
-            return SubtitleDepthSettings.Disabled;
-        }
-
         return configuration.SubtitleDepthMode switch
         {
             SubtitleDepthMode.Automatic
@@ -93,8 +86,9 @@ public static class PluginConfigurationExtensions
             SubtitleDepthMode.Plane when SubtitleDepthSettings.IsPlaneInRange(configuration.SubtitleDepthPlane)
                 => new SubtitleDepthSettings(true, SubtitleDepthMode.Plane, 0, configuration.SubtitleDepthPlane),
 
-            // A number the filter would clamp or refuse, reached through a mode that wants
-            // it: the feature is off, and the stored numbers are left where they are.
+            // Flat is the off position, and a number the filter would clamp or refuse is a
+            // request the settings cannot state: the feature is off, and the stored numbers are
+            // left where they are for whoever picks a mode that can carry them.
             _ => SubtitleDepthSettings.Disabled
         };
     }

@@ -584,12 +584,6 @@ public sealed class NoEnabledProfilesCatalog : IProfileCatalog
         => _inner.GetDefaultProfile(configuration, deviceId, clientName);
 
     /// <inheritdoc />
-    public string ResolveFallbackProfileId(PluginConfiguration configuration) => _inner.ResolveFallbackProfileId(configuration);
-
-    /// <inheritdoc />
-    public StereoProfile GetFallbackProfile(PluginConfiguration configuration) => _inner.GetFallbackProfile(configuration);
-
-    /// <inheritdoc />
     public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
         => Array.Empty<StereoProfile>();
 }

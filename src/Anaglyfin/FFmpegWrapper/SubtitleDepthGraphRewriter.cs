@@ -161,10 +161,12 @@ public static class SubtitleDepthGraphRewriter
     /// </returns>
     /// <remarks>
     /// <para>
-    /// The three spellings are the three modes this product names, in the filter's own grammar -
-    /// which is the consolidated one, where the separate <c>plane=</c> and <c>shift=</c> options of
-    /// the first depth builds were removed. <c>depth=flat</c> is deliberately unreachable: it is what
-    /// Anaglyfin produces by leaving the feature off, and one knob with one off position is one knob.
+    /// Three spellings, for the three modes that ask the filter for something. The fourth mode this
+    /// product now names, <see cref="SubtitleDepthMode.Flat"/>, is folded to a disabled request by
+    /// <c>GetEffectiveSubtitleDepth</c> before it reaches here, so <c>depth=flat</c> is still never
+    /// emitted: the graph simply carries no <c>mvcsubdepth</c> stage, exactly as it did while the
+    /// feature was switched off. One dropdown, one off position, and that position never reaches the
+    /// filter at all.
     /// </para>
     /// <para>
     /// Nothing is clamped here. The filter travels 64 pixels of transparent slack per side and its

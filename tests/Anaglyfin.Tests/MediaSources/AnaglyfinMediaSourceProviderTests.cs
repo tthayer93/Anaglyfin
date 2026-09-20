@@ -359,7 +359,7 @@ public class AnaglyfinMediaSourceProviderTests
 
         var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
 
-        // Shipped settings: red/cyan Dubois default, 2D base fallback, MVP profile set.
+        // Shipped settings: red/cyan Dubois default, the MVP profile set.
         // The ids say nothing about which profile they are (they are GUIDs), so the order
         // is asserted against the id each of those profiles is bound to.
         Assert.Equal(
@@ -375,7 +375,7 @@ public class AnaglyfinMediaSourceProviderTests
             new[] { "3D Anaglyph Red/Cyan (Dubois)", "3D Full Side-by-Side", "3D Half Side-by-Side", "2D Base" },
             sources.Select(source => source.Name));
 
-        // The fallback profile is the safe last resort, so it sorts last.
+        // The shipped set names 2D Base last, so it sorts last (no separate fallback setting).
         Assert.Equal(IdOf(ProfileIds.TwoDBase), sources[^1].Id);
 
         // The detector saw the item's own signals (path, name), not a fabricated copy.
@@ -1868,10 +1868,6 @@ public class AnaglyfinMediaSourceProviderTests
 
         public StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
             => _inner.GetDefaultProfile(configuration, deviceId, clientName);
-
-        public string ResolveFallbackProfileId(PluginConfiguration configuration) => _inner.ResolveFallbackProfileId(configuration);
-
-        public StereoProfile GetFallbackProfile(PluginConfiguration configuration) => _inner.GetFallbackProfile(configuration);
 
         public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
             => Array.Empty<StereoProfile>();

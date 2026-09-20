@@ -17,8 +17,8 @@ namespace Anaglyfin.Profiles;
 /// </para>
 /// <para>
 /// Resolution methods never throw on bad configuration. A settings file that names a
-/// removed, disabled or mistyped profile degrades to the fallback profile rather than
-/// failing a playback request, because the caller is the playback path.
+/// removed, disabled or mistyped profile degrades to another enabled profile rather
+/// than failing a playback request, because the caller is the playback path.
 /// </para>
 /// </remarks>
 public interface IProfileCatalog
@@ -83,8 +83,8 @@ public interface IProfileCatalog
     /// <param name="clientName">The client name of the request, if known.</param>
     /// <returns>
     /// A profile id that is always known and always enabled: the device or client
-    /// override when one matches and is enabled, then the global default, then the
-    /// fallback profile, then the first enabled profile.
+    /// override when one matches and is enabled, then the global default, then the first
+    /// enabled profile in display order.
     /// </returns>
     string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null, string? clientName = null);
 
@@ -96,24 +96,6 @@ public interface IProfileCatalog
     /// <param name="clientName">The client name of the request, if known.</param>
     /// <returns>The default profile, with configured colours applied when custom.</returns>
     StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null, string? clientName = null);
-
-    /// <summary>
-    /// Resolves the safe profile to fall back to when the default cannot be served.
-    /// </summary>
-    /// <param name="configuration">The persisted settings.</param>
-    /// <returns>
-    /// The configured fallback profile when it is known, otherwise the plain 2D base
-    /// profile. The fallback is the safety net, so it is resolved from the allowlist
-    /// rather than from the enabled set.
-    /// </returns>
-    string ResolveFallbackProfileId(PluginConfiguration configuration);
-
-    /// <summary>
-    /// Resolves the safe profile to fall back to when the default cannot be served.
-    /// </summary>
-    /// <param name="configuration">The persisted settings.</param>
-    /// <returns>The fallback profile, with configured colours applied when custom.</returns>
-    StereoProfile GetFallbackProfile(PluginConfiguration configuration);
 
     /// <summary>
     /// Builds the version list for a request: the enabled profiles with the resolved

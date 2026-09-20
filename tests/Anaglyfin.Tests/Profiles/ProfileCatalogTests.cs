@@ -172,14 +172,12 @@ public class ProfileCatalogTests
     }
 
     [Fact]
-    public void FreshSettingsDefaultToRedCyanAnaglyphWithTwoDFallback()
+    public void FreshSettingsDefaultToRedCyanAnaglyph()
     {
         var configuration = new PluginConfiguration();
 
         Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, _catalog.ResolveDefaultProfileId(configuration));
-        Assert.Equal(ProfileIds.TwoDBase, _catalog.ResolveFallbackProfileId(configuration));
         Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, _catalog.GetDefaultProfile(configuration).Id);
-        Assert.Equal(ProfileIds.TwoDBase, _catalog.GetFallbackProfile(configuration).Id);
     }
 
     [Fact]
@@ -303,35 +301,31 @@ public class ProfileCatalogTests
 
         // An id this build does not know at all.
         configuration.DefaultProfileId = "profile_from_the_future";
-        configuration.FallbackProfileId = "also_from_the_future";
 
         Assert.Equal(ProfileIds.SideBySideHalf, _catalog.ResolveDefaultProfileId(configuration));
     }
 
     [Fact]
-    public void FallbackProfileComesFromTheAllowlistNotTheEnabledSet()
+    public void WhenTheDefaultIsUnusableTheFirstEnabledProfileInDisplayOrderWins()
     {
+        // There is no separate fallback setting any more: when the default cannot be served - it is
+        // unknown, or the administrator disabled it - the catalog offers the first enabled profile
+        // in display order. That order is fixed by the catalog, so the degrade is predictable
+        // without a second knob to agree with it.
         var configuration = new PluginConfiguration
         {
-            FallbackProfileId = ProfileIds.TwoDBase
+            DefaultProfileId = "also_from_the_future"
         };
-        configuration.EnabledProfileIds.Add(ProfileIds.SideBySideFull);
+        configuration.EnabledProfileIds.AddRange(new[]
+        {
+            ProfileIds.TwoDBase,
+            ProfileIds.SideBySideHalf,
+            ProfileIds.AnaglyphRedCyanDubois,
+            ProfileIds.SideBySideFull
+        });
 
-        Assert.Equal(ProfileIds.TwoDBase, _catalog.ResolveFallbackProfileId(configuration));
-        Assert.DoesNotContain(ProfileIds.TwoDBase, _catalog.GetEnabledProfileIds(configuration));
-        Assert.Equal(ProfileKind.TwoDimensional, _catalog.GetFallbackProfile(configuration).Kind);
-    }
-
-    [Fact]
-    public void AnUnknownFallbackBecomesTheTwoDBaseSafetyNet()
-    {
-        var configuration = new PluginConfiguration { FallbackProfileId = string.Empty };
-
-        Assert.Equal(ProfileIds.TwoDBase, _catalog.ResolveFallbackProfileId(configuration));
-
-        configuration.FallbackProfileId = "stereo3d=sbsl:arcd";
-
-        Assert.Equal(ProfileIds.TwoDBase, _catalog.ResolveFallbackProfileId(configuration));
+        // The shipped display order puts full side-by-side first of these four.
+        Assert.Equal(ProfileIds.SideBySideFull, _catalog.ResolveDefaultProfileId(configuration));
     }
 
     [Fact]
@@ -364,8 +358,7 @@ public class ProfileCatalogTests
     {
         var configuration = new PluginConfiguration
         {
-            DefaultProfileId = "stereo3d=sbsl:arcd",
-            FallbackProfileId = "-view_ids -1"
+            DefaultProfileId = "stereo3d=sbsl:arcd"
         };
         configuration.EnabledProfileIds.Add("an arbitrary string");
 

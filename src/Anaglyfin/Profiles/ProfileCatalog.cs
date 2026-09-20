@@ -12,8 +12,8 @@ namespace Anaglyfin.Profiles;
 /// <remarks>
 /// <para>
 /// The catalog is fixed at build time. Profiles are not data an administrator can
-/// invent: the admin can enable, disable, default and fall back to them, and can pick
-/// two validated colours for the custom grayscale profile, but nothing in settings
+/// invent: the admin can enable, disable and default them, and can pick two
+/// validated colours for the custom grayscale profile, but nothing in settings
 /// turns free text into a conversion. That is what makes it safe for a media source
 /// marker to carry a profile id all the way to the FFmpeg wrapper.
 /// </para>
@@ -136,11 +136,13 @@ public sealed class ProfileCatalog : IProfileCatalog
 
         var enabled = GetEnabledProfileIds(configuration);
 
-        // Most specific first: the device/client override, then the global default,
-        // then the fallback. A candidate only wins when it is a known profile that the
-        // administrator has actually enabled.
+        // Most specific first: the device/client override, then the global default. A
+        // candidate only wins when it is a known profile that the administrator has
+        // actually enabled; when neither is, the first enabled profile in display order is
+        // what the page offered as the version to fall back to, and GetEnabledProfileIds
+        // guarantees there is one.
         var deviceOverride = FindDeviceOverrideProfileId(configuration, deviceId, clientName);
-        foreach (var candidate in new[] { deviceOverride, configuration.DefaultProfileId, configuration.FallbackProfileId })
+        foreach (var candidate in new[] { deviceOverride, configuration.DefaultProfileId })
         {
             var id = ProfileIds.Normalize(candidate);
             if (id.Length > 0 && enabled.Contains(id, StringComparer.OrdinalIgnoreCase))
@@ -158,26 +160,6 @@ public sealed class ProfileCatalog : IProfileCatalog
         ArgumentNullException.ThrowIfNull(configuration);
 
         return Configured(GetProfile(ResolveDefaultProfileId(configuration, deviceId, clientName)), configuration);
-    }
-
-    /// <inheritdoc />
-    public string ResolveFallbackProfileId(PluginConfiguration configuration)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-
-        var id = ProfileIds.Normalize(configuration.FallbackProfileId);
-
-        // The fallback is the safety net rather than an offer, so it is checked against
-        // the allowlist and not against the enabled set.
-        return TryGetProfile(id, out _) ? id : ProfileIds.TwoDBase;
-    }
-
-    /// <inheritdoc />
-    public StereoProfile GetFallbackProfile(PluginConfiguration configuration)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-
-        return Configured(GetProfile(ResolveFallbackProfileId(configuration)), configuration);
     }
 
     /// <inheritdoc />
@@ -364,8 +346,8 @@ public sealed class ProfileCatalog : IProfileCatalog
             DisplayOrder = 50
         });
 
-        // 2D base is last in the list and first in the fallback chain: it is the
-        // version that always plays.
+        // 2D base is last in the list: it is the version that always plays, and the one
+        // an administrator who reaches for the plain view expects at the end.
         profiles.Add(new StereoProfile
         {
             Id = ProfileIds.TwoDBase,

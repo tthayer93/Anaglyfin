@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Anaglyfin.Configuration;
 using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.VersionItems;
@@ -50,11 +51,17 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// never starts costs a user nothing but a version list filled in at playback time instead.
     /// </param>
     /// <remarks>
-    /// The constructor deliberately does not read <see cref="BasePlugin{PluginConfiguration}.Configuration"/>:
-    /// the settings are loaded lazily, and touching them here would make plugin construction write a
-    /// default settings file. The wrapper's settings are handed over after construction by
-    /// <see cref="WrapperSettingsPublicationService"/>, and again whenever a save reaches
-    /// <see cref="SaveConfiguration"/>.
+    /// The constructor deliberately does not read <see cref="BasePlugin{PluginConfiguration}.Configuration"/>
+    /// for a settings file that does not exist yet: the settings are loaded lazily, and touching them
+    /// when there is nothing to read would make plugin construction write a default settings file. The
+    /// wrapper's settings are handed over after construction by <see cref="WrapperSettingsPublicationService"/>,
+    /// and again whenever a save reaches <see cref="SaveConfiguration"/>.
+    /// <para>
+    /// The one thing the constructor does reach for is a settings file that is already on disk and
+    /// was written before the subtitle-depth switch was retired - see <see cref="MigrateSubtitleDepth"/>.
+    /// Reading such a file is not the write-the-defaults case the paragraph above guards against: the
+    /// file is there, and its contents are exactly what must not be lost by being read as a default.
+    /// </para>
     /// </remarks>
     public Plugin(
         IApplicationPaths applicationPaths,
@@ -64,6 +71,90 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         _applicationPaths = applicationPaths;
         _versionReconcileTrigger = versionReconcileTrigger;
+
+        MigrateSubtitleDepth();
+    }
+
+    /// <summary>
+    /// Retires the subtitle-depth switch on a settings file that still carries it, once, on load.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The old switch and its mode cannot both survive into the new one-dropdown model: a stored file
+    /// that says the feature was switched <i>off</i> would otherwise read back as the new shipped
+    /// default, <c>Automatic</c>, and an upgrade would start moving captions nobody asked it to. Only
+    /// the stored <i>file</i> still records that switch - the settings model has no field left for it -
+    /// so the migration reads the file itself and lets <see cref="PluginConfigurationMigration"/>
+    /// decide the mode the model should hold.
+    /// </para>
+    /// <para>
+    /// A file that does not exist is a fresh installation and is left entirely alone: it has no switch
+    /// to retire and its shipped default (Automatic) is the right answer for it, so nothing is read and
+    /// nothing is written. A file this build already wrote carries a mode and no switch, the migration
+    /// decides nothing about it, and nothing is written - which is what keeps this a one-time step
+    /// rather than a rewrite on every load.
+    /// </para>
+    /// <para>
+    /// Only when the file states a legacy switch, or predates the feature, is the decision applied to
+    /// the live settings and written back through the base settings path: writing is what drops the
+    /// now-retired element so the next load reads a clean file. A subtitle-depth change moves no
+    /// profile, so it asks for no version pass and needs no wrapper hand-off of its own - startup
+    /// publishes the wrapper document from the live settings a moment later, reading the migrated
+    /// value this wrote.
+    /// </para>
+    /// <para>
+    /// Every disk step is taken as best effort, in the same failure-is-the-answer shape the wrapper
+    /// hand-off uses, so that an unwritable settings file - a read-only mount, a locked file, a full
+    /// volume - costs an administrator a migration that does not persist and never a plugin that
+    /// cannot load: the constructor has no business failing startup over a subtitle-depth change.
+    /// The live settings still carry the migrated mode whenever the read and the decision succeeded,
+    /// so the wrapper sees it this run, and a decision that did not reach disk is simply re-attempted
+    /// on the next load. Where the read itself failed, the settings load is the authority on what an
+    /// unreadable file means, and this method does not second-guess it.
+    /// </para>
+    /// </remarks>
+    private void MigrateSubtitleDepth()
+    {
+        var path = ConfigurationFilePath;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            // A fresh installation has no stored switch to retire and nothing to read, so there is
+            // nothing to write. Reading the live settings to check that would be exactly the
+            // default-file write the constructor comment guards against, so the shipped default
+            // (Automatic) is left to speak for itself.
+            return;
+        }
+
+        // Read, decide, apply and persist are one best-effort step: any of them can meet an unwritable
+        // or unreadable file (the read and the write both touch the disk), and none of them is worth
+        // throwing out of a plugin constructor. Swallowing a deployment-shaped IO failure degrades to
+        // "no migration", which is the honest answer and the one that keeps the plugin loading.
+        try
+        {
+            var storedXml = File.ReadAllText(path);
+
+            var migratedMode = PluginConfigurationMigration.ResolveStoredSubtitleDepthMode(storedXml);
+            if (migratedMode is null)
+            {
+                // A file this build already wrote states a mode and carries no legacy switch: the
+                // migration decides nothing about it and writes nothing, which is what keeps this a
+                // one-time step rather than a rewrite on every boot.
+                return;
+            }
+
+            var configuration = Configuration;
+            configuration.SubtitleDepthMode = migratedMode.Value;
+
+            // The base save path, not the overriding one: the migration changes no enabled profile, so
+            // there is no version pass to ask for, and the wrapper document is published from the live
+            // settings at startup. Writing the file is the whole of what this step owes the upgrade.
+            base.SaveConfiguration(configuration);
+        }
+        catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
+        {
+            // Nothing to do: a migration this could not carry out leaves the live settings holding
+            // whatever the read produced and is retried next load, exactly as the remarks describe.
+        }
     }
 
     /// <inheritdoc />

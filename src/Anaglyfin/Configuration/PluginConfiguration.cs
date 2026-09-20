@@ -36,18 +36,18 @@ public class PluginConfiguration : BasePluginConfiguration
     /// override.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Defaults to the red/cyan Dubois anaglyph, the general purpose 3D glasses choice.
     /// The value is a profile id and is resolved through the profile catalog.
+    /// </para>
+    /// <para>
+    /// There is no separate fallback setting: when the default cannot be served - it is
+    /// unknown, or the administrator disabled it - the profile catalog offers the first
+    /// enabled profile in display order. Fewer knobs means fewer ways for a settings file
+    /// to describe a version nobody enabled.
+    /// </para>
     /// </remarks>
     public string DefaultProfileId { get; set; } = ProfileIds.AnaglyphRedCyanDubois;
-
-    /// <summary>
-    /// Gets or sets the profile to fall back to when the default cannot be served.
-    /// </summary>
-    /// <remarks>
-    /// Defaults to the plain 2D base view, the version that plays everywhere.
-    /// </remarks>
-    public string FallbackProfileId { get; set; } = ProfileIds.TwoDBase;
 
     /// <summary>
     /// Gets or sets the per device and per client default profile overrides.
@@ -96,11 +96,6 @@ public class PluginConfiguration : BasePluginConfiguration
     public int MaxConcurrentTranscodes { get; set; } = DefaultMaxConcurrentTranscodes;
 
     /// <summary>
-    /// Gets or sets the encoder selection policy for Anaglyfin profile jobs.
-    /// </summary>
-    public VideoEncoderPolicy EncoderPolicy { get; set; } = VideoEncoderPolicy.Automatic;
-
-    /// <summary>
     /// Gets or sets the colour the custom grayscale anaglyph tints the left eye with,
     /// as <c>#RRGGBB</c> text.
     /// </summary>
@@ -123,33 +118,30 @@ public class PluginConfiguration : BasePluginConfiguration
     public string CustomRightEyeColor { get; set; } = ProfileCatalog.DefaultCustomRightEyeColor.ToHexString();
 
     /// <summary>
-    /// Gets or sets whether Anaglyfin asks FFmpeg-mvc to place subtitles in depth.
+    /// Gets or sets the subtitle depth asked for: <see cref="SubtitleDepthMode.Automatic"/>,
+    /// <see cref="SubtitleDepthMode.ConstantShift"/>, <see cref="SubtitleDepthMode.Plane"/> or
+    /// <see cref="SubtitleDepthMode.Flat"/>.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Off in the shipped settings, and off is the whole of the safe default: an
-    /// installation that has never seen this setting, a settings file written before it
-    /// existed, and an administrator who ticked the box on a server whose FFmpeg has no
-    /// <c>mvcsubdepth</c> filter all describe the same flat subtitles.
+    /// One dropdown replaced the old enable switch and mode picker: Flat is now the position
+    /// that switches the feature off, so there is a single knob with a single off position.
+    /// <see cref="SubtitleDepthMode.Flat"/> asks for nothing and no <c>mvcsubdepth</c> stage is
+    /// placed in the graph.
     /// </para>
     /// <para>
-    /// Nothing here asserts that the configured FFmpeg offers the filter, the same way
-    /// <see cref="EncoderPolicy"/> does not assert that one offers a hardware encoder: the
-    /// setting records the request, and the deployment is what names the binary that has to
-    /// honour it.
+    /// The shipped default is <see cref="SubtitleDepthMode.Automatic"/>. A settings file that
+    /// predates the feature - or that had the old switch unticked - is migrated to
+    /// <see cref="SubtitleDepthMode.Flat"/> on load by <see cref="Plugin"/> rather than left on
+    /// this default, so an upgrade never starts moving captions nobody asked it to.
+    /// </para>
+    /// <para>
+    /// Nothing here asserts that the configured FFmpeg offers the filter: the setting records the
+    /// request, and the deployment is what names the binary that has to honour it. A server whose
+    /// FFmpeg has no depth support plays the captions flat whatever this says.
     /// </para>
     /// </remarks>
-    public bool SubtitleDepthEnabled { get; set; }
-
-    /// <summary>
-    /// Gets or sets which reading of the subtitle depth is asked for.
-    /// </summary>
-    /// <remarks>
-    /// Meaningful only while <see cref="SubtitleDepthEnabled"/> is on, and read through
-    /// <see cref="PluginConfigurationExtensions.GetEffectiveSubtitleDepth"/>, which treats a
-    /// mode no name declares as "off" rather than as a guess.
-    /// </remarks>
-    public SubtitleDepthMode SubtitleDepthMode { get; set; }
+    public SubtitleDepthMode SubtitleDepthMode { get; set; } = SubtitleDepthMode.Automatic;
 
     /// <summary>
     /// Gets or sets the constant eye shift asked for in

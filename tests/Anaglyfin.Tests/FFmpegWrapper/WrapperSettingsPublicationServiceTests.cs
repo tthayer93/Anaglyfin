@@ -37,7 +37,6 @@ public sealed class WrapperSettingsPublicationServiceTests : IDisposable
             {
                 Configuration = new PluginConfiguration
                 {
-                    SubtitleDepthEnabled = true,
                     SubtitleDepthMode = SubtitleDepthMode.ConstantShift,
                     SubtitleDepthShift = -18,
                     SubtitleDepthPlane = 7
@@ -57,7 +56,7 @@ public sealed class WrapperSettingsPublicationServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ARestartOfAnUnconfiguredServerStillStatesTheDisabledRequest()
+    public async Task ARestartOfAnUnconfiguredServerStatesTheShippedRequest()
     {
         var paths = new FakeApplicationPaths(_root);
         var service = new WrapperSettingsPublicationService(new StubConfigurationSource(), paths);
@@ -66,9 +65,15 @@ public sealed class WrapperSettingsPublicationServiceTests : IDisposable
 
         var target = Path.Combine(paths.PluginConfigurationsPath, WrapperSettingsFile.DefaultFileName);
 
-        // "Off" is a decision the wrapper can read, not the absence of a file it has to interpret.
+        // A restart in which nobody opened the page still writes a request the wrapper can read,
+        // rather than no file at all. What it writes is what a fresh installation now ships as: the
+        // Automatic depth request. (A server upgrading from a build that had depth off is migrated to
+        // Flat before this ever runs - see PluginConfigurationMigrationTests - so it is not this
+        // never-configured case, and it does not arrive here asking for Automatic.)
         Assert.True(File.Exists(target), $"The startup publication wrote no settings document at {target}.");
-        Assert.Equal(SubtitleDepthSettings.Disabled, WrapperSettingsFile.Read(target));
+        Assert.Equal(
+            new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0),
+            WrapperSettingsFile.Read(target));
     }
 
     [Fact]

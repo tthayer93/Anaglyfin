@@ -22,13 +22,12 @@ In scope:
 - rewritten FFmpeg command lines for the main Anaglyfin profiles
 - wrapper pass-through behavior for ordinary Jellyfin playback
 - concurrency limit behavior and wrapper refusal exit codes
-- known MVP limitations: subtitles, device defaults, encoder policy, and signal forwarding
+- known MVP limitations: subtitles, device defaults, and signal forwarding
 
 Out of scope:
 
 - automated integration tests
 - packaging as an official Jellyfin plugin repository package
-- hardware encoder policy enforcement, which is not wired through the current wrapper path
 - per-device default application through playback-info device context, which is not wired
   through the current media-source provider
 - signal forwarding, which is being handled separately in `task/T8-wrapper-signal-forwarding`
@@ -139,17 +138,14 @@ Check the rendered page against the shipped defaults:
 | Field | Shipped default | Validation |
 | --- | --- | --- |
 | Default profile | `3D Anaglyph Red/Cyan (Dubois)` (`anaglyph_arcd`) | Shown and selectable |
-| Fallback profile | `2D Base` (`two_d_base`) | Shown and selectable |
 | Enabled profiles | shipped MVP set | Red/Cyan Dubois, full SBS, half SBS, and 2D Base are enabled by default |
 | Device and client defaults | none | UI allows adding/removing rows |
 | Custom left eye colour | `#FF0000` | Color input defaults correctly |
 | Custom right eye colour | `#00FFFF` | Color input defaults correctly |
 | Maximum concurrent Anaglyfin transcodes | `1` | Number input defaults correctly |
-| Enable FFmpeg-mvc subtitle depth | Off | Checkbox defaults off |
-| Subtitle depth mode | `Automatic` | `Automatic`, `Constant shift`, and `Plane` are selectable |
+| Subtitle depth | `Automatic` | One dropdown: `Automatic`, `Constant shift`, `Plane`, and `Flat` are selectable; there is no separate enable switch |
 | Constant shift | `0` pixels | Only shown for `Constant shift`; range `-64`..`64` |
 | Depth plane | `0` | Only shown for `Plane`; range `0`..`31` |
-| Video encoder policy | `Automatic` | Select exists |
 
 - [ ] Save succeeds and the settings round-trip after reopening the page.
 - [ ] `GET /web/ConfigurationPages` reports the page with `EnableInMainMenu: true`, which is
@@ -173,8 +169,10 @@ Check the rendered page against the shipped defaults:
   for an eligible MVC item.
 - [ ] The device/client defaults UI saves rows, but see V10 for the current limitation:
   the provider does not yet apply those rows.
-- [ ] The encoder policy saves, but see V10 for the current limitation: it is stored and
-  not yet enforced in the wrapper or generated command.
+- [ ] A server upgrading from a build whose subtitle depth was switched off (or which
+  predates the feature) loads on `Flat`, not on the shipped `Automatic`: an upgrade does not
+  start moving captions nobody asked it to. An installation on this build already reopens
+  with whatever mode it saved.
 
 ## V3. FFmpeg-mvc and wrapper deployment
 
@@ -217,7 +215,8 @@ signature of getting this wrong is one line at startup and a library that never 
 - [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
   current subtitle-depth target is the official `n8.1.2-mvc7-jf4` build; an older FFmpeg-mvc may
   run ordinary commands but cannot honour a depth request if it does not carry `mvcsubdepth`.
-- [ ] `FFmpeg -filters` names `mvcsubdepth` when subtitle depth is enabled.
+- [ ] `FFmpeg -filters` names `mvcsubdepth` (the filter a depth request needs; it is not
+  loaded when subtitle depth is `Flat`).
 - [ ] FFprobe from the same FFmpeg-mvc build is installed, executable, **in the same
   directory as the wrapper**, because that is where the server will look for it.
 - [ ] The wrapper executable is deployed to a stable path and executable by the Jellyfin
@@ -951,7 +950,7 @@ source video through its colour and scale chain into `[main]`, and overlays the 
 The profile's conversion belongs at the head of that graph - in front of the server's own scale,
 which is sized for the converted frame - and the server's reference to the source video is
 retargeted onto what the conversion produced. For a red-cyan version of a source whose video is
-stream 0, with subtitle depth **off**:
+stream 0, with subtitle depth **off** - the `Flat` dropdown position, which asks for nothing:
 
 ```text
 -filter_complex [0:0]stereo3d=sbsl:arcd,format=yuv420p[anaglyfin_profile];[0:10]scale=1920:1080:flags=area[sub];[anaglyfin_profile]setparams=...,format=yuv420p[main];[main][sub]overlay=eof_action=pass:repeatlast=0[out]
@@ -1168,9 +1167,11 @@ Current state:
   `-sn` and removes the server's subtitle maps, and without one it leaves the server's subtitle
   selection - maps, exclusions, and the subtitle streams its own filter graph reads - alone.
 - Subtitle selection in a client does not yet produce a burned-in subtitle filter.
-- FFmpeg-mvc subtitle depth is available as an administrator request in three modes:
-  `automatic`, `constantShift`, and `plane`. The admin page has no `flat` mode; depth is enabled or
-  disabled, and disabled means the wrapper adds no `mvcsubdepth` stage at all.
+- FFmpeg-mvc subtitle depth is one dropdown with four positions: `Automatic`, `ConstantShift`,
+  `Plane`, and `Flat`. `Flat` is the position that asks for nothing - the wrapper adds no
+  `mvcsubdepth` stage at all. A fresh installation ships on `Automatic`; a server upgrading from a
+  build whose depth was switched off, or that predates the feature, is migrated to `Flat` on load, so
+  an upgrade never turns depth on by itself.
 - The depth request travels through the settings document named by
   `ANAGLYFIN_WRAPPER_SETTINGS`. The wrapper's view of that request is read once per invocation and
   cannot be changed during a running transcode.
@@ -1210,7 +1211,7 @@ Expected command behavior today:
 ```text
 no -sn for a converting profile, because nothing renders text on its picture
 no "subtitles=filename=" inserted by Anaglyfin for the MVP provider path
-mvcsubdepth only when the admin request is enabled, the graph shape is supported, and the target
+mvcsubdepth only when the admin request is not Flat, the graph shape is supported, and the target
 FFmpeg-mvc binary carries the mvcsubdepth filter
 ```
 
@@ -1229,22 +1230,6 @@ Validation expectation:
       V7.10), and the depth stage appears in the filter graph only for the supported shapes above.
 - [ ] Record any depth result observed on real hardware as a manual runtime result. Until that result
       is recorded, do **not** mark QSV or real MVC subtitle depth as validated.
-
-### Encoder policy
-
-Current state:
-
-- `EncoderPolicy` is stored and exposed by the admin page.
-- The current generated profile commands do not encode policy into encoder arguments.
-- Hardware decode and encode choices stay with Jellyfin on every command, marker or not; the
-  FFmpeg-mvc build is what falls back to software decoding, per decoder context, when the stream it
-  opened turns out to be multiview.
-
-Validation expectation:
-
-- [ ] The policy persists.
-- [ ] It does not currently change the Anaglyfin generated command.
-- [ ] Record this as a follow-up, not as a hidden behavior in this milestone.
 
 ### Packaging
 

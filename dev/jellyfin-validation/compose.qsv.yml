@@ -7,9 +7,8 @@
 #   docker compose -f compose.jellyfin.yml -f compose.qsv.yml up -d
 #
 # Hardware acceleration is still a dashboard setting: Dashboard -> Playback ->
-# Transcoding -> Hardware encoding has to be enabled (and the Anaglyfin admin page's
-# encoder policy is stored but not yet enforced, docs/validation.md V10). What this
-# overlay buys you is the device node, nothing else.
+# Transcoding -> Hardware encoding has to be enabled, and Anaglyfin has no encoder
+# switch of its own. What this overlay buys you is the device node, nothing else.
 #
 # Notes that matter for a 3D job:
 #   - MVC decoding is software-only in FFmpeg-mvc whatever the GPU can do; the GPU
