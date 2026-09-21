@@ -65,7 +65,7 @@ so that a `FAIL` on the real server is a finding about Anaglyfin and not about t
 
 ## V0. Code artifacts are current
 
-- [ ] CI passes from the intended branch:
+- [x] CI passes from the intended branch:
 
   ```sh
   docker compose --env-file .env -f .ci/test.yml run --rm test
@@ -77,9 +77,9 @@ so that a `FAIL` on the real server is a finding about Anaglyfin and not about t
   anaglyfin CI gate: restore + build(-warnaserror) + test + format + packaging all passed
   ```
 
-- [ ] Plugin project builds to a loadable `Anaglyfin.dll`.
-- [ ] Wrapper project builds to an executable binary for the server's runtime.
-- [ ] The plugin manifest is embedded and declares:
+- [x] Plugin project builds to a loadable `Anaglyfin.dll`.
+- [x] Wrapper project builds to an executable binary for the server's runtime.
+- [x] The plugin manifest is embedded and declares:
 
   ```text
   name: Anaglyfin
@@ -104,8 +104,8 @@ directory, or by using your local plugin repository workflow. `docs/install.md` 
 for a bare-metal server and for a container that mounts `./jellyfin/config` at `/config`.
 Restart or reload Jellyfin after installation.
 
-- [ ] Jellyfin lists the plugin with name `Anaglyfin`.
-- [ ] The plugin id shown by the server matches
+- [x] Jellyfin lists the plugin with name `Anaglyfin`.
+- [x] The plugin id shown by the server matches
   `c7f4a1d9-3b58-4e2a-9d6c-84f0b1e5a723`.
 - [ ] The plugin description reads:
 
@@ -116,9 +116,9 @@ Restart or reload Jellyfin after installation.
 - [ ] The dashboard's own settings menu lists `Anaglyfin` as an entry beside the server's
   settings. The page asks to be listed there, so a server whose menu omits it is a server
   where the settings cannot be reached at all.
-- [ ] `Dashboard -> Plugins -> Anaglyfin` reaches the same page.
-- [ ] Opening the settings page does not produce a blank page or an unstyled fragment.
-- [ ] The server does not log assembly-load errors, missing dependency errors, or
+- [x] `Dashboard -> Plugins -> Anaglyfin` reaches the same page.
+- [x] Opening the settings page does not produce a blank page or an unstyled fragment.
+- [x] The server does not log assembly-load errors, missing dependency errors, or
   target-framework mismatch errors for `Anaglyfin.dll`.
 
 If Jellyfin does not discover the plugin, stop and record this as the first blocker. Every
@@ -150,7 +150,7 @@ Check the rendered page against the shipped defaults:
 | Constant shift | `0` pixels | Only shown for `Constant shift`; range `-64`..`64` |
 | Depth plane | `0` | Only shown for `Plane`; range `0`..`31` |
 
-- [ ] Save succeeds and the settings round-trip after reopening the page.
+- [x] Save succeeds and the settings round-trip after reopening the page.
 - [ ] `GET /web/ConfigurationPages` reports the page with `EnableInMainMenu: true`, which is
   the flag the v12 web dashboard needs before it will list the page anywhere.
 - [ ] Opening the page's own URL directly - outside the dashboard, so with no signed-in
@@ -163,7 +163,7 @@ Check the rendered page against the shipped defaults:
   `variable`; and no `ANAGLYFIN_REAL_FFMPEG`, `FFMPEG_MVC_PATH`, `ANAGLYFIN_LOCK_DIR`,
   `ANAGLYFIN_WRAPPER_SETTINGS`, `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES`, `JELLYFIN_FFMPEG`,
   or `FFMPEG_PATH`.
-- [ ] When `ANAGLYFIN_WRAPPER_SETTINGS` is configured, changing **Maximum concurrent Anaglyfin
+- [x] When `ANAGLYFIN_WRAPPER_SETTINGS` is configured, changing **Maximum concurrent Anaglyfin
   transcodes** and saving writes that number to the shared settings document; a wrapper started after
   the save sees it without another deployment step.
 - [ ] Disabling all enabled profiles is not accepted as an empty offer: saving that state
@@ -222,19 +222,19 @@ signature of getting this wrong is one line at startup and a library that never 
       trying to start process '/config/anaglyfin/ffmpeg/ffprobe' ... No such file or directory
 ```
 
-- [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
+- [x] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
   current subtitle-depth target is the official `n8.1.2-mvc7-jf4` build; an older FFmpeg-mvc may
   run ordinary commands but cannot honour a depth request if it does not carry `mvcsubdepth`.
-- [ ] `FFmpeg -filters` names `mvcsubdepth` (the filter a depth request needs; it is not
+- [x] `FFmpeg -filters` names `mvcsubdepth` (the filter a depth request needs; it is not
   loaded when subtitle depth is `Flat`).
-- [ ] FFprobe from the same FFmpeg-mvc build is installed, executable, **in the same
+- [x] FFprobe from the same FFmpeg-mvc build is installed, executable, **in the same
   directory as the wrapper**, because that is where the server will look for it.
-- [ ] The wrapper executable is deployed to a stable path and executable by the Jellyfin
+- [x] The wrapper executable is deployed to a stable path and executable by the Jellyfin
   service user.
-- [ ] The server's FFmpeg path points at the Anaglyfin FFmpeg entry point, not directly at
+- [x] The server's FFmpeg path points at the Anaglyfin FFmpeg entry point, not directly at
   FFmpeg-mvc, if wrapper-based rewriting is expected.
-- [ ] The server can still probe files with the real `ffprobe`.
-- [ ] The wrapper's real FFmpeg resolution is one of:
+- [x] The server can still probe files with the real `ffprobe`.
+- [x] The wrapper's real FFmpeg resolution is one of:
 
   ```text
   ANAGLYFIN_REAL_FFMPEG=/path/to/ffmpeg-mvc
@@ -242,17 +242,17 @@ signature of getting this wrong is one line at startup and a library that never 
   ffmpeg found through PATH
   ```
 
-- [ ] Wrapper environment variables are set in the environment that Jellyfin passes to
+- [x] Wrapper environment variables are set in the environment that Jellyfin passes to
   started helper processes. Setting them only in the administrator's login shell is not
   sufficient.
-- [ ] `ANAGLYFIN_LOCK_DIR` is writable by the Jellyfin service user.
-- [ ] `ANAGLYFIN_WRAPPER_SETTINGS` names the same absolute file to the plugin and to every wrapper
+- [x] `ANAGLYFIN_LOCK_DIR` is writable by the Jellyfin service user.
+- [x] `ANAGLYFIN_WRAPPER_SETTINGS` names the same absolute file to the plugin and to every wrapper
   process that should see the admin page's subtitle-depth request and concurrency limit. Its
   directory must be writable by the Jellyfin service user, because the plugin writes it and the
   wrapper only reads it.
-- [ ] For container deployments, every wrapper process that should share one concurrency
+- [x] For container deployments, every wrapper process that should share one concurrency
   limit sees the same lock directory.
-- [ ] For container deployments, every wrapper process that should see one admin-settings request
+- [x] For container deployments, every wrapper process that should see one admin-settings request
   reads the same settings document.
 
 Example environment block, adjusted to your deployment:
@@ -318,14 +318,14 @@ The detector is intentionally conservative:
   The item's own tags and name describe the item's own file and are applied to that file alone,
   never to a sibling version.
 
-- [ ] A file with explicit `MVC` in the file name produces Anaglyfin versions after a scan
+- [x] A file with explicit `MVC` in the file name produces Anaglyfin versions after a scan
   or metadata refresh.
-- [ ] A file with only `3D` does not produce Anaglyfin versions.
-- [ ] A file named `HSBS`, `SBS`, `TAB`, or similar but without an MVC marker does not
+- [x] A file with only `3D` does not produce Anaglyfin versions.
+- [x] A file named `HSBS`, `SBS`, `TAB`, or similar but without an MVC marker does not
   produce Anaglyfin versions.
 - [ ] A non-video item does not produce Anaglyfin versions.
 - [ ] `.strm` items and disc-image-like items do not produce Anaglyfin versions.
-- [ ] A stacked movie whose primary file is plain and whose MVC version sits beside it produces
+- [x] A stacked movie whose primary file is plain and whose MVC version sits beside it produces
       Anaglyfin versions after a scan, even though the item itself reports no 3D at all. See V5.1.
 
 If detection is wrong, record the item path, `Video3DFormat`, tags, and whether Anaglyfin
@@ -413,9 +413,9 @@ For each alternate source, check:
 | `Video3DFormat` | `null` on every Anaglyfin source, whatever the item's own source declares |
 | `VideoType` | `VideoFile` on every Anaglyfin source, including the one the server builds from a materialised version item (see "What `VideoType: VideoFile` is for") |
 
-- [ ] The Anaglyfin source ids are lower-case `N`-format GUIDs, unique per profile and different from the item id.
+- [x] The Anaglyfin source ids are lower-case `N`-format GUIDs, unique per profile and different from the item id.
       DynamicHLS parses `MediaSourceId` as a `Guid`, so a descriptive id fails playback before FFmpeg starts.
-- [ ] The source id changes when the profile id changes.
+- [x] The source id changes when the profile id changes.
 - [ ] The video stream of an Anaglyfin source reports `Codec` = `mvc`, while the original library
       source on the same item still reports its real codec (`hevc`, `h264`, ...).
 - [ ] The video stream of an Anaglyfin source reports the frame **its profile encodes**, not the
@@ -449,7 +449,7 @@ For each alternate source, check:
 - [ ] The original library source still reports the size it was probed with (the version's size is
       on a copy of the stream, never on the item's own).
 - [ ] Resume position and seek behavior remain reasonable when switching between versions.
-- [ ] The original library source remains playable and unchanged.
+- [x] The original library source remains playable and unchanged.
 - [ ] Changing enabled profiles changes the offered versions without a server restart.
 
 ### 5.1 Stacked items and alternate versions
@@ -481,20 +481,20 @@ one:
 2D Base                        of 3D mvc
 ```
 
-- [ ] The stack root's playback info includes Anaglyfin versions even though the item's own
+- [x] The stack root's playback info includes Anaglyfin versions even though the item's own
       `Path`, `Name` and `Video3DFormat` carry no 3D signal.
-- [ ] Every Anaglyfin source built from a stacked version names **that version's file** in its
+- [x] Every Anaglyfin source built from a stacked version names **that version's file** in its
       marker (`source=`), and reports that file's duration, container, size and stream list - not
       the primary file's.
-- [ ] Each Anaglyfin source id is derived from the media source it converts: two files of one item
+- [x] Each Anaglyfin source id is derived from the media source it converts: two files of one item
       never share an id, and every id is still a lower-case `N` GUID that differs from the item id
       and from the id of any version it was derived from.
-- [ ] Ids are stable across repeated playback-info requests and across a server restart.
+- [x] Ids are stable across repeated playback-info requests and across a server restart.
 - [ ] With one eligible MVC file among the versions the labels are unchanged: `3D Full
       Side-by-Side`, `3D Half Side-by-Side`, `3D Anaglyph Red/Cyan (Dubois)`, `2D Base`.
 - [ ] With more than one eligible MVC file, every label names the file it converts, e.g.
       `3D mvc / 3D Full Side-by-Side`, and each profile appears once per eligible file.
-- [ ] Nothing is offered twice: one eligible file yields one source per profile, and the total
+- [x] Nothing is offered twice: one eligible file yields one source per profile, and the total
       number of Anaglyfin sources equals profiles x eligible files.
 - [ ] A stack with no MVC file among its versions gets no Anaglyfin sources at all.
 - [ ] The static sources themselves are untouched: the primary 1080p source and the MVC source
@@ -561,38 +561,38 @@ list and the PlaybackInfo response - so the checks below are read off those, and
 details page renders its list from. Nothing in the library is expected to move on any of these saves;
 the checks that would notice if it did are here for that reason, not because a change is expected.
 
-- [ ] **Checked, before anything else**: the item's version list is the one V5.1 recorded - the 1080p
+- [x] **Checked, before anything else**: the item's version list is the one V5.1 recorded - the 1080p
       source, the `3D mvc` source, and the converted versions of the MVC file. Record the raw MVC
       entry's `Id` and `Path` here; the same pair has to reappear at the end of this section.
-- [ ] **Saved unchecked**, the raw MVC entry is out of both lists on the next request. No server
+- [x] **Saved unchecked**, the raw MVC entry is out of both lists on the next request. No server
       restart, no library scan and no second save are part of this: the setting is read per request, so
       reloading the page is the whole of the wait. Record which of the two surfaces was read, and that
       both were.
-- [ ] **Nothing else moved in the same response**: the 1080p source is still listed, every converted
+- [x] **Nothing else moved in the same response**: the 1080p source is still listed, every converted
       version is still listed with its own id and in its usual order, and no Anaglyfin version
       disappeared because the file it converts stopped being offered. That last one is the check the
       whole design exists to satisfy - the plugin's detection reads the item's own sources underneath
       the filter, so taking the entry out of a list cannot take the file out of the offer.
-- [ ] **Saved back on**, the entry is in the list again on the next request with the `Id` and `Path`
+- [x] **Saved back on**, the entry is in the list again on the next request with the `Id` and `Path`
       recorded at the top of this section, and with no scan in between. Resume position and played
       state are the same on both sides of the toggle.
-- [ ] **The library agrees**: the MVC child item still exists - a local alternate version is listed
+- [x] **The library agrees**: the MVC child item still exists - a local alternate version is listed
       nowhere and is addressed through its parent, so `GET /Items/<mvc item id>` as an administrator is
       how to ask - and the movie's alternate-version link to it is what it was before the switch was
       touched. Running a library scan after the toggle changes neither.
-- [ ] **The item whose file this is still exposes its own source.** Ask for the source list of the MVC
+- [x] **The item whose file this is still exposes its own source.** Ask for the source list of the MVC
       item itself - the child the scanner filed beside the movie - and its own entry is in it, with the
       switch off. What the setting takes out of a list is a sibling version of the item being asked
       about, never that item's own entry, so an item is never left with nothing to play. Record how the
       list was asked for; if this item shape is not reachable from the client or endpoint used, say so
       rather than leaving the row implied.
-- [ ] **A PlaybackInfo naming the hidden source id is refused, and that is the boundary.** Post a
+- [x] **A PlaybackInfo naming the hidden source id is refused, and that is the boundary.** Post a
       playback request with the raw `MediaSourceId` while the entry is out of the lists and the response
       comes back with no sources and `ErrorCode: NoCompatibleStream` - the server's ordinary answer for a
       source it was not offered, since a version picked out of a list is picked out of a list. Record the
       error code, and read it next to the two rows above: the entry is out of the lists, and the item and
       its own source are where they were.
-- [ ] **A single-file MVC movie is untouched by the switch.** With the MVC file as the movie's only
+- [x] **A single-file MVC movie is untouched by the switch.** With the MVC file as the movie's only
       file, its own source is still offered with the setting off: the entry this feature leaves out of a
       list is a sibling version of the item being asked about, never that item's own entry.
 - [ ] **Nothing is hidden when there is nothing to offer instead of it.** That is the fail-open rule - a
@@ -605,7 +605,7 @@ the checks that would notice if it did are here for that reason, not because a c
 - [ ] **A restricted user gets the same answer.** The setting is not a permission: an entry hidden for
       one user is hidden for all of them, and an entry an administrator can see is not offered to
       somebody the library is closed to.
-- [ ] Record the **known boundary** rather than filing it as a failure: while the entry is hidden, a
+- [x] Record the **known boundary** rather than filing it as a failure: while the entry is hidden, a
       client reading the version lists cannot discover that source id - it has to have it already.
       Turning the switch back on restores discovery with the entry.
 
@@ -743,15 +743,15 @@ MVP markers do not include `subtitle`:
 That field is part of the marker contract, but the provider does not yet attach a subtitle
 ordinal.
 
-- [ ] The provider's `MediaSourceInfo.Path` contains a canonical marker.
-- [ ] The percent-encoded `source` query parameter contains the rooted library file path.
-- [ ] The `video` query parameter is the index of the video stream in that source's
+- [x] The provider's `MediaSourceInfo.Path` contains a canonical marker.
+- [x] The percent-encoded `source` query parameter contains the rooted library file path.
+- [x] The `video` query parameter is the index of the video stream in that source's
       `MediaStreams` list.
-- [ ] The wrapper process receives the marker as one unbroken argv token.
-- [ ] The real FFmpeg child process receives the decoded real source path.
-- [ ] The marker text does **not** appear in the real FFmpeg child command.
+- [x] The wrapper process receives the marker as one unbroken argv token.
+- [x] The real FFmpeg child process receives the decoded real source path.
+- [x] The marker text does **not** appear in the real FFmpeg child command.
 - [ ] No network request is made to `127.0.0.1/anaglyfin/profile/...`.
-- [ ] Wrapper refusal logs do not echo the marker URL or the source path.
+- [x] Wrapper refusal logs do not echo the marker URL or the source path.
 
 Useful capture command:
 
@@ -796,11 +796,11 @@ encoder, muxer, HLS, and output arguments should survive.
 Before any per-profile fragment, check that the command is an encode at all. A profile converts
 pictures; a command that copies the video stream has decided not to produce one.
 
-- [ ] The child command carries a video encoder: `-codec:v <name>` / `-c:v <name>` naming
+- [x] The child command carries a video encoder: `-codec:v <name>` / `-c:v <name>` naming
       something like `libx264`, `libx265`, `h264_qsv`, `hevc_nvenc`.
-- [ ] The child command does **not** carry a video copy: no `-codec:v copy`, `-c:v copy`,
+- [x] The child command does **not** carry a video copy: no `-codec:v copy`, `-c:v copy`,
       `-c:v:0 copy`, `-codec:v:0 copy` or `-vcodec copy`.
-- [ ] The server's encode stack came with it: a bitrate or quality argument, a preset, and the
+- [x] The server's encode stack came with it: a bitrate or quality argument, a preset, and the
       HLS keyframe arguments. Their absence next to a video copy means the server stream-copied
       the version, and the profile fragments below will be present but inert.
 - [ ] The transcoding URL the server built for the version names a video codec, and does not
@@ -1120,7 +1120,7 @@ non-subtitle chain directly:
       it, so the profile converts before the server scales.
 - [ ] With depth off, the subtitle chain, the overlay and the label the output maps are the server's,
       byte for byte: only the label naming the source video moved.
-- [ ] With depth on, the launched `-filter_complex` carries one `mvcsubdepth` stage and its exact
+- [x] With depth on, the launched `-filter_complex` carries one `mvcsubdepth` stage and its exact
       `depth=` option: `depth=auto`, `depth=shift=<pixels>`, or `depth=plane=<index>`.
 - [ ] With depth on, the original subtitle chain and `overlay` are gone: the subtitle is rendered by
       the depth filter, not again flat on top of it.
@@ -1133,7 +1133,7 @@ non-subtitle chain directly:
       server's filter and loses the marker: the sweep that keeps marker text out of the command
       reaches inside the filter value, and writes the real source path in the same escaping the
       server used.
-- [ ] With depth on, a graph rendering text itself through `subtitles=` or `ass` is **not** rewritten.
+- [x] With depth on, a graph rendering text itself through `subtitles=` or `ass` is **not** rewritten.
       The playback keeps the server's flat text and the wrapper writes a `warning: subtitle depth
       was asked for and not applied` diagnostic naming the text filter.
 - [ ] Full SBS with depth off leaves the graph alone - it has no chain to contribute - and still gets
@@ -1165,13 +1165,13 @@ anything here:
 -map 0:0 -map 0:1 -c:v:0 h264_qsv ... -vf format=nv12,hwupload=derive_device=qsv,... <output>
 ```
 
-- [ ] Everything the server wrote in front of the marker's `-i` is still in front of it, the decode
+- [x] Everything the server wrote in front of the marker's `-i` is still in front of it, the decode
       selection included: `-hwaccel`, `-hwaccel_output_format`, `-hwaccel_device`, `-hwaccel_args`,
       `-hwaccel_flags`, and on a VA-API server the `-vaapi_device <path>`. The wrapper removes none of
       them, for any profile, `two_d_base` included - a command missing them has regressed to cp17.
-- [ ] The device the **encode** runs on is still there as well: `-init_hw_device ...` and
+- [x] The device the **encode** runs on is still there as well: `-init_hw_device ...` and
       `-filter_hw_device ...`.
-- [ ] The one argument the wrapper added on that side of the `-i` is `-view_ids -1`, and it sits
+- [x] The one argument the wrapper added on that side of the `-i` is `-view_ids -1`, and it sits
       immediately in front of the option that opens the file - after the server's hardware arguments,
       not in place of them.
 - [ ] Read FFmpeg's own output for what the decoder decided. On a multiview stream the build says
@@ -1181,7 +1181,7 @@ anything here:
 - [ ] An ordinary (non-MVC) item transcoded on the same server with the same binary shows no such line
       and keeps its hardware decode. That is the same gate answering the other question, and it is the
       reason the wrapper does not answer it in advance - see V8.
-- [ ] The video encoder is the server's own, and on this host a hardware one: `h264_qsv`, `hevc_qsv`,
+- [x] The video encoder is the server's own, and on this host a hardware one: `h264_qsv`, `hevc_qsv`,
       `h264_nvenc`, `h264_vaapi`, and so on. Anaglyfin names no encoder and never forces `libx264`, so
       a command carrying `libx264` here is the binary answering the gate - the check above - and not a
       rewrite the wrapper performed.
@@ -1189,7 +1189,7 @@ anything here:
       `hwupload=derive_device=...`, `hwmap`, `vpp_qsv`, `scale_qsv`, `format=nv12` - in the server's
       `-vf` chain, or inside its `-filter_complex` where the server wrote them. The profile's chain
       is still in front of them, which is what makes them upload the converted picture.
-- [ ] The profile's own fragments are where V7.1-V7.9 put them: `-view_ids -1` in front of `-i` for
+- [x] The profile's own fragments are where V7.1-V7.9 put them: `-view_ids -1` in front of `-i` for
       every converting profile, none for `two_d_base`, the profile's chain or graph merged in front of
       the server's.
 - [ ] The segments still measure what V7.8 says they measure. The wrong picture arrives without an
@@ -1209,14 +1209,14 @@ The wrapper sits on the server's FFmpeg path, so it must be invisible for ordina
 
 Play a non-MVC item that will be transcoded, or force transcoding.
 
-- [ ] The wrapper starts the real FFmpeg binary with the received arguments unchanged.
-- [ ] Jellyfin hardware decode options from the server remain present if configured: no marker is in
+- [x] The wrapper starts the real FFmpeg binary with the received arguments unchanged.
+- [x] Jellyfin hardware decode options from the server remain present if configured: no marker is in
       this command, so nothing about its decode is Anaglyfin's to change. V7.10 asks for the same
       patience on the commands that do carry a marker, where those arguments pass through as well.
-- [ ] No Anaglyfin `-view_ids` option is inserted for a non-marker command.
-- [ ] No Anaglyfin `-vf`, `-filter_complex`, or `-sn` is inserted for a non-marker command.
+- [x] No Anaglyfin `-view_ids` option is inserted for a non-marker command.
+- [x] No Anaglyfin `-vf`, `-filter_complex`, or `-sn` is inserted for a non-marker command.
 - [ ] Ordinary playback does not create an Anaglyfin concurrency slot file.
-- [ ] No wrapper refusal line appears for ordinary playback.
+- [x] No wrapper refusal line appears for ordinary playback.
 
 Expected pass-through log behavior:
 
@@ -1237,7 +1237,7 @@ ANAGLYFIN_LOCK_DIR=<shared writable directory>
 
 Start one Anaglyfin profile version.
 
-- [ ] While the Anaglyfin job runs, a slot file exists under `ANAGLYFIN_LOCK_DIR`.
+- [x] While the Anaglyfin job runs, a slot file exists under `ANAGLYFIN_LOCK_DIR`.
 - [ ] The slot file name has the shape:
 
   ```text
@@ -1246,10 +1246,10 @@ Start one Anaglyfin profile version.
 
 - [ ] The slot file content records a pid and claim timestamp, if the platform permits
   reading it while held.
-- [ ] Starting a second Anaglyfin version while the first is running is refused by the
+- [x] Starting a second Anaglyfin version while the first is running is refused by the
   wrapper before FFmpeg is started.
-- [ ] The wrapper exits with code `75` for the concurrency refusal.
-- [ ] The wrapper diagnostic starts with:
+- [x] The wrapper exits with code `75` for the concurrency refusal.
+- [x] The wrapper diagnostic starts with:
 
   ```text
   anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running, which is the configured maximum, so FFmpeg was not started. Raise the maximum concurrent Anaglyfin transcodes on the Anaglyfin settings page, or ANAGLYFIN_MAX_CONCURRENT_TRANSCODES to override it from the deployment, or remove slot files left in the directory ANAGLYFIN_LOCK_DIR names if a wrapper was killed without exiting.
@@ -1283,7 +1283,7 @@ Current state:
 
 Validation expectation:
 
-- [ ] Record observed behavior when a transcode is stopped or cancelled.
+- [x] Record observed behavior when a transcode is stopped or cancelled.
 - [ ] Do not treat missing explicit signal forwarding as a T7 code defect.
 - [ ] Re-validate after T8 is merged.
 
@@ -1333,10 +1333,10 @@ Current state:
 
 Validation expectation:
 
-- [ ] Record the boundary through V5.3, including the source id seen on both sides of the toggle.
-- [ ] Do not record the hidden entry as a deleted, unlinked, ignored or hidden library item. If a run
+- [x] Record the boundary through V5.3, including the source id seen on both sides of the toggle.
+- [x] Do not record the hidden entry as a deleted, unlinked, ignored or hidden library item. If a run
       finds the item itself changed, that is a defect in the filter; write it up as one.
-- [ ] Do not treat the switch as an access control. It decides which entries are listed, and never what
+- [x] Do not treat the switch as an access control. It decides which entries are listed, and never what
       a user may play.
 
 ### Subtitles
@@ -1361,14 +1361,14 @@ Validation expectation:
 
 - [ ] The subtitle tracks copied from the original source may still appear in client UI.
 - [ ] Anaglyfin versions do not currently burn in a selected subtitle.
-- [ ] Converted profile commands contain neither `-sn` nor a `subtitles=` filter while no ordinal
+- [x] Converted profile commands contain neither `-sn` nor a `subtitles=` filter while no ordinal
       is wired through, and the server's own subtitle handling - its maps, its `-map -0:s`, its
       burn-in filter or overlay graph - survives the rewrite.
 - [ ] A converted version of a film the server is already burning subtitles into still shows those
       subtitles (see 7.9): this is the check that the old blanket `-sn`, which muted them, is gone.
-- [ ] With depth enabled, the command carries the requested `mvcsubdepth` mode and the subtitle is
+- [x] With depth enabled, the command carries the requested `mvcsubdepth` mode and the subtitle is
       rendered by that stage rather than by the server's overlay.
-- [ ] With depth enabled but no supported shape, the command starts the server's original graph and
+- [x] With depth enabled but no supported shape, the command starts the server's original graph and
       the wrapper's log says the request was not applied.
 
 Supported image-subtitle shapes for depth:
@@ -1407,7 +1407,7 @@ Current state:
 
 Validation expectation:
 
-- [ ] On QSV/NVENC/VA-API hosts, the server's hardware arguments still pass through unchanged (see
+- [x] On QSV/NVENC/VA-API hosts, the server's hardware arguments still pass through unchanged (see
       V7.10), and the depth stage appears in the filter graph only for the supported shapes above.
 - [ ] Record any depth result observed on real hardware as a manual runtime result. Until that result
       is recorded, do **not** mark QSV or real MVC subtitle depth as validated.
@@ -1424,9 +1424,9 @@ Current state:
 
 Validation expectation:
 
-- [ ] Manual installation from the packaged artifacts is recorded as the current install path,
+- [x] Manual installation from the packaged artifacts is recorded as the current install path,
   following `docs/install.md`.
-- [ ] The extracted plugin directory holds `Anaglyfin.dll` and nothing the archive should not ship.
+- [x] The extracted plugin directory holds `Anaglyfin.dll` and nothing the archive should not ship.
 
 ## V11. Wrapper refusal behavior
 
@@ -1456,17 +1456,17 @@ anaglyfin-wrapper: refused: ...
 
 Refusal safety requirements:
 
-- [ ] A broken or malformed marker-shaped token is refused rather than started.
-- [ ] Two valid markers in one command are refused.
-- [ ] A marker that is not the first input is refused.
-- [ ] A profile that owns the video pipeline refuses a graph it cannot merge: one read from a
+- [x] A broken or malformed marker-shaped token is refused rather than started.
+- [x] Two valid markers in one command are refused.
+- [x] A marker that is not the first input is refused.
+- [x] A profile that owns the video pipeline refuses a graph it cannot merge: one read from a
   `-filter_complex_script` file, one that never names this input's video stream, one that reaches
   it through a view specifier, several graphs at once, or one already carrying an Anaglyfin label.
   A server graph that simply reads the source video is merged, not refused (see 7.9).
-- [ ] A profile that owns the video pipeline refuses a command that copies its video
+- [x] A profile that owns the video pipeline refuses a command that copies its video
   (`ServerChoseVideoCopy`) instead of running a pipeline that would convert nothing.
-- [ ] Refusal diagnostics do not echo marker URLs, query parameters, or media paths.
-- [ ] Refusal diagnostics name configured environment variables when the fix is administrator
+- [x] Refusal diagnostics do not echo marker URLs, query parameters, or media paths.
+- [x] Refusal diagnostics name configured environment variables when the fix is administrator
   configuration.
 
 Do not assume the real runtime can easily reach these paths through normal provider-created
@@ -1477,15 +1477,66 @@ checks are optional unless a failure shows a provider-created marker being refus
 
 | Item | Area | Expected | Result | Notes |
 | --- | --- | --- | --- | --- |
-| V0 | CI and artifacts | CI green; DLL and wrapper binary present |  |  |
-| V1 | Plugin discovery | Anaglyfin appears in Jellyfin plugins |  |  |
-| V2 | Admin page | Page renders and settings round-trip |  |  |
-| V3 | Wrapper deployment | Jellyfin -> wrapper -> FFmpeg-mvc works |  |  |
-| V4 | Detection | MVC-positive items offer versions; negatives do not |  |  |
-| V5 | Media sources | GUID source ids per media source, stacked alternate versions, a video codec no profile can stream-copy, the global default ordering of V5.2, and the original MVC version toggle of V5.3 |  |  |
-| V6 | Marker transport | Marker survives one token, names the video stream, never reaches FFmpeg child |  |  |
-| V7 | Profile commands | Required profile fragments appear behind a real video encoder |  |  |
-| V8 | Pass-through | Ordinary playback remains unchanged |  |  |
-| V9 | Concurrency | Slot file appears; second job exits `75`; release works |  |  |
-| V10 | Current limitations | Limitations are recorded, not mistaken for regressions |  |  |
-| V11 | Refusals | Invalid marker-shaped commands never start FFmpeg |  |  |
+| V0 | CI and artifacts | CI green; DLL and wrapper binary present | PASS | CI container `cp30-formal-v0-ci` off the cp27 worktree: build succeeded with 0 warnings and 0 errors, 1419 tests passed (0 failed, 0 skipped), and packaging verified against `src/Anaglyfin/Plugin.manifest.xml`. The packager requires `Anaglyfin.dll` at the archive root and rejects a nested or extra layout. |
+| V1 | Plugin discovery | Anaglyfin appears in Jellyfin plugins | PASS | `/Plugins` lists Anaglyfin `0.1.0.0` with `Status=Active`, the configuration endpoint returns HTTP 200, and the settings page renders at the plugin's admin page; no assembly-load or target-framework errors. The description string and the `/web/ConfigurationPages` `EnableInMainMenu` flag were not re-read in this pass, so those two rows stay open. |
+| V2 | Admin page | Page renders and settings round-trip | PARTIAL | `GET` then unchanged `POST` then `GET` returned the same configuration (HTTP 204), and raising **Maximum concurrent Anaglyfin transcodes** to 2 rewrote the shared wrapper document to schema v2 with `maxConcurrentTranscodes=2`, restored afterwards to 1. The stored XML carries no device-default collection. Not validated here: the page's rendered wording, the direct out-of-dashboard URL, the empty-profile set (the page normalises it to the shipped set, so it cannot be saved from a browser - unit-pinned), upgrading a stored subtitle-depth or MVC-toggle value, and applying the default to a real client, which is V5.2. |
+| V3 | Wrapper deployment | Jellyfin -> wrapper -> FFmpeg-mvc works | PASS | Official `ffmpeg-mvc` SHA-256 `93185e34400658121de60221d19e10d7b4d19218fe099d415271ab549bd83e7e`, banner `ffmpeg version n8.1.2-mvc7-jf4`; wrapper SHA-256 `cf607a93bc962caee3a07800c849267c83ee52f0f09b335ca22724183137a652`; `JELLYFIN_FFMPEG` points at the Anaglyfin entry point; `mvcsubdepth` and `h264_qsv` are in the official binary; the settings document is schema v2. ffprobe placement is evidenced by a library that scans and probes normally. |
+| V4 | Detection | MVC-positive items offer versions; negatives do not | PASS | The stacked item carried exactly three marker sources plus the raw MVC source; the generated `- 3D`, `- HSBS` and plain files carried none. Not exercised here: a non-video item and `.strm` / disc-image items, which stay unchecked rather than passing by assumption. |
+| V5 | Media sources | GUID source ids per media source, stacked alternate versions, a video codec no profile can stream-copy, the global default ordering of V5.2, and the original MVC version toggle of V5.3 | PARTIAL | Marker URLs have the documented shape, the default profile orders the stack as documented, converted versions are transcode-only, and V5.3's toggle passed end to end. Left open: every V5.2 row, which the document reserves for real clients; the reported frame size and `Video3DFormat` rows; the row asking the source's own video codec to read `mvc`, which this pass did not re-read directly; and resume across a version switch. See the entry below. |
+| V6 | Marker transport | Marker survives one token, names the video stream, never reaches FFmpeg child | PASS | The wrapper received the marker as one input token and the argv handed to FFmpeg carried the decoded `/media/...` path with zero `anaglyfin/profile` occurrences (capture `/config/anaglyfin/capture/cp23/argv-405-1790027021.log`). A positive observation that nothing fetched the marker URL over HTTP was not recorded, so that row stays open. |
+| V7 | Profile commands | Required profile fragments appear behind a real video encoder | PARTIAL | Composed commands captured: Red/Cyan puts the profile conversion with `-view_ids -1` in front of the real encoder plus `stereo3d=sbsl:arcd`, Half SBS applies the half-width scale, Full SBS receives raw view selection with no conversion graph, 2D Base is an ordinary pass-through, and the QSV init and encoder arguments survive. Not covered here: `custom_grayscale`, the map-less and numbered-map shapes, and V7.8's segment table - the probe binary in this container cannot load `libass.so.9`, which is a probe-environment limit and not a product result. |
+| V8 | Pass-through | Ordinary playback remains unchanged | PASS | A forced ordinary 1080p HLS transcode ran through the wrapper on QSV with no marker and no Anaglyfin graph, and delivered its master playlist, main playlist and first segment (HTTP 200). That an ordinary job leaves no slot file behind was not read directly, so that one row stays open. |
+| V9 | Concurrency | Slot file appears; second job exits `75`; release works | PASS | The safe probe ran two wrapper jobs against the admin-published limit 1: exactly one lock slot existed, and the second process exited `75` with a refusal naming the configured maximum and both places an administrator can raise it. Slot-file naming and contents, release after the first job exits, and raising the limit until a second job starts were not re-run here and are pinned by unit tests. |
+| V10 | Current limitations | Limitations are recorded, not mistaken for regressions | PARTIAL | Implemented behaviour: PGS under Automatic composed `mvcsubdepth=depth=auto:eof_action=pass`; a text subtitle keeps the server's own filter path with no depth stage and an explicit wrapper warning; the stored XML has no device-default collection and no device category is inferred; a direct `SIGTERM` stopped the wrapper and its child at a partial file; QSV encoding was exercised. Recorded as limitations and not failures: what a physical 3D client displays and playback against a remote target, and the depth a rendered subtitle actually reaches. This environment is a headless local server. |
+| V11 | Refusals | Invalid marker-shaped commands never start FFmpeg | PASS | Direct wrapper tests returned exit `65` for a malformed marker, two marker inputs, a marker that is not the first input, a server-selected video copy (`ServerChoseVideoCopy`) and `-filter_complex_script` (`IncompatibleFilterGraph`). Every diagnostic named its reason and none echoed the marker URL or a media path. The remaining merge-refusal shapes are unit-pinned rather than reproduced. |
+
+## Result log entry - 2026-09-21, formal V0-V11 on cp30
+
+**Artifact:** `main` @ `6c5a1da`, tag `cp30-mvc-toggle-docs`.
+**Environment:** a headless local Jellyfin 12 container on an Intel Arc iGPU (QSV). There is no
+physical 3D client and no remote target on this host, which is the reason the client-facing and
+remote rows below are left open rather than ticked.
+
+Everything this host can decide was read off the artifact and the running server. CI (V0) was
+clean from the cp27 worktree and the packager confirmed the archive layout the rest of these
+checks assume; the plugin loaded and its settings round-tripped through the plain `GET`/`POST`
+API (V1, V2), with the concurrency limit travelling to the shared wrapper document as a schema-v2
+write and back. The deployment identity (V3) - the official `n8.1.2-mvc7-jf4` with `mvcsubdepth`,
+the wrapper standing in as `JELLYFIN_FFMPEG`, and one settings document and one lock directory
+shared by every wrapper - is the shape V6 through V9 depend on, so it was pinned before anything
+played.
+
+The behaviour the plugin exists to provide came next. Detection (V4) offered exactly the stacked
+MVC file and stayed silent about `- 3D`, `- HSBS` and a plain file. The marker reached the wrapper
+as a single token and left the FFmpeg command as a decoded media path with no marker text in it
+(V6). The composed commands for Red/Cyan, Half SBS, Full SBS and 2D Base sat behind a real QSV
+encoder with the server's own hardware arguments untouched (V7, V7.10), an ordinary 1080p job went
+through the same wrapper with nothing added and still delivered its playlists and first segment
+(V8), and two wrapper jobs against the admin limit of 1 produced one lock slot and a second exit
+`75` (V9). The original MVC toggle (V5.3) was read on both surfaces of the same request, with the
+raw source's id and path reappearing unchanged when the switch went back on and PlaybackInfo
+refusing a hidden source id by id - the boundary V10 records rather than a defect. The wrapper's
+five refusals (V11) each came back exit `65`, naming the reason and echoing nothing.
+
+Three table rows are deliberately **PARTIAL**, and none of them is a failure:
+
+- **V5.** The real-client first-source and per-client ordering (V5.2) is the document's own
+  reservation for a client, so every row in it stays open; and the row asking that an Anaglyfin
+  source's own video codec read back as `mvc` was not confirmed here - this run recorded the
+  converted versions advertising `h264`, so the codec row is left for a direct re-read rather than
+  ticked on inference.
+- **V7.** `custom_grayscale` and the map-less and numbered-map shapes were not run, and V7.8's
+  segment dimensions were not measured, because this container's `ffprobe` cannot load
+  `libass.so.9`. That is a probe-environment limit recorded here, not a result about the profiles.
+- **V10.** What a physical 3D client displays, playback against a remote target, and the depth a
+  rendered subtitle actually reach are all outside a headless server, so subtitle depth on
+  hardware is not marked validated and no device-category behaviour is claimed at all.
+
+A few rows are left to CI on purpose because they cannot be reached from a browser or a normal
+request: an empty enabled-profile set, which the settings page normalises back to the shipped set
+(V2, V5.3), and the wrapper's less common merge-refusal shapes (V11). Both are pinned by unit
+tests, and the CI run at the head of this log covers them.
+
+This disposable host was left as the run found it - the validation containers and the generated
+test media remain for a later pass to clean up, and no client-side or remote validation was
+attempted here.
