@@ -149,3 +149,13 @@ ELF binary all fail the job rather than being noted in the log.
 
 `docs/install.md` covers where those three files go on a bare-metal server and in a container
 that gets `./jellyfin/config` mounted at `/config`.
+
+## License
+
+Anaglyfin is free software and is licensed under the GNU General Public License, version 3 only
+(`GPL-3.0-only`). See [`LICENSE`](LICENSE) for the complete terms.
+
+Copyright © 2026 Tom Thayer
+
+Third-party components used at runtime, including FFmpeg-mvc when installed separately, remain
+under their respective licenses and are not re-licensed by Anaglyfin.
