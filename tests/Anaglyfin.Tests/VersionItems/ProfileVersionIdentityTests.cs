@@ -8,6 +8,7 @@ using Anaglyfin.Configuration;
 using Anaglyfin.Markers;
 using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -249,6 +250,10 @@ public class ProfileVersionIdentityTests
                     EnabledProfileIds = new List<string> { SideBySideFull }
                 }
             },
+            // Outside any request the server's own accessor reports no ambient context,
+            // which is exactly the state this identity test wants: the configured default,
+            // not a device's, decides the order it compares against.
+            new HttpContextAccessor(),
             NullLogger<AnaglyfinMediaSourceProvider>.Instance);
 
         var offered = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();

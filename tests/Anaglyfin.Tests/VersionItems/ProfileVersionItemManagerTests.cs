@@ -547,7 +547,7 @@ public class ProfileVersionItemManagerTests
         var configuration = ConfigurationWith(SideBySideFull);
         configuration.Configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
         {
-            ClientName = "AndroidTV",
+            DeviceId = "living-room-tv",
             ProfileId = TwoDBase
         });
 

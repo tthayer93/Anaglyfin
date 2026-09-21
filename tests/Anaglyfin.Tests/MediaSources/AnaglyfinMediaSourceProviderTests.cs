@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
+using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -18,6 +19,7 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -85,12 +87,14 @@ public class AnaglyfinMediaSourceProviderTests
         var detector = new ScriptedDetector();
         var catalog = new ProfileCatalog();
         var configuration = new StubConfigurationSource();
+        var httpContext = new StubHttpContextAccessor();
         var logger = NullLogger<AnaglyfinMediaSourceProvider>.Instance;
 
-        Assert.Throws<ArgumentNullException>(() => new AnaglyfinMediaSourceProvider(null!, catalog, configuration, logger));
-        Assert.Throws<ArgumentNullException>(() => new AnaglyfinMediaSourceProvider(detector, null!, configuration, logger));
-        Assert.Throws<ArgumentNullException>(() => new AnaglyfinMediaSourceProvider(detector, catalog, null!, logger));
-        Assert.Throws<ArgumentNullException>(() => new AnaglyfinMediaSourceProvider(detector, catalog, configuration, null!));
+        Assert.Throws<ArgumentNullException>(() => new AnaglyfinMediaSourceProvider(null!, catalog, configuration, httpContext, logger));
+        Assert.Throws<ArgumentNullException>(() => new AnaglyfinMediaSourceProvider(detector, null!, configuration, httpContext, logger));
+        Assert.Throws<ArgumentNullException>(() => new AnaglyfinMediaSourceProvider(detector, catalog, null!, httpContext, logger));
+        Assert.Throws<ArgumentNullException>(() => new AnaglyfinMediaSourceProvider(detector, catalog, configuration, null!, logger));
+        Assert.Throws<ArgumentNullException>(() => new AnaglyfinMediaSourceProvider(detector, catalog, configuration, httpContext, null!));
     }
 
     [Fact]
@@ -1133,11 +1137,16 @@ public class AnaglyfinMediaSourceProviderTests
     public async Task TheProviderIsConstructedForRealDependencyResolutions()
     {
         // The server activates providers with ActivatorUtilities: the production wiring
-        // is detector + catalog + settings source + logger, nothing else.
+        // is detector + catalog + settings source + the server's own request accessor +
+        // logger, nothing else. The concrete HttpContextAccessor stands in for the
+        // container entry here because it is what the container hands back; outside a
+        // request it reports no ambient context, which is a shape this construction test
+        // also has to survive.
         var provider = new AnaglyfinMediaSourceProvider(
             new MvcSourceDetector(),
             new ProfileCatalog(),
             new StubConfigurationSource(),
+            new HttpContextAccessor(),
             NullLogger<AnaglyfinMediaSourceProvider>.Instance);
 
         var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
@@ -1164,6 +1173,7 @@ public class AnaglyfinMediaSourceProviderTests
             new MvcSourceDetector(),
             new ProfileCatalog(),
             new StubConfigurationSource(),
+            new StubHttpContextAccessor(),
             NullLogger<AnaglyfinMediaSourceProvider>.Instance);
 
         var plain = CreateMvcItem(path: "/movies/Avatar (2009)/Avatar (2009).mkv", name: "Avatar (2009)");
@@ -1178,6 +1188,7 @@ public class AnaglyfinMediaSourceProviderTests
             new MvcSourceDetector(),
             new ProfileCatalog(),
             new StubConfigurationSource(),
+            new StubHttpContextAccessor(),
             NullLogger<AnaglyfinMediaSourceProvider>.Instance);
 
         var sources = await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None);
@@ -1585,16 +1596,229 @@ public class AnaglyfinMediaSourceProviderTests
         Assert.Contains(sources, source => source.Id == IdOf(ProfileIds.TwoDBase));
     }
 
+    // --- device context seam -------------------------------------------------------------
+
+    [Fact]
+    public async Task TheProviderReadsTheExactDeviceIdFromTheRequest()
+    {
+        // The whole feature in one case: an authenticated playback-info request carries
+        // its device id as the Jellyfin-DeviceId claim, the provider hands that exact
+        // value to the catalog, and the device's pinned default - not the global one -
+        // leads the offered list for that request.
+        var configuration = new StubConfigurationSource
+        {
+            Configuration = new PluginConfiguration
+            {
+                DeviceDefaultProfiles =
+                {
+                    new DeviceProfileDefault { DeviceId = "living-room-tv", ProfileId = ProfileIds.SideBySideHalf }
+                }
+            }
+        };
+        var catalog = new RecordingProfileCatalog();
+        var httpContext = new StubHttpContextAccessor
+        {
+            HttpContext = RequestContext(new Claim("Jellyfin-DeviceId", "living-room-tv"))
+        };
+        var provider = CreateProvider(catalog: catalog, configuration: configuration, httpContext: httpContext);
+
+        var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
+
+        Assert.Equal(
+            new[]
+            {
+                IdOf(ProfileIds.SideBySideHalf),
+                IdOf(ProfileIds.SideBySideFull),
+                IdOf(ProfileIds.AnaglyphRedCyanDubois),
+                IdOf(ProfileIds.TwoDBase)
+            },
+            sources.Select(source => source.Id));
+        Assert.Equal(new[] { "living-room-tv" }, catalog.OfferedDeviceIds);
+    }
+
+    [Fact]
+    public async Task ADeviceThatNoEntryPinsStillHearsTheGlobalDefault()
+    {
+        // Asking the catalog with the id is not the same as honouring it: another device's
+        // request changes nothing about the order, and the id travels unchanged so the
+        // catalog - not a string compare invented here - decides what matches.
+        var configuration = new StubConfigurationSource
+        {
+            Configuration = new PluginConfiguration
+            {
+                DeviceDefaultProfiles =
+                {
+                    new DeviceProfileDefault { DeviceId = "living-room-tv", ProfileId = ProfileIds.SideBySideHalf }
+                }
+            }
+        };
+        var catalog = new RecordingProfileCatalog();
+        var httpContext = new StubHttpContextAccessor
+        {
+            HttpContext = RequestContext(new Claim("Jellyfin-DeviceId", "bedroom-tv"))
+        };
+        var provider = CreateProvider(catalog: catalog, configuration: configuration, httpContext: httpContext);
+
+        var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
+
+        Assert.Equal(IdOf(ProfileIds.AnaglyphRedCyanDubois), sources[0].Id);
+        Assert.Equal(new[] { "bedroom-tv" }, catalog.OfferedDeviceIds);
+    }
+
+    [Theory]
+    [InlineData("True")]
+    [InlineData("true")]
+    public async Task AnApiKeyRequestFallsBackToTheGlobalDefault(string apiKeyClaim)
+    {
+        // The server writes the API key's own system id into the device claim. Honouring
+        // it would let a script posing as the server pin a default "for" a device nobody
+        // is holding, so the request is answered as one that names no device even though
+        // its device claim would match an entry verbatim.
+        var configuration = new StubConfigurationSource
+        {
+            Configuration = new PluginConfiguration
+            {
+                DeviceDefaultProfiles =
+                {
+                    new DeviceProfileDefault { DeviceId = "living-room-tv", ProfileId = ProfileIds.SideBySideHalf }
+                }
+            }
+        };
+        var catalog = new RecordingProfileCatalog();
+        var httpContext = new StubHttpContextAccessor
+        {
+            HttpContext = RequestContext(
+                new Claim("Jellyfin-DeviceId", "living-room-tv"),
+                new Claim("Jellyfin-IsApiKey", apiKeyClaim))
+        };
+        var provider = CreateProvider(catalog: catalog, configuration: configuration, httpContext: httpContext);
+
+        var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
+
+        Assert.Equal(IdOf(ProfileIds.AnaglyphRedCyanDubois), sources[0].Id);
+        Assert.Equal(new string?[] { null }, catalog.OfferedDeviceIds);
+    }
+
+    [Fact]
+    public async Task ANonApiKeyClaimValueIsNotApiKeys()
+    {
+        // The fallback is keyed to the server's true flag, not to the claim existing: a
+        // false-spelled IsApiKey claim rides an ordinary device request.
+        var catalog = new RecordingProfileCatalog();
+        var httpContext = new StubHttpContextAccessor
+        {
+            HttpContext = RequestContext(
+                new Claim("Jellyfin-DeviceId", "living-room-tv"),
+                new Claim("Jellyfin-IsApiKey", "False"))
+        };
+        var provider = CreateProvider(catalog: catalog, httpContext: httpContext);
+
+        await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None);
+
+        Assert.Equal(new[] { "living-room-tv" }, catalog.OfferedDeviceIds);
+    }
+
+    [Fact]
+    public async Task ANullHttpContextFallsBackToTheGlobalDefault()
+    {
+        // Background compositions, the DLNA listener and startup work call the provider
+        // with no ambient request at all. That is not a failure; it is the global default.
+        var configuration = new StubConfigurationSource
+        {
+            Configuration = new PluginConfiguration
+            {
+                DeviceDefaultProfiles =
+                {
+                    new DeviceProfileDefault { DeviceId = "living-room-tv", ProfileId = ProfileIds.SideBySideHalf }
+                }
+            }
+        };
+        var catalog = new RecordingProfileCatalog();
+        var provider = CreateProvider(catalog: catalog, configuration: configuration);
+
+        var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
+
+        Assert.Equal(IdOf(ProfileIds.AnaglyphRedCyanDubois), sources[0].Id);
+        Assert.Equal(new string?[] { null }, catalog.OfferedDeviceIds);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ARequestWithoutAUsableDeviceClaimFallsBackToTheGlobalDefault(string? claimValue)
+    {
+        // Clients craft the claim themselves, so an absent or blank one is a normal
+        // request rather than an error - answered the same way no-context is.
+        var claims = claimValue is null
+            ? Array.Empty<Claim>()
+            : new[] { new Claim("Jellyfin-DeviceId", claimValue) };
+        var catalog = new RecordingProfileCatalog();
+        var httpContext = new StubHttpContextAccessor { HttpContext = RequestContext(claims) };
+        var provider = CreateProvider(catalog: catalog, httpContext: httpContext);
+
+        var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
+
+        Assert.Equal(IdOf(ProfileIds.AnaglyphRedCyanDubois), sources[0].Id);
+        Assert.Equal(new string?[] { null }, catalog.OfferedDeviceIds);
+    }
+
+    [Fact]
+    public async Task ARequestCarriesOnlyTheDeviceIdIntoTheCatalog()
+    {
+        // The seam reads exactly one claim. Everything else the auth pipeline settles -
+        // user, client name, device name, version - is not consulted for the default,
+        // because none of it identifies one exact device and a default keyed to any of
+        // them would answer for devices nobody pinned.
+        var catalog = new RecordingProfileCatalog();
+        var httpContext = new StubHttpContextAccessor
+        {
+            HttpContext = RequestContext(
+                new Claim(ClaimTypes.Name, "alice"),
+                new Claim("Jellyfin-UserId", "0d9f3a5f4c2b4c11a4f5d3e2f1b0c9d8"),
+                new Claim("Jellyfin-Client", "AndroidTV"),
+                new Claim("Jellyfin-Device", "Living Room TV"),
+                new Claim("Jellyfin-Version", "12.0.0"),
+                new Claim("Jellyfin-DeviceId", "living-room-tv"))
+        };
+        var provider = CreateProvider(catalog: catalog, httpContext: httpContext);
+
+        await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None);
+
+        Assert.Equal(new[] { "living-room-tv" }, catalog.OfferedDeviceIds);
+    }
+
+    [Fact]
+    public async Task AFailingRequestContextCostsOnlyTheDeviceDefault()
+    {
+        // Reading a claim is a bonus path on a hot path: an accessor that cannot answer
+        // must not cost the item its versions, let alone throw at the server. The offer
+        // stands, in the global default's order.
+        var catalog = new RecordingProfileCatalog();
+        var provider = CreateProvider(catalog: catalog, httpContext: new ThrowingHttpContextAccessor());
+
+        var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
+
+        Assert.Equal(4, sources.Count);
+        Assert.Equal(IdOf(ProfileIds.AnaglyphRedCyanDubois), sources[0].Id);
+        Assert.Equal(new string?[] { null }, catalog.OfferedDeviceIds);
+    }
+
     // --- construction helpers -----------------------------------------------------------
 
     private static AnaglyfinMediaSourceProvider CreateProvider(
         IMvcSourceDetector? detector = null,
         IProfileCatalog? catalog = null,
-        StubConfigurationSource? configuration = null)
+        StubConfigurationSource? configuration = null,
+        IHttpContextAccessor? httpContext = null)
         => new(
             detector ?? new ScriptedDetector(),
             catalog ?? new ProfileCatalog(),
             configuration ?? new StubConfigurationSource(),
+            // No ambient request by default: every existing test asserts the global
+            // default's answer, which is exactly what a provider without request context
+            // gives. The device-context tests hand an accessor that has one.
+            httpContext ?? new StubHttpContextAccessor(),
             NullLogger<AnaglyfinMediaSourceProvider>.Instance);
 
     private static AnaglyfinMediaSourceProvider CreateRealProvider()
@@ -1602,7 +1826,20 @@ public class AnaglyfinMediaSourceProviderTests
             new MvcSourceDetector(),
             new ProfileCatalog(),
             new StubConfigurationSource(),
+            new StubHttpContextAccessor(),
             NullLogger<AnaglyfinMediaSourceProvider>.Instance);
+
+    /// <summary>
+    /// An HTTP request as an authenticated playback-info call arrives with one: a context
+    /// carrying the claims the server settled from the client's token. Empty claims stand
+    /// for a request whose authentication named no device; "no request at all" is the
+    /// accessor left holding nothing.
+    /// </summary>
+    private static HttpContext RequestContext(params Claim[] claims)
+        => new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(claims, authenticationType: "Test"))
+        };
 
     /// <summary>
     /// The stacked movie: one item whose own path, name and 3D format describe its plain
@@ -1863,13 +2100,74 @@ public class AnaglyfinMediaSourceProviderTests
 
         public IReadOnlyList<StereoProfile> GetEnabledProfiles(PluginConfiguration configuration) => _inner.GetEnabledProfiles(configuration);
 
-        public string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
-            => _inner.ResolveDefaultProfileId(configuration, deviceId, clientName);
+        public string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null)
+            => _inner.ResolveDefaultProfileId(configuration, deviceId);
 
-        public StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
-            => _inner.GetDefaultProfile(configuration, deviceId, clientName);
+        public StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null)
+            => _inner.GetDefaultProfile(configuration, deviceId);
 
-        public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
+        public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null)
             => Array.Empty<StereoProfile>();
+    }
+
+    /// <summary>
+    /// An <see cref="IHttpContextAccessor"/> over one scripted request. The interface is a
+    /// single settable property, so the "ambient request" is whatever the test last put in
+    /// it - including nothing, which is the state outside any request.
+    /// </summary>
+    private sealed class StubHttpContextAccessor : IHttpContextAccessor
+    {
+        public HttpContext? HttpContext { get; set; }
+    }
+
+    /// <summary>
+    /// An accessor whose every read fails - the accessor-internal half of the
+    /// "never throw at the server" contract, which no null-shaped test reaches.
+    /// </summary>
+    private sealed class ThrowingHttpContextAccessor : IHttpContextAccessor
+    {
+        public HttpContext? HttpContext
+        {
+            get => throw new InvalidOperationException("accessor failure under test");
+            set => throw new InvalidOperationException("accessor failure under test");
+        }
+    }
+
+    /// <summary>
+    /// A catalog that delegates every answer to the real one and remembers the device id
+    /// each offered-profiles call carried: the assertion a test needs when "did the
+    /// provider pass the claim through, untouched?" is the question.
+    /// </summary>
+    private sealed class RecordingProfileCatalog : IProfileCatalog
+    {
+        private readonly ProfileCatalog _inner = new();
+
+        public List<string?> OfferedDeviceIds { get; } = new();
+
+        public IReadOnlyList<StereoProfile> Profiles => _inner.Profiles;
+
+        public IReadOnlyList<string> AllProfileIds => _inner.AllProfileIds;
+
+        public bool IsKnownProfileId(string? profileId) => _inner.IsKnownProfileId(profileId);
+
+        public bool TryGetProfile(string? profileId, [NotNullWhen(true)] out StereoProfile? profile) => _inner.TryGetProfile(profileId, out profile);
+
+        public StereoProfile GetProfile(string? profileId) => _inner.GetProfile(profileId);
+
+        public IReadOnlyList<string> GetEnabledProfileIds(PluginConfiguration configuration) => _inner.GetEnabledProfileIds(configuration);
+
+        public IReadOnlyList<StereoProfile> GetEnabledProfiles(PluginConfiguration configuration) => _inner.GetEnabledProfiles(configuration);
+
+        public string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null)
+            => _inner.ResolveDefaultProfileId(configuration, deviceId);
+
+        public StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null)
+            => _inner.GetDefaultProfile(configuration, deviceId);
+
+        public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null)
+        {
+            OfferedDeviceIds.Add(deviceId);
+            return _inner.GetOfferedProfiles(configuration, deviceId);
+        }
     }
 }

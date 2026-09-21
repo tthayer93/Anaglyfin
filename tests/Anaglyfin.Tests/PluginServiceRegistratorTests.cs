@@ -112,6 +112,25 @@ public class PluginServiceRegistratorTests
     }
 
     [Fact]
+    public void RegisterServicesNeverShadowsAServerOwnedService()
+    {
+        // The provider reads the request's device claim through IHttpContextAccessor, which
+        // the server itself registers (Startup adds it to the root container) and through
+        // which the server's own helpers read the same claims. A plugin-side registration
+        // would not merely be dead weight - it would risk replacing the server's accessor
+        // with one the server's request pipeline does not feed. The provider is activated
+        // with ActivatorUtilities, which resolves the server's registration directly, so
+        // there is nothing for Anaglyfin to register.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        Assert.DoesNotContain(
+            services,
+            descriptor => descriptor.ServiceType.Assembly == typeof(Microsoft.AspNetCore.Http.IHttpContextAccessor).Assembly);
+    }
+
+    [Fact]
     public void TheRegisteredCatalogCanBuildItselfWithoutDependencies()
     {
         // The container activates the implementation type directly, so a constructor the

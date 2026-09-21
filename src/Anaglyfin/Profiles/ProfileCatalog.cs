@@ -130,18 +130,18 @@ public sealed class ProfileCatalog : IProfileCatalog
     }
 
     /// <inheritdoc />
-    public string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
+    public string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
         var enabled = GetEnabledProfileIds(configuration);
 
-        // Most specific first: the device/client override, then the global default. A
+        // Most specific first: the exact-device override, then the global default. A
         // candidate only wins when it is a known profile that the administrator has
         // actually enabled; when neither is, the first enabled profile in display order is
         // what the page offered as the version to fall back to, and GetEnabledProfileIds
         // guarantees there is one.
-        var deviceOverride = FindDeviceOverrideProfileId(configuration, deviceId, clientName);
+        var deviceOverride = FindDeviceOverrideProfileId(configuration, deviceId);
         foreach (var candidate in new[] { deviceOverride, configuration.DefaultProfileId })
         {
             var id = ProfileIds.Normalize(candidate);
@@ -155,20 +155,20 @@ public sealed class ProfileCatalog : IProfileCatalog
     }
 
     /// <inheritdoc />
-    public StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
+    public StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
-        return Configured(GetProfile(ResolveDefaultProfileId(configuration, deviceId, clientName)), configuration);
+        return Configured(GetProfile(ResolveDefaultProfileId(configuration, deviceId)), configuration);
     }
 
     /// <inheritdoc />
-    public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
+    public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
         var enabled = GetEnabledProfiles(configuration);
-        var defaultProfile = GetDefaultProfile(configuration, deviceId, clientName);
+        var defaultProfile = GetDefaultProfile(configuration, deviceId);
 
         var offered = new List<StereoProfile>(enabled.Count) { defaultProfile };
         foreach (var profile in enabled)
@@ -201,14 +201,15 @@ public sealed class ProfileCatalog : IProfileCatalog
     }
 
     /// <summary>
-    /// Finds the profile id of the settings entry that matches this device or client.
+    /// Finds the profile id of the settings entry that matches this exact device.
     /// </summary>
     /// <remarks>
-    /// The entry that pins the most fields wins; equally specific entries keep their
-    /// declared order. An entry whose profile is unknown or disabled is ignored by the
-    /// caller's enabled check.
+    /// Every matching entry pins the same single field, so they all score alike and the
+    /// first match in declared order wins - two entries pinned to one device are
+    /// answered by whichever the settings file lists first. An entry whose profile is
+    /// unknown or disabled is ignored by the caller's enabled check.
     /// </remarks>
-    private static string? FindDeviceOverrideProfileId(PluginConfiguration configuration, string? deviceId, string? clientName)
+    private static string? FindDeviceOverrideProfileId(PluginConfiguration configuration, string? deviceId)
     {
         var overrides = configuration.DeviceDefaultProfiles;
         if (overrides is null || overrides.Count == 0)
@@ -226,7 +227,7 @@ public sealed class ProfileCatalog : IProfileCatalog
                 continue;
             }
 
-            var strength = entry.MatchStrength(deviceId, clientName);
+            var strength = entry.MatchStrength(deviceId);
             if (strength > bestStrength)
             {
                 bestStrength = strength;

@@ -4,8 +4,13 @@ using Xunit;
 namespace Anaglyfin.Tests.Configuration;
 
 /// <summary>
-/// Verifies how a device/client override entry decides whether it applies to a request.
+/// Verifies how an exact-device default entry decides whether it applies to a request.
 /// </summary>
+/// <remarks>
+/// Matching is pinned to the device id alone: this release has no client-name, user or
+/// device-category matching, so every case that used to be answered by a client pin is
+/// now asserted to match nothing instead.
+/// </remarks>
 public class DeviceProfileDefaultTests
 {
     [Fact]
@@ -13,9 +18,22 @@ public class DeviceProfileDefaultTests
     {
         var entry = new DeviceProfileDefault { ProfileId = "two_d_base" };
 
-        Assert.False(entry.Matches("any-device", "Web"));
-        Assert.Equal(0, entry.MatchStrength("any-device", "Web"));
-        Assert.False(entry.Matches(null, null));
+        Assert.False(entry.Matches("any-device"));
+        Assert.Equal(0, entry.MatchStrength("any-device"));
+        Assert.False(entry.Matches(null));
+    }
+
+    [Fact]
+    public void AnEmptyDeviceIdNeverMatchesEvenAgainstARealRequest()
+    {
+        // The whitespace spellings of "empty" are empty too: a row an administrator added
+        // and left blank must not answer for every device on the server.
+        var blank = new DeviceProfileDefault { DeviceId = string.Empty, ProfileId = "sbs_half" };
+        var whitespace = new DeviceProfileDefault { DeviceId = "   ", ProfileId = "sbs_half" };
+
+        Assert.False(blank.Matches("living-room-tv"));
+        Assert.Equal(0, blank.MatchStrength("living-room-tv"));
+        Assert.False(whitespace.Matches("living-room-tv"));
     }
 
     [Fact]
@@ -23,50 +41,46 @@ public class DeviceProfileDefaultTests
     {
         var entry = new DeviceProfileDefault { DeviceId = "living-room-tv", ProfileId = "sbs_half" };
 
-        Assert.True(entry.Matches("living-room-tv", "Web"));
-        Assert.Equal(1, entry.MatchStrength("living-room-tv", "Web"));
-        Assert.False(entry.Matches("bedroom-tv", "Web"));
-        Assert.False(entry.Matches(null, "Web"));
+        Assert.True(entry.Matches("living-room-tv"));
+        Assert.Equal(1, entry.MatchStrength("living-room-tv"));
+        Assert.False(entry.Matches("bedroom-tv"));
+        Assert.False(entry.Matches(null));
+        Assert.False(entry.Matches("  "));
     }
 
     [Fact]
-    public void AClientPinnedEntryMatchesThatClientOnEveryDevice()
+    public void ADeviceEntryScoresOneAndCannotBeOutranked()
     {
-        var entry = new DeviceProfileDefault { ClientName = "AndroidTV", ProfileId = "sbs_half" };
+        // There is no second tier above an exact device any more - no client-wide entry
+        // that a device pin has to beat - so the score is the whole answer.
+        var entry = new DeviceProfileDefault { DeviceId = "living-room-tv", ProfileId = "sbs_half" };
 
-        Assert.True(entry.Matches("any-device", "AndroidTV"));
-        Assert.Equal(1, entry.MatchStrength("any-device", "AndroidTV"));
-        Assert.False(entry.Matches("any-device", "Web"));
-    }
-
-    [Fact]
-    public void AnEntryPinningBothFieldsNeedsBothToMatch()
-    {
-        var entry = new DeviceProfileDefault { DeviceId = "living-room-tv", ClientName = "AndroidTV", ProfileId = "sbs_half" };
-
-        Assert.Equal(2, entry.MatchStrength("living-room-tv", "AndroidTV"));
-        Assert.True(entry.Matches("living-room-tv", "AndroidTV"));
-        Assert.Equal(0, entry.MatchStrength("living-room-tv", "Web"));
-        Assert.Equal(0, entry.MatchStrength("bedroom-tv", "AndroidTV"));
+        Assert.Equal(1, entry.MatchStrength("living-room-tv"));
+        Assert.Equal(0, entry.MatchStrength("someone-elses-device"));
     }
 
     [Fact]
     public void MatchingIgnoresCaseAndSurroundingWhitespace()
     {
-        var entry = new DeviceProfileDefault { DeviceId = " Living-Room-TV ", ClientName = " AndroidTV ", ProfileId = "sbs_half" };
+        // Device ids travel from a settings file to an auth claim; both ends may pick up
+        // decoration nobody meant, and the comparison is the place that forgives it.
+        var entry = new DeviceProfileDefault { DeviceId = " Living-Room-TV ", ProfileId = "sbs_half" };
 
-        Assert.True(entry.Matches("living-room-tv", "androidtv"));
-        Assert.True(entry.Matches("LIVING-ROOM-TV", "ANDROIDTV"));
+        Assert.True(entry.Matches("living-room-tv"));
+        Assert.True(entry.Matches("LIVING-ROOM-TV"));
+        Assert.True(entry.Matches(" living-room-tv "));
     }
 
     [Fact]
-    public void ARequestWithoutDeviceOrClientInformationMatchesNothing()
+    public void ARequestWithoutADeviceIdMatchesNothing()
     {
-        var deviceEntry = new DeviceProfileDefault { DeviceId = "living-room-tv", ProfileId = "sbs_half" };
-        var clientEntry = new DeviceProfileDefault { ClientName = "AndroidTV", ProfileId = "sbs_half" };
+        // Anonymous, API-key and background requests carry no usable device claim, and an
+        // exact-device entry must not answer any of them: those requests fall through to
+        // the global default.
+        var entry = new DeviceProfileDefault { DeviceId = "living-room-tv", ProfileId = "sbs_half" };
 
-        Assert.False(deviceEntry.Matches(null, null));
-        Assert.False(clientEntry.Matches(null, null));
-        Assert.False(clientEntry.Matches("  ", "  "));
+        Assert.False(entry.Matches(null));
+        Assert.False(entry.Matches(string.Empty));
+        Assert.False(entry.Matches("   "));
     }
 }

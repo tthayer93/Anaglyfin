@@ -98,12 +98,11 @@ public class PluginConfigurationTests
         configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
         {
             DeviceId = "living-room-tv",
-            ClientName = "AndroidTV",
             ProfileId = ProfileIds.CustomGrayscale
         });
         configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
         {
-            ClientName = "Web",
+            DeviceId = "den-tablet",
             ProfileId = ProfileIds.SideBySideFull
         });
 
@@ -119,9 +118,7 @@ public class PluginConfigurationTests
             new[] { ProfileIds.SideBySideFull, ProfileIds.SideBySideHalf, ProfileIds.CustomGrayscale },
             reloaded.EnabledProfileIds);
 
-        var deviceEntry = Assert.Single(reloaded.DeviceDefaultProfiles, entry => !string.IsNullOrEmpty(entry.DeviceId));
-        Assert.Equal("living-room-tv", deviceEntry.DeviceId);
-        Assert.Equal("AndroidTV", deviceEntry.ClientName);
+        var deviceEntry = Assert.Single(reloaded.DeviceDefaultProfiles, entry => entry.DeviceId == "living-room-tv");
         Assert.Equal(ProfileIds.CustomGrayscale, deviceEntry.ProfileId);
         Assert.Equal(2, reloaded.DeviceDefaultProfiles.Count);
     }
@@ -192,7 +189,7 @@ public class PluginConfigurationTests
             CustomRightEyeColor = "#445566"
         };
         configuration.EnabledProfileIds.Add(ProfileIds.CustomGrayscale);
-        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault { ClientName = "Web", ProfileId = ProfileIds.SideBySideFull });
+        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault { DeviceId = "kitchen-tablet", ProfileId = ProfileIds.SideBySideFull });
 
         var payload = JsonSerializer.Serialize(configuration, options);
         var reloaded = JsonSerializer.Deserialize<PluginConfiguration>(payload, options);
@@ -210,8 +207,61 @@ public class PluginConfigurationTests
         Assert.Contains("\"ConstantShift\"", payload);
 
         Assert.Equal(ProfileIds.CustomGrayscale, Assert.Single(reloaded.EnabledProfileIds));
-        Assert.Equal("Web", Assert.Single(reloaded.DeviceDefaultProfiles).ClientName);
+        Assert.Equal("kitchen-tablet", Assert.Single(reloaded.DeviceDefaultProfiles).DeviceId);
         Assert.Equal(ProfileIds.SideBySideFull, Assert.Single(reloaded.DeviceDefaultProfiles).ProfileId);
+    }
+
+    [Fact]
+    public void AStoredClientNameOnADeviceEntryStillLoads()
+    {
+        // What an upgrading server has on disk: device entries written by the build that
+        // also matched on client name. ClientName is no longer a property of the model,
+        // and the XML serialiser's job is to ignore what it cannot place - so the file
+        // loads with every surviving entry intact rather than failing the plugin at
+        // start-up. No disk migration runs, and none is needed: the entries that pinned a
+        // device keep working, and one pinned to a client alone (the second entry below)
+        // pins no device here, so it matches nothing rather than hijacking everything.
+        const string ClientEraXml = """
+            <PluginConfiguration xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+              <DeviceDefaultProfiles>
+                <DeviceProfileDefault>
+                  <DeviceId>living-room-tv</DeviceId>
+                  <ClientName>AndroidTV</ClientName>
+                  <ProfileId>two_d_base</ProfileId>
+                </DeviceProfileDefault>
+                <DeviceProfileDefault>
+                  <DeviceId></DeviceId>
+                  <ClientName>Web</ClientName>
+                  <ProfileId>sbs_full</ProfileId>
+                </DeviceProfileDefault>
+              </DeviceDefaultProfiles>
+            </PluginConfiguration>
+            """;
+
+        var serializer = new XmlSerializer(typeof(PluginConfiguration));
+        using var reader = new StringReader(ClientEraXml);
+
+        var loaded = (PluginConfiguration?)serializer.Deserialize(reader)
+            ?? throw new InvalidOperationException("The client-era settings XML did not load a configuration.");
+
+        Assert.Equal(2, loaded.DeviceDefaultProfiles.Count);
+
+        var deviceEntry = Assert.Single(loaded.DeviceDefaultProfiles, entry => !string.IsNullOrEmpty(entry.DeviceId));
+        Assert.Equal("living-room-tv", deviceEntry.DeviceId);
+        Assert.Equal(ProfileIds.TwoDBase, deviceEntry.ProfileId);
+
+        // The client-only entry survived as an entry that pins no device, and an entry
+        // that pins no device answers no request.
+        var clientOnlyEntry = Assert.Single(loaded.DeviceDefaultProfiles, entry => string.IsNullOrEmpty(entry.DeviceId));
+        Assert.Equal(string.Empty, clientOnlyEntry.DeviceId);
+        Assert.False(clientOnlyEntry.Matches("any-device"));
+        Assert.False(clientOnlyEntry.Matches("Web"));
+
+        // And the catalog agrees on a real resolution: the device entry decides its device,
+        // the client-era husk never decides anybody.
+        var catalog = new ProfileCatalog();
+        Assert.Equal(ProfileIds.TwoDBase, catalog.ResolveDefaultProfileId(loaded, "living-room-tv"));
+        Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, catalog.ResolveDefaultProfileId(loaded, "someone-elses-device"));
     }
 
     [Theory]

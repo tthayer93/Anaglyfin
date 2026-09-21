@@ -79,31 +79,29 @@ public interface IProfileCatalog
     /// Resolves the profile a client should get by default.
     /// </summary>
     /// <param name="configuration">The persisted settings.</param>
-    /// <param name="deviceId">The Jellyfin device id of the request, if known.</param>
-    /// <param name="clientName">The client name of the request, if known.</param>
+    /// <param name="deviceId">The exact Jellyfin device id of the request, if known.</param>
     /// <returns>
-    /// A profile id that is always known and always enabled: the device or client
-    /// override when one matches and is enabled, then the global default, then the first
-    /// enabled profile in display order.
+    /// A profile id that is always known and always enabled: the exact-device override
+    /// when one matches and is enabled, then the global default, then the first enabled
+    /// profile in display order. There is no client-name tier - matching is by device
+    /// id alone (see <c>Anaglyfin.Configuration.DeviceProfileDefault</c>).
     /// </returns>
-    string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null, string? clientName = null);
+    string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null);
 
     /// <summary>
     /// Resolves the profile a client should get by default.
     /// </summary>
     /// <param name="configuration">The persisted settings.</param>
-    /// <param name="deviceId">The Jellyfin device id of the request, if known.</param>
-    /// <param name="clientName">The client name of the request, if known.</param>
+    /// <param name="deviceId">The exact Jellyfin device id of the request, if known.</param>
     /// <returns>The default profile, with configured colours applied when custom.</returns>
-    StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null, string? clientName = null);
+    StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null);
 
     /// <summary>
     /// Builds the version list for a request: the enabled profiles with the resolved
     /// default promoted to the front.
     /// </summary>
     /// <param name="configuration">The persisted settings.</param>
-    /// <param name="deviceId">The Jellyfin device id of the request, if known.</param>
-    /// <param name="clientName">The client name of the request, if known.</param>
+    /// <param name="deviceId">The exact Jellyfin device id of the request, if known.</param>
     /// <returns>The profiles to offer, default first.</returns>
-    IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null, string? clientName = null);
+    IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null);
 }

@@ -32,8 +32,7 @@ public class PluginConfiguration : BasePluginConfiguration
     public const int DefaultMaxConcurrentTranscodes = 1;
 
     /// <summary>
-    /// Gets or sets the profile offered to clients that have no device or client
-    /// override.
+    /// Gets or sets the profile offered to clients that have no exact-device override.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -50,13 +49,13 @@ public class PluginConfiguration : BasePluginConfiguration
     public string DefaultProfileId { get; set; } = ProfileIds.AnaglyphRedCyanDubois;
 
     /// <summary>
-    /// Gets or sets the per device and per client default profile overrides.
+    /// Gets or sets the per device default profile overrides.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Empty by default: a fresh installation has one global default. Entries are
-    /// evaluated by <see cref="DeviceProfileDefault.MatchStrength"/> and their profile
-    /// ids are only honoured when enabled in <see cref="EnabledProfileIds"/>.
+    /// Empty by default: a fresh installation has one global default. Each entry pins one
+    /// exact device id and is evaluated by <see cref="DeviceProfileDefault.MatchStrength"/>;
+    /// its profile id is only honoured when enabled in <see cref="EnabledProfileIds"/>.
     /// </para>
     /// <para>
     /// The setter exists because both settings serialisers the server uses replace the
