@@ -1628,8 +1628,8 @@ public class AnaglyfinMediaSourceProviderTests
             new[]
             {
                 IdOf(ProfileIds.SideBySideHalf),
-                IdOf(ProfileIds.AnaglyphRedCyanDubois),
                 IdOf(ProfileIds.SideBySideFull),
+                IdOf(ProfileIds.AnaglyphRedCyanDubois),
                 IdOf(ProfileIds.TwoDBase)
             },
             sources.Select(source => source.Id));
