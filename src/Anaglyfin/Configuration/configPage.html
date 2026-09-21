@@ -120,15 +120,27 @@
 
                     <div class="section anaglyfin-section">
                         <h2 class="sectionTitle">Original 3D MVC version</h2>
-                        <label class="checkboxContainer checkboxContainer-withDescription">
-                            <input type="checkbox" is="emby-checkbox" data-anaglyfin-field="OfferOriginalMVCVersion" data-anaglyfin-kind="checkbox" data-anaglyfin-default="True">
-                            <span>Offer original 3D MVC version</span>
+                        <!--
+                          The dashboard's own checkbox shape, in the arrangement the dashboard uses for
+                          a checkbox that comes with help text. The upgrade to emby-checkbox happens
+                          while the input is created and takes the label holding it as the checkbox
+                          element: caption from its first span, the outline appended after that span,
+                          one checkbox of a height. A description inside that label is therefore a
+                          paragraph in a box of fixed height, a click target for the switch, and the
+                          element the outline would be appended behind. The container is what holds the
+                          pair, so the help text is the label's neighbour inside it.
+                        -->
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label>
+                                <input type="checkbox" is="emby-checkbox" data-anaglyfin-field="OfferOriginalMVCVersion" data-anaglyfin-kind="checkbox" data-anaglyfin-default="True">
+                                <span>Offer original 3D MVC version</span>
+                            </label>
                             <div class="fieldDescription checkboxFieldDescription">
                                 Turned off, the original MVC file is hidden from version pickers
                                 while the converted versions above stay available.
                                 Nothing is deleted, and turning it back on brings the original file back at once.
                             </div>
-                        </label>
+                        </div>
                     </div>
 
                     <div class="section anaglyfin-section">
