@@ -548,29 +548,48 @@ public class ConfigurationPageTests
             attributes["data-anaglyfin-default"]);
         Assert.Equal("True", attributes["data-anaglyfin-default"]);
 
-        // The dashboard's checkbox shape, for the same reason the profile boxes use it: the
-        // upgrade to emby-checkbox happens while the element is parsed and adopts the first span
-        // of the label as the caption. A box outside that shape is a bare browser checkbox with
-        // nothing beside it.
-        var label = CheckboxLabelContaining(html, nameof(PluginConfiguration.OfferOriginalMVCVersion));
+        // The dashboard's checkbox field, in the one arrangement it uses for a checkbox that comes
+        // with help text: a container holding a label - the input and its caption span, nothing else
+        // - and the help text beside that label. Both halves of that shape are load bearing. The
+        // upgrade to emby-checkbox happens while the input is parsed, adopts the label holding it,
+        // and takes that label's first span as the caption, so a box outside a label is a bare
+        // browser checkbox with nothing to name it. The label it adopts is then laid out as one
+        // checkbox, which is what a paragraph inside it is measured against - and a label answers a
+        // click anywhere inside itself by toggling, so help text inside the label is help text whose
+        // every sentence is a way to flip the switch.
+        var field = CheckboxContainerContaining(html, nameof(PluginConfiguration.OfferOriginalMVCVersion));
+        var label = CheckboxLabelContaining(field, nameof(PluginConfiguration.OfferOriginalMVCVersion));
+        var description = CheckboxDescriptionContaining(field, nameof(PluginConfiguration.OfferOriginalMVCVersion));
 
-        Assert.Matches(@"<label\b[^>]*checkboxContainer[^>]*>", label);
+        Assert.Matches(@"<div\b[^>]*checkboxContainer checkboxContainer-withDescription[^>]*>", field);
+        Assert.Matches(@"<label\b[^>]*>\s*<input\b[^>]*is=""emby-checkbox""[^>]*>\s*<span>", field);
+
+        // The caption is the label's own, which is the half the dashboard's upgrade reads.
         Assert.Contains("<span>Offer original 3D MVC version</span>", label, StringComparison.Ordinal);
+
+        // And the help text is the label's neighbour rather than its contents: it is still inside the
+        // container, so the pair is laid out and read together, and outside the label, so neither the
+        // label's height nor the label's click reaches it.
+        Assert.DoesNotContain("fieldDescription", label, StringComparison.Ordinal);
+        Assert.Contains("fieldDescription checkboxFieldDescription", description, StringComparison.Ordinal);
+        Assert.True(
+            field.IndexOf("fieldDescription", StringComparison.Ordinal) > field.IndexOf("</label>", StringComparison.Ordinal),
+            "The help text is back inside the checkbox label, where it is both clipped and clickable.");
 
         // What the help text owes the administrator: that only the raw file is hidden, that the
         // converted versions are what is left, that the picker is where it is hidden from, and
         // that turning it back is reversible. Nothing here promises a deletion, and nothing here
         // can, because the setting does not delete anything.
-        Assert.Contains("version pickers", label, StringComparison.Ordinal);
-        Assert.Contains("converted versions", label, StringComparison.Ordinal);
-        Assert.Contains("Nothing is deleted", label, StringComparison.Ordinal);
-        Assert.Contains("turning it back on", label, StringComparison.Ordinal);
+        Assert.Contains("version pickers", description, StringComparison.Ordinal);
+        Assert.Contains("converted versions", description, StringComparison.Ordinal);
+        Assert.Contains("Nothing is deleted", description, StringComparison.Ordinal);
+        Assert.Contains("turning it back on", description, StringComparison.Ordinal);
 
         // And what it must not promise: no scan, no rescan, no relink - the words of every lever
         // that would have had to touch the library.
-        Assert.DoesNotContain("scan the library", label, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("rescan", label, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("unlink", label, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("scan the library", description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("rescan", description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("unlink", description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -886,13 +905,64 @@ public class ConfigurationPageTests
     }
 
     /// <summary>
-    /// Reads the whole of the checkbox element a bound switch sits inside: the label, its input,
-    /// the caption the dashboard takes from it and the description beside them.
+    /// Reads the whole checkbox field a bound switch sits in, from the dashboard's checkbox container
+    /// down to and including the help text beside the label.
     /// </summary>
     /// <remarks>
-    /// The element and not just the input, because the element is what the dashboard upgrades and
-    /// what the administrator reads - and the input alone can be a perfectly bound checkbox with
-    /// nothing anywhere to say what it switches.
+    /// The container and not just the input, because the container is the element the dashboard's
+    /// stylesheet lays the box and its help text out against - and because the question this answers
+    /// ("is the description beside the label, or inside it?") cannot be asked of either half alone.
+    /// The div is read by matching its own close against the closes of whatever it opens inside
+    /// itself, so nothing here has to know how many elements a checkbox field carries.
+    /// </remarks>
+    private static string CheckboxContainerContaining(string html, string fieldName)
+    {
+        var field = html.IndexOf($"data-anaglyfin-field=\"{fieldName}\"", StringComparison.Ordinal);
+        Assert.True(field >= 0, $"The admin page has no field named {fieldName}.");
+
+        var opened = html.LastIndexOf("<div", field, StringComparison.Ordinal);
+
+        Assert.True(opened >= 0, $"The {fieldName} switch is not inside a checkbox container of its own.");
+
+        var containerTag = html[opened..(html.IndexOf('>', opened) + 1)];
+        Assert.Contains("checkboxContainer", containerTag, StringComparison.Ordinal);
+
+        var depth = 0;
+        var cursor = opened;
+
+        while (true)
+        {
+            var nextOpen = html.IndexOf("<div", cursor + "<div".Length, StringComparison.Ordinal);
+            var nextClose = html.IndexOf("</div>", cursor + "</div>".Length, StringComparison.Ordinal);
+
+            Assert.True(nextClose > 0, $"The checkbox container of {fieldName} is never closed.");
+
+            if (nextOpen >= 0 && nextOpen < nextClose)
+            {
+                depth++;
+                cursor = nextOpen;
+                continue;
+            }
+
+            if (depth == 0)
+            {
+                return html[opened..(nextClose + "</div>".Length)];
+            }
+
+            depth--;
+            cursor = nextClose;
+        }
+    }
+
+    /// <summary>
+    /// Reads the checkbox label a bound switch sits in: the label, its input, and the caption the
+    /// dashboard's upgrade takes from it - and nothing else, which is the point of reading it on its
+    /// own.
+    /// </summary>
+    /// <remarks>
+    /// The label is the element the dashboard adopts and lays out as one checkbox, so what is inside
+    /// it is what the administrator can click to toggle the switch. Anything that belongs to the
+    /// field but not to the switch - the help text above all - has to be read outside it.
     /// </remarks>
     private static string CheckboxLabelContaining(string html, string fieldName)
     {
@@ -907,6 +977,30 @@ public class ConfigurationPageTests
             $"The {fieldName} switch is not inside a checkbox label of its own.");
 
         return html[opened..(closed + "</label>".Length)];
+    }
+
+    /// <summary>
+    /// Reads the help text of a bound switch: the description element the dashboard lays out under
+    /// the checkbox, in its own element rather than inside the label.
+    /// </summary>
+    private static string CheckboxDescriptionContaining(string html, string fieldName)
+    {
+        var field = html.IndexOf($"data-anaglyfin-field=\"{fieldName}\"", StringComparison.Ordinal);
+        Assert.True(field >= 0, $"The admin page has no field named {fieldName}.");
+
+        var labelClosed = html.IndexOf("</label>", field, StringComparison.Ordinal);
+        Assert.True(labelClosed > 0, $"The {fieldName} switch is not inside a checkbox label of its own.");
+
+        var opened = html.IndexOf("<div class=\"fieldDescription", labelClosed + "</label>".Length, StringComparison.Ordinal);
+
+        Assert.True(
+            opened > labelClosed,
+            $"The {fieldName} switch has no help text beside its label.");
+
+        var closed = html.IndexOf("</div>", opened, StringComparison.Ordinal);
+        Assert.True(closed > opened, $"The help text of the {fieldName} switch is never closed.");
+
+        return html[opened..(closed + "</div>".Length)];
     }
 
     private static List<(string Value, string Text)> ReadOptionValues(string fieldName)

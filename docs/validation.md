@@ -19,6 +19,7 @@ In scope:
 - FFmpeg-mvc deployment and wrapper environment configuration
 - conservative MVC eligibility detection
 - alternate media source generation, ordering, and marker transport
+- the original MVC version switch, and what it does and does not take out of the two version pickers
 - rewritten FFmpeg command lines for the main Anaglyfin profiles
 - wrapper pass-through behavior for ordinary Jellyfin playback
 - concurrency limit behavior and wrapper refusal exit codes
@@ -143,6 +144,7 @@ Check the rendered page against the shipped defaults:
 | Enabled profiles | shipped MVP set | Red/Cyan Dubois, full SBS, half SBS, and 2D Base are enabled by default |
 | Custom left eye colour | `#FF0000` | Color input defaults correctly |
 | Custom right eye colour | `#00FFFF` | Color input defaults correctly |
+| Offer original 3D MVC version | checked | Checkbox is ticked, and its help text is beside the box rather than part of its click target; V5.3 checks what turning it off does |
 | Maximum concurrent Anaglyfin transcodes | `1` | Number input defaults correctly |
 | Subtitle depth | `Automatic` | One dropdown: `Automatic`, `Constant shift`, `Plane`, and `Flat` are selectable; there is no separate enable switch |
 | Constant shift | `0` pixels | Only shown for `Constant shift`; range `-64`..`64` |
@@ -172,9 +174,15 @@ Check the rendered page against the shipped defaults:
 - [ ] The default is applied by the provider and not merely stored: V5.2 is where an actual
   client offer is checked against it.
 - [ ] A server upgrading from a build whose subtitle depth was switched off (or which
-  predates the feature) loads on `Flat`, not on the shipped `Automatic`: an upgrade does not
-  start moving captions nobody asked it to. An installation on this build already reopens
-  with whatever mode it saved.
+      predates the feature) loads on `Flat`, not on the shipped `Automatic`: an upgrade does not
+      start moving captions nobody asked it to. An installation on this build already reopens
+      with whatever mode it saved.
+- [ ] The same upgrade story holds for the original MVC switch, in the other direction: a settings
+      file with no element for it reopens **ticked**, because the shipped position is the behaviour
+      that file was written against. Saving it unticked puts the element in the file, and reopening
+      the page shows it unticked. What the box does when it is unticked is V5.3's to record; this row
+      only asks that the page tell the truth about the stored value.
+
 
 ## V3. FFmpeg-mvc and wrapper deployment
 
@@ -529,6 +537,87 @@ phone, or two browsers on two machines:
 No row here is checked off by a CI run or by reading the settings file: CI pins the resolution
 rules, and what this section asks for is what real clients actually see. Leave every one of
 them open until it has been observed, and record the observations in the result log below.
+
+### 5.3 The original MVC version toggle
+
+The admin page has one switch over the raw file itself:
+
+```text
+Offer original 3D MVC version
+```
+
+It ships checked, and a settings file written before the setting existed carries no element for it -
+an upgrading server therefore loads the same checked answer it was already offering. Unchecked, the
+raw MVC file stops being offered as a version of the item it was filed beside, and that is the whole
+of the setting. V5.1's stacked layout is the setup it is checked against:
+
+```text
+/Movies/Ready Player One (2018)/Ready Player One (2018) - 1080p.mkv
+/Movies/Ready Player One (2018)/Ready Player One (2018) - 3D mvc.mkv
+```
+
+What is switched is one entry in the two lists a version is picked from - the details-page version
+list and the PlaybackInfo response - so the checks below are read off those, and off the item DTO the
+details page renders its list from. Nothing in the library is expected to move on any of these saves;
+the checks that would notice if it did are here for that reason, not because a change is expected.
+
+- [ ] **Checked, before anything else**: the item's version list is the one V5.1 recorded - the 1080p
+      source, the `3D mvc` source, and the converted versions of the MVC file. Record the raw MVC
+      entry's `Id` and `Path` here; the same pair has to reappear at the end of this section.
+- [ ] **Saved unchecked**, the raw MVC entry is out of both lists on the next request. No server
+      restart, no library scan and no second save are part of this: the setting is read per request, so
+      reloading the page is the whole of the wait. Record which of the two surfaces was read, and that
+      both were.
+- [ ] **Nothing else moved in the same response**: the 1080p source is still listed, every converted
+      version is still listed with its own id and in its usual order, and no Anaglyfin version
+      disappeared because the file it converts stopped being offered. That last one is the check the
+      whole design exists to satisfy - the plugin's detection reads the item's own sources underneath
+      the filter, so taking the entry out of a list cannot take the file out of the offer.
+- [ ] **Saved back on**, the entry is in the list again on the next request with the `Id` and `Path`
+      recorded at the top of this section, and with no scan in between. Resume position and played
+      state are the same on both sides of the toggle.
+- [ ] **The library agrees**: the MVC child item still exists - a local alternate version is listed
+      nowhere and is addressed through its parent, so `GET /Items/<mvc item id>` as an administrator is
+      how to ask - and the movie's alternate-version link to it is what it was before the switch was
+      touched. Running a library scan after the toggle changes neither.
+- [ ] **The item whose file this is still exposes its own source.** Ask for the source list of the MVC
+      item itself - the child the scanner filed beside the movie - and its own entry is in it, with the
+      switch off. What the setting takes out of a list is a sibling version of the item being asked
+      about, never that item's own entry, so an item is never left with nothing to play. Record how the
+      list was asked for; if this item shape is not reachable from the client or endpoint used, say so
+      rather than leaving the row implied.
+- [ ] **A PlaybackInfo naming the hidden source id is refused, and that is the boundary.** Post a
+      playback request with the raw `MediaSourceId` while the entry is out of the lists and the response
+      comes back with no sources and `ErrorCode: NoCompatibleStream` - the server's ordinary answer for a
+      source it was not offered, since a version picked out of a list is picked out of a list. Record the
+      error code, and read it next to the two rows above: the entry is out of the lists, and the item and
+      its own source are where they were.
+- [ ] **A single-file MVC movie is untouched by the switch.** With the MVC file as the movie's only
+      file, its own source is still offered with the setting off: the entry this feature leaves out of a
+      list is a sibling version of the item being asked about, never that item's own entry.
+- [ ] **Nothing is hidden when there is nothing to offer instead of it.** That is the fail-open rule - a
+      raw file is only ever left out of a list when a converted version of it is in the same list - and
+      it is the difference between hiding a duplicate and taking away the only thing that plays. Ask
+      whether the run can produce the state at all: with every profile disabled the page answers with the
+      shipped enabled set (see V2), so there may be no way to reach it from a browser. If it cannot be
+      produced, record that the rule is pinned by CI at the unit level rather than leaving this row to
+      imply an observation that was not made.
+- [ ] **A restricted user gets the same answer.** The setting is not a permission: an entry hidden for
+      one user is hidden for all of them, and an entry an administrator can see is not offered to
+      somebody the library is closed to.
+- [ ] Record the **known boundary** rather than filing it as a failure: while the entry is hidden, a
+      client reading the version lists cannot discover that source id - it has to have it already.
+      Turning the switch back on restores discovery with the entry.
+
+Notes:
+
+- The switch filters what the server's media source manager hands out. Nothing in this section should
+  ever find an item deleted, unlinked, renamed, ignored or recreated. If a run does, that is a defect
+  in the filter and not a limitation of it: record the item ids, the alternate-version links the server
+  reports for the movie, and the exact sequence of saves that produced it.
+- The source id is what proves nothing was rebuilt, which is why one pair of values is asked for twice
+  above. An entry that came back with a new id would pass every weaker check in this section, and would
+  mean something in the library had been made again rather than left alone.
 
 ### Why `SupportsDirectStream: false` is not a check
 
@@ -1231,6 +1320,25 @@ Validation expectation:
 - [ ] Do not record any device-category behavior as expected, supported, or validated. None is
       implemented, and the platform would not make the claim accurate if it were.
 
+### Original MVC version switch (recorded boundary)
+
+Current state:
+
+- With `Offer original 3D MVC version` unticked, the raw MVC source is left out of the two lists a
+  version is picked from. A client that has the id already can still ask for it by id; a client that
+  does not have it cannot discover it from those lists until the setting is ticked back on.
+- That is the shape of a read filter, and it is not a bug to fix by writing to the library: the item,
+  its alternate-version link, its paths and its resume state are what the scanner left them, and no
+  lever that changed them could be reversed by a checkbox.
+
+Validation expectation:
+
+- [ ] Record the boundary through V5.3, including the source id seen on both sides of the toggle.
+- [ ] Do not record the hidden entry as a deleted, unlinked, ignored or hidden library item. If a run
+      finds the item itself changed, that is a defect in the filter; write it up as one.
+- [ ] Do not treat the switch as an access control. It decides which entries are listed, and never what
+      a user may play.
+
 ### Subtitles
 
 Current state:
@@ -1374,7 +1482,7 @@ checks are optional unless a failure shows a provider-created marker being refus
 | V2 | Admin page | Page renders and settings round-trip |  |  |
 | V3 | Wrapper deployment | Jellyfin -> wrapper -> FFmpeg-mvc works |  |  |
 | V4 | Detection | MVC-positive items offer versions; negatives do not |  |  |
-| V5 | Media sources | GUID source ids per media source, stacked alternate versions, a video codec no profile can stream-copy, and the global default ordering of V5.2 |  |  |
+| V5 | Media sources | GUID source ids per media source, stacked alternate versions, a video codec no profile can stream-copy, the global default ordering of V5.2, and the original MVC version toggle of V5.3 |  |  |
 | V6 | Marker transport | Marker survives one token, names the video stream, never reaches FFmpeg child |  |  |
 | V7 | Profile commands | Required profile fragments appear behind a real video encoder |  |  |
 | V8 | Pass-through | Ordinary playback remains unchanged |  |  |

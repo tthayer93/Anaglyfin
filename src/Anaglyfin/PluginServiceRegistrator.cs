@@ -112,8 +112,16 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
     /// <b>Why it is conditional.</b> The decorator has nothing to be a decorator without: the core
     /// it forwards to is built out of that earlier descriptor, and with no manager registered there
     /// is no list to filter and no object to wrap. Registering anyway would be a container that
-    /// answers a server-owned service with a plugin object that cannot answer for it. The same
-    /// reasoning keeps a second call from decorating the decorator.
+    /// answers a server-owned service with a plugin object that cannot answer for it.
+    /// </para>
+    /// <para>
+    /// <b>How often this runs.</b> Once per collection, on a normal server: the host registers its
+    /// own services into a fresh collection and then walks every plugin registrator over that same
+    /// collection exactly once, before the container is built. So the refusal to decorate a filter
+    /// that is already in the collection is not what keeps one decoration in place on such a server
+    /// - nothing else could have added a second one - it is what keeps this method honest when the
+    /// same collection comes round twice, which is the only way the registration it would decorate
+    /// can be the plugin's own. Decorating it would hide a filter behind a filter.
     /// </para>
     /// <para>
     /// <b>Why the core is built here.</b> Because the container will not build it: only the last
@@ -138,31 +146,59 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
             }
         }
 
+        // Three answers all mean "append nothing": there is no manager registered to wrap, the
+        // manager registered is already Anaglyfin's version filter, or the registration carries no
+        // object at all to hand to a decorator.
         if (coreDescriptor is null
-            || coreDescriptor.ImplementationType == typeof(MediaSourceManagerSuppressionDecorator)
-            || (coreDescriptor.ImplementationType is null
-                && coreDescriptor.ImplementationFactory is null
-                && coreDescriptor.ImplementationInstance is null))
+            || IsOriginalMvcVersionFilter(coreDescriptor)
+            || CarriesNoImplementation(coreDescriptor))
         {
             return;
         }
 
+        // The registration is the object its factory is made from, which is what lets a later call
+        // recognise it: see OriginalMvcVersionFilterRegistration.
+        var registration = new OriginalMvcVersionFilterRegistration(coreDescriptor);
+
         serviceCollection.Add(new ServiceDescriptor(
             typeof(IMediaSourceManager),
-            provider =>
-            {
-                var (core, owned) = BuildCoreMediaSourceManager(provider, coreDescriptor);
-
-                return new MediaSourceManagerSuppressionDecorator(
-                    core,
-                    owned,
-                    provider.GetRequiredService<IMvcSourceDetector>(),
-                    provider.GetRequiredService<IProfileCatalog>(),
-                    provider.GetRequiredService<IAnaglyfinConfigurationSource>(),
-                    provider.GetRequiredService<ILogger<MediaSourceManagerSuppressionDecorator>>());
-            },
+            registration.Create,
             ServiceLifetime.Singleton));
     }
+
+    /// <summary>
+    /// Answers whether a media source manager registration is already Anaglyfin's version filter.
+    /// </summary>
+    /// <param name="descriptor">The registration the container would answer with.</param>
+    /// <returns>
+    /// <c>true</c> when wrapping it would put a filter behind a filter rather than a filter around
+    /// the server's manager.
+    /// </returns>
+    /// <remarks>
+    /// Every shape a registration can carry is answered, because a filter can arrive in any of
+    /// them. This plugin appends a <b>factory</b>, which is the shape with no type to name: it is
+    /// recognised by the object its delegate was made from rather than by anything it would return,
+    /// since nothing has run it yet. A build that registered the decorator as a <b>type</b>, or a
+    /// host that handed one over as an <b>instance</b>, carries that type on its face. Answering
+    /// only those last two is what let a second call wrap the first.
+    /// </remarks>
+    private static bool IsOriginalMvcVersionFilter(ServiceDescriptor descriptor)
+        => descriptor.ImplementationType == typeof(MediaSourceManagerSuppressionDecorator)
+            || descriptor.ImplementationInstance is MediaSourceManagerSuppressionDecorator
+            || descriptor.ImplementationFactory?.Target is OriginalMvcVersionFilterRegistration;
+
+    /// <summary>
+    /// Answers whether a registration carries nothing the container could build.
+    /// </summary>
+    /// <param name="descriptor">The registration to read.</param>
+    /// <returns>
+    /// <c>true</c> when it names no type, holds no instance and carries no factory, so there is no
+    /// object to wrap and nothing to hand over as the core of a decorator.
+    /// </returns>
+    private static bool CarriesNoImplementation(ServiceDescriptor descriptor)
+        => descriptor.ImplementationType is null
+            && descriptor.ImplementationFactory is null
+            && descriptor.ImplementationInstance is null;
 
     /// <summary>
     /// Builds the media source manager the server registered, from the descriptor that registered
@@ -213,5 +249,64 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         }
 
         return (manager, owned);
+    }
+
+    /// <summary>
+    /// One appended <see cref="IMediaSourceManager"/> registration: the server's registration this
+    /// plugin wraps, and the factory that wraps it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The reason this is an object rather than a lambda over a local is that a factory-shaped
+    /// registration is otherwise unrecognisable after the fact. The version filter has to be able to
+    /// say "the collection already carries me" (see
+    /// <see cref="IsOriginalMvcVersionFilter(ServiceDescriptor)"/>), and a
+    /// <see cref="ServiceDescriptor"/> exposes a factory only as a function - a closure over a local
+    /// exposes nothing at all, while a delegate made from a method of this type exposes the object it
+    /// was made from. That object is the marker: it says the factory is Anaglyfin's, and nothing else
+    /// in the container can produce it.
+    /// </para>
+    /// <para>
+    /// Holding the wrapped registration here rather than in a closure is also what turns the factory
+    /// into a method with a name of its own, so the read path and the failure path of building the
+    /// core manager are stated once, in a method a reader can find, instead of inside an argument
+    /// list.
+    /// </para>
+    /// </remarks>
+    private sealed class OriginalMvcVersionFilterRegistration
+    {
+        private readonly ServiceDescriptor _coreDescriptor;
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="OriginalMvcVersionFilterRegistration"/> class.
+        /// </summary>
+        /// <param name="coreDescriptor">
+        /// The registration being decorated - the server's own manager, as the collection held it at
+        /// the moment this registration was appended.
+        /// </param>
+        public OriginalMvcVersionFilterRegistration(ServiceDescriptor coreDescriptor)
+        {
+            _coreDescriptor = coreDescriptor;
+        }
+
+        /// <summary>
+        /// Builds the decorated manager the container answers with.
+        /// </summary>
+        /// <param name="provider">The container resolving the manager.</param>
+        /// <returns>The version filter, wrapping the manager the server registered.</returns>
+        public object Create(IServiceProvider provider)
+        {
+            ArgumentNullException.ThrowIfNull(provider);
+
+            var (core, owned) = BuildCoreMediaSourceManager(provider, _coreDescriptor);
+
+            return new MediaSourceManagerSuppressionDecorator(
+                core,
+                owned,
+                provider.GetRequiredService<IMvcSourceDetector>(),
+                provider.GetRequiredService<IProfileCatalog>(),
+                provider.GetRequiredService<IAnaglyfinConfigurationSource>(),
+                provider.GetRequiredService<ILogger<MediaSourceManagerSuppressionDecorator>>());
+        }
     }
 }

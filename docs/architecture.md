@@ -45,17 +45,23 @@ real FFmpeg should run** when a user picks one of those versions.
 11. `FFmpegProcessLauncher` starts the real FFmpeg-mvc binary with no shell and inherited
     stdin/stdout/stderr.
 
+The list step 6 picks from is not assembled here: it is the server's media source manager answering
+the item, and Anaglyfin's only edit to it is the read filter behind `Offer original 3D MVC version`
+(see "The original MVC version switch"). Everything the provider adds at step 4 passes through it
+untouched.
+
 ## Major pieces
 
 | Piece | Responsibility |
 | --- | --- |
 | `Plugin` | Fixed plugin identity and admin page registration |
-| `PluginServiceRegistrator` | DI registration for catalog, detector, and settings source |
+| `PluginServiceRegistrator` | DI registration for catalog, detector, and settings source; appends the version-picker filter over the server's media source manager |
 | `ProfileCatalog` | Fixed profile allowlist and display metadata |
-| `PluginConfiguration` | Persisted profile ids, enabled profiles, concurrency, colors, subtitle depth |
+| `PluginConfiguration` | Persisted profile ids, enabled profiles, concurrency, colors, subtitle depth, and whether the original MVC file is offered |
 | `Configuration/configPage.html` | Dashboard-served settings page |
 | `MvcSourceDetector` | Conservative MVC eligibility from metadata and names |
 | `AnaglyfinMediaSourceProvider` | Alternate media sources carrying profile markers, offered in the global default's order |
+| `MediaSourceManagerSuppressionDecorator` | Stateless read filter over the server's media source manager: the two version pickers, less the raw MVC file, while the setting asks for that |
 | `ProfileMarker` | Canonical marker construction and security invariants |
 | `ProfileMarkerParser` | Wrapper-side marker recognition and validation |
 | `FfmpegProfileArgumentBuilder` | Exact argument tokens per profile |
@@ -103,6 +109,83 @@ What a default touches is the order of an offer, never its contents: the enabled
 set a client can pick and the set the library materialises version items from, so no default -
 for no client and for every client at once - enables a profile, hides a version, or starts a
 library write.
+
+## The original MVC version switch
+
+**What the entry is.** A 3D MVC file the scanner filed beside a movie arrives twice: as the movie's
+alternate-version child item, and - because the server turns every such child into a static media
+source of the item it belongs to - as an entry in the movie's version list. The label a client reads
+there is the server's own, built from that child's file name and stereo declaration; Anaglyfin did
+not write it and does not own it. Both surfaces a user picks a version from read those entries
+through one service: the details page asks `IMediaSourceManager` for an item's static sources, and
+PlaybackInfo asks it for the playback sources, which are those same static sources plus whatever the
+providers add.
+
+**Where the switch sits, and how it got there.** The admin page's `Offer original 3D MVC version`
+checkbox is answered by a stateless decorator around that one service, appended during registration:
+
+```text
+ApplicationHost.RegisterServices(collection)     AddSingleton<IMediaSourceManager, MediaSourceManager>()
+        |
+        v   (same collection, after the server's own registrations)
+ApplicationHost -> PluginManager.RegisterServices -> Anaglyfin PluginServiceRegistrator
+        |
+        v   (appended, not replaced: the server's descriptor stays where it was)
+AddSingleton<IMediaSourceManager>(provider => new MediaSourceManagerSuppressionDecorator(
+        <core built from the server's own descriptor>, ownsCore, detector, catalog, settings, logger))
+        |
+        v   (the host's own hand-offs, both against whatever the container answers)
+BaseItem.MediaSourceManager = Resolve<IMediaSourceManager>()
+Resolve<IMediaSourceManager>().AddParts(GetExports<IMediaSourceProvider>())
+```
+
+A service type resolves to its last registration, so the appended entry is the one the container
+answers with - including to the two server statics above, which is how the decorator ends up in front
+of `DtoService`'s version list and `MediaInfoHelper`'s playback sources without either of them being
+touched. `AddParts` is forwarded rather than exempted for the same reason it is handed to the
+decorator at all: the server passes the media source providers - Anaglyfin's among them - to whatever
+it resolves for this service, so the converted offer depends on the decorator passing the call down.
+Building the core out of the server's own descriptor (instance, factory or type, whichever the server
+used) is what keeps the wrapped object the one the server asked for; it is also why disposal of the
+manager that closes open live streams on shutdown moved to the decorator, since the container no
+longer creates that object and so no longer disposes it. The registration is appended once: a second
+pass over the same collection recognises the filter in every shape a registration can carry - the
+factory this plugin writes, which is recognised by the object its delegate was made from, and the
+type-shaped and instance-shaped forms, which carry the decorator's type on their face.
+
+**What is filtered.** Two reads, `GetStaticMediaSources` and `GetPlaybackMediaSources`, and only
+while the setting is off. Everything else is forwarded verbatim, `GetMediaSource` included: a source a
+request names by id is not a version offered in a list, and the two surfaces a user chooses from are
+the two that are filtered.
+
+**What is never hidden.** Anything that is not a file on the server's disk - which is the whole of
+Anaglyfin's own contribution, since a version's path is a marker URL behind the HTTP protocol, and
+the scanner gate reused here refuses a remote source for the same reason it refuses a version of a
+version. The item being asked about keeps its own source; the id decides, never the path, so a source
+keyed by another item is a sibling version and a source keyed by this item is the item itself. A raw
+file with no converted version offered instead of it - no enabled profile, or a file none of them
+converts - is kept, because taking away a way of watching a film and adding none is not what the
+switch is for. And anything the decorator cannot answer for - a source with no parsable id, a
+detector that throws, a settings read that fails - is answered with the list the server built.
+
+**Why it is reversible without a rescan.** One settings read decides the whole feature, and on the
+shipped position of the setting the server's list comes back by reference without a single source
+being looked at. Nothing probes a file, starts a process, reads the database or caches a decision, so
+a saved setting is visible to the next request rather than to the next restart. Nothing is written
+either: the child item, its alternate-version link, its paths and its resume state stay exactly as the
+scanner left them, which is why no scan, re-link or re-scrape is needed in either direction and why
+the ids of the movie's other sources do not move. Anaglyfin's own detection asks the *item* for its
+sources below this decorator, so hiding the entry never hides the file from the plugin - which is what
+lets the converted versions go on being offered while the raw entry is out of the list.
+
+**The boundary this leaves.** A consumer reading the filtered lists cannot discover a hidden source id,
+and cannot choose a version through a list it is not in: a PlaybackInfo naming that id is answered the
+way the server answers any request for a source it was not offered - no sources, `NoCompatibleStream` -
+until the setting is turned back on. What is *not* affected is the object behind the entry. The item
+asked about as itself still exposes its own source, `GetMediaSource` is forwarded and still resolves an
+id that is handed to it directly, and the library entry the scanner created was never the thing being
+switched.
+
 
 ## Marker contract
 
@@ -309,6 +392,10 @@ escaped the same way it was found.
   state at all to pick one. Nothing in settings is ever read as an authorisation, and the stale
   device ids a pre-release settings file may still carry are applied to nothing - they are text
   the client chose and can regenerate, never an identity a user can be held to.
+- The original MVC version switch decides which entries two pickers list. It writes no item, link,
+  path or permission, so it is not a way to revoke access to a file: a source it leaves out of a list
+  is still the server's own source, still resolvable by the id a request names, and still the same
+  library item it was before the box was ticked.
 
 ## Current deployment assumptions
 
