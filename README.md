@@ -8,6 +8,26 @@ Runtime design and validation notes live in `docs/architecture.md` and
 `docs/validation.md`. Install and packaging layout - bare-metal and Docker - is in
 `docs/install.md`. Orchestrator planning notes are not tracked in this checkout.
 
+## Installing it on a server
+
+Anaglyfin is installed from a Jellyfin plugin repository, so a server needs one URL and no
+download. In **Dashboard -> Plugins -> Catalogs -> Repositories -> Add plugin repository**:
+
+| Field | Value |
+| --- | --- |
+| Name | `Anaglyfin` |
+| Url | `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json` |
+
+Then install Anaglyfin from the catalogue and restart the server. A bare-metal server and a
+containerised one use the same URL and the same plugin archive. Jellyfin shows its usual
+"this is a third-party repository" warning before it installs anything from a repository that is
+not `repo.jellyfin.org`; that warning is expected and is not a problem with the package.
+
+That installs the plugin only. The Anaglyfin FFmpeg entry point - `anaglyfin-ffmpeg`, an `ffprobe`
+beside it, and an FFmpeg-mvc build for it to hand commands to - is deployed separately on both
+server shapes and is never bundled in or installed by the plugin. `docs/install.md` covers the
+repository URL, the manual route, and the whole FFmpeg deployment.
+
 ## Current state
 
 The source tree now contains the working code path, not just the bootstrap scaffold:
@@ -25,6 +45,8 @@ The source tree now contains the working code path, not just the bootstrap scaff
   concurrency guard, and real FFmpeg launcher
 - `tools/Anaglyfin.Packager`, which writes the plugin zip, `meta.json`, and the staged
   linux-x64 wrapper, and refuses a build whose assembly and manifest disagree
+- `.github/workflows/release.yml`, which turns a pushed version tag into the GitHub release and
+  the Jellyfin plugin-repository manifest servers install from
 - xUnit tests covering the pure seams, the command contract, and the packaging job
 
 Real Jellyfin runtime validation is tracked separately in `docs/validation.md`, and the install
@@ -91,7 +113,8 @@ over the one global default this release ships.
 ## Repository layout
 
 ```text
-.ci/                           CI container definition (toolchain only)
+.ci/                           CI container definition, and the release manifest helper
+.github/workflows/             Release pipeline: a version tag becomes a release and a manifest
 dev/jellyfin-validation/       Disposable Jellyfin 12 stack for runtime validation
 docs/                          Architecture, install, and validation notes
 src/Anaglyfin/                 Plugin project
@@ -196,6 +219,32 @@ ELF binary all fail the job rather than being noted in the log.
 
 `docs/install.md` covers where those three files go on a bare-metal server and in a container
 that gets `./jellyfin/config` mounted at `/config`.
+
+## Releasing a version
+
+A release is one annotated version tag: `v0.1.0`, `v0.1.1`, and so on. `.github/workflows/release.yml`
+reacts to it and does the rest - it rebuilds the tagged commit through the same gate every branch
+passes, creates or refreshes the GitHub release with its three assets, and republishes the manifest
+every server reads:
+
+| Asset | Role |
+| --- | --- |
+| `Anaglyfin_<version>.zip` | The plugin archive, and the only archive Jellyfin downloads |
+| `anaglyfin-ffmpeg` | The wrapper, as a release asset an administrator places by hand |
+| `SHA256SUMS.txt` | The SHA-256 of both files, for people; the server verifies the zip's MD5 |
+
+The manifest lives on a long-lived `metadata` branch as one file, and is served from
+`https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json`. That address is the
+permanent one: it is what an administrator types once, it does not change with the version, and it
+needs no Pages setup. `.ci/release-manifest.sh` builds it from the release's own `meta.json`, keeps
+every version already published, replaces only the entry for the version being republished, and
+refuses to write a document a server would not install. The release description is the changelog a
+server shows; with no description the entry says `Anaglyfin <version>`.
+
+Two rules bound this pipeline. It never creates and never pushes a tag - it publishes a tag that
+already exists, and a malformed tag is rejected before anything is built. And the historical `cp*`
+checkpoint tags are local to whoever made them: they are not release inputs, and they are not
+restored to the repository.
 
 ## License
 

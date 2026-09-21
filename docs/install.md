@@ -1,13 +1,96 @@
 # Installing Anaglyfin on Jellyfin 12
 
-Both installs take the same two artifacts: the plugin archive, which the server loads, and the
-FFmpeg wrapper binary, which the server starts in place of FFmpeg. Everything else - plugin
-behaviour, profile selection, marker transport - is identical on a bare-metal host and in the
-official container. The difference is only where files are put and how the server is told to look
-at them.
+Anaglyfin is two parts on every server: the plugin, which the server loads, and the FFmpeg wrapper
+binary, which the server starts in place of FFmpeg. The plugin arrives by itself once an
+administrator has pointed the server at one URL; the wrapper is always deployed by hand, on both
+shapes. Everything else - plugin behaviour, profile selection, marker transport - is identical on
+a bare-metal host and in the official container. The difference is only where files are put and how
+the server is told to look at them.
 
 Target runtime: Jellyfin `12.0.0`, plugin `net10.0`, `targetAbi 12.0.0`, wrapper for Linux
 `amd64` (Debian-based `jellyfin/jellyfin:latest`). Older Jellyfin lines are not targeted.
+
+## Adding the Anaglyfin plugin repository
+
+The ordinary route needs no download at all. Go to **Dashboard -> Plugins -> Catalogs**, open
+**Repositories**, choose **Add plugin repository**, and fill in the two fields it asks for:
+
+| Field | Value |
+| --- | --- |
+| Name | `Anaglyfin` |
+| Url | `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json` |
+
+That URL is the whole public face of the release pipeline. It is one file on a long-lived
+`metadata` branch of this repository - deliberately not GitHub Pages and deliberately not a file
+attached to one release, because those either need setup or move when the version does. The
+address an administrator saves never changes; the versions listed behind it do.
+
+Anaglyfin appears in the plugin catalogue on the next visit. Press **Install**, then **restart the
+server**: Jellyfin reads a newly installed plugin assembly during startup, not during the install,
+so the plugin is not in place until the process has been restarted. Dashboard -> Plugins then lists
+it, and the settings page appears in the dashboard's own settings menu.
+
+Two parts of this flow are expected and are not a problem with the package:
+
+- **The third-party repository warning.** Every repository that is not `repo.jellyfin.org` gets the
+  same disclaimer before an install - that the plugin comes from a repository the server does not
+  know and that installing from it is at your own risk. Anaglyfin is not published on the official
+  repository, so this always asks. It is a statement about provenance, and it is the same warning
+  any community plugin from a personal repository raises.
+- **A few minutes of staleness right after a release.** That URL is served from a CDN which keeps
+  the previous copy for a short while after a publication, so a release published in the last few
+  minutes may not be in the list yet. Open the catalogue again later; there is nothing to clear on
+  the server.
+
+**One repository, one archive, bare-metal and Docker alike.** Both server shapes use exactly the
+URL above and both receive the same plugin zip; there is no container build of the plugin, and
+nothing in the plugin is specific to one shape. What the repository install does is deliver the
+plugin - the alternate versions, the admin page, the settings document the plugin writes. That is
+one of Anaglyfin's two parts.
+
+**The Anaglyfin FFmpeg entry point is deployed separately on both shapes, and the plugin does not
+install it.** `anaglyfin-ffmpeg` is published as its own release asset precisely because it is a
+file an administrator copies to disk and points the server at; it is never inside the plugin
+archive, and Jellyfin never downloads it. Nor is FFmpeg-mvc - the real encoder the wrapper hands
+commands to - bundled, downloaded, or installed by anything here: it is a separate build the
+administrator installs and names, and without it the server will not start at all. The sections
+below cover that deployment; installing the plugin does not replace any of it.
+
+### Where the published files are
+
+| What | Where |
+| --- | --- |
+| Plugin repository manifest - the one file the server reads | `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json` |
+| Plugin archive - the only archive Jellyfin downloads | `https://github.com/tthayer93/Anaglyfin/releases/download/v0.1.0/Anaglyfin_0.1.0.zip` |
+| FFmpeg wrapper - a release asset, never plugin payload | `https://github.com/tthayer93/Anaglyfin/releases/download/v0.1.0/anaglyfin-ffmpeg` |
+| SHA-256 digests, for people to check with | `https://github.com/tthayer93/Anaglyfin/releases/download/v0.1.0/SHA256SUMS.txt` |
+
+The wrapper is a release asset rather than something only a person who cloned this tree can get,
+for exactly the reason above: an administrator who installed the plugin from the repository and
+never built it still needs that file, and the release is where it comes from. `ffprobe` and the
+FFmpeg-mvc build do not come from here at all - they come from whichever FFmpeg-mvc release the
+administrator decides to run, and the version deployed for the current subtitle-depth target is
+recorded below.
+
+Pushing a version tag is the whole release procedure: `v0.1.0` runs `.github/workflows/release.yml`,
+which rebuilds the tagged commit through the same gate every branch passes, creates or refreshes
+the GitHub release and its three assets, and replaces that one version's entry in the manifest on
+`metadata` while leaving every older version listed. Neither the release nor the manifest is
+written by hand.
+
+The `checksum` a server verifies a download against is the zip's **MD5**, because MD5 is what
+Jellyfin 12 hashes a plugin download with before it unpacks it. The SHA-256 digests in
+`SHA256SUMS.txt` are for an administrator who wants to check a file; the server never reads them.
+
+### If the server cannot reach that URL
+
+A server with no outbound HTTPS to `raw.githubusercontent.com` cannot use the catalogue at all -
+the manifest is fetched live every time the catalogue is opened, and a repository that will not
+load is an error toast rather than an empty list. The offline route is the same two files: build
+or download the artifacts, and place them by hand. Everything from here on is that route, and a
+server that installed from the repository still needs all of it except the plugin-unpacking step
+in each section - the wrapper, `ffprobe` beside it, the FFmpeg-mvc build, and the environment the
+wrapper reads.
 
 ## What the packaging job produces
 
@@ -85,6 +168,11 @@ install -d ~/.local/share/jellyfin/plugins/Anaglyfin
 unzip -o Anaglyfin_0.1.0.zip -d ~/.local/share/jellyfin/plugins/Anaglyfin
 ```
 
+A server that installed Anaglyfin from the plugin repository already has that directory - the
+server created it and owns it, which is the better outcome - and needs nothing from the two blocks
+above. Everything below this point is still by hand either way, because installing the plugin
+places no part of the FFmpeg entry point.
+
 The wrapper is a file the server starts as its own user, so it wants a stable path and the
 executable bit. Nothing writes to it, so readable-and-executable by anyone is the whole
 requirement; giving the service user ownership of it is tidiness, not a necessity:
@@ -156,7 +244,9 @@ Everything the plugin and the wrapper need has to be inside the container, and e
 the container that has to survive a recreate has to be under `/config`. `/config` is the natural
 home for both, so nothing has to be copied into the image and nothing has to be installed in it.
 
-Plugin - the server reads `/config/plugins`, so the archive unpacks there:
+Plugin - the server reads `/config/plugins`, so the archive unpacks there. This is the one step
+the plugin repository replaces: a server that installed Anaglyfin from the catalogue has already
+put it in this same directory, on the same mount, and can skip these two commands.
 
 ```sh
 mkdir -p ./jellyfin/config/plugins/Anaglyfin
@@ -253,6 +343,22 @@ final test target, and it is not rebuilt by this repository. So:
   the server's FFmpeg path is repointed. That is also why the `ffprobe` next to the wrapper is
   a copy rather than a symlink to `/usr/lib/jellyfin-ffmpeg`: the server asks for a file in
   the wrapper's own directory, and a copy travels with the deployment.
+
+## Getting a newer version
+
+A new release appears behind the same URL, for a bare-metal server and for a container alike. The
+manifest is refetched every time the catalogue is opened, so `Dashboard -> Plugins -> Anaglyfin`
+grows a revision entry for it: every revision the manifest publishes is listed there, newest first,
+each with its own install button, which is also how a server is moved back to an older revision.
+
+Installing a revision is still an install: press it, then restart the server, because the assembly
+is read at startup. Anaglyfin's install record asks for nothing on a server's behalf, so a new
+version reaches a server the same way the first one did - by an administrator pressing Install.
+
+A new version of the plugin changes nothing about the FFmpeg entry point. `anaglyfin-ffmpeg` is
+published as its own release asset with every release, and installing a new plugin revision leaves
+the wrapper on disk exactly where it was; swapping it is a separate, deliberate step, and the
+FFmpeg-mvc build behind it is not part of this repository's output at all.
 
 ## After installing
 
