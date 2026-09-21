@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -12,7 +11,6 @@ using Anaglyfin.Profiles;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
-using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
 namespace Anaglyfin.MediaSources;
@@ -47,32 +45,24 @@ namespace Anaglyfin.MediaSources;
 /// <para>
 /// <b>Discovery.</b> The server finds this type by assembly scan and activates it
 /// through <c>ActivatorUtilities</c>, so its constructor dependencies - the detector,
-/// the catalog, the settings source and the ambient request accessor it reads the
-/// playback device from - must be resolvable by that activation: the first three are
-/// registered in <see cref="PluginServiceRegistrator"/> and the accessor is the
-/// server's own root-container registration. The provider itself must <em>not</em>
-/// be registered (a container entry would hide it from the scan), and neither must
-/// anything else that the server already owns - a plugin-side
-/// <c>IHttpContextAccessor</c> entry would replace the accessor the server's request
-/// pipeline feeds, which is precisely the one this type depends on.
+/// the catalog and the settings source - must be resolvable by that activation. All
+/// three are registered in <see cref="PluginServiceRegistrator"/>. The provider itself
+/// must <em>not</em> be registered (a container entry would hide it from the scan),
+/// and neither must anything else that the server already owns.
 /// </para>
 /// <para>
-/// <b>Which device is asking.</b> <see cref="IMediaSourceProvider"/> carries no
-/// device parameter, but the server settles one onto every authenticated request:
-/// the claim <c>Jellyfin-DeviceId</c> arrives inside the request's
-/// <see cref="HttpContext"/>, which flows to this call through the ambient
-/// <see cref="IHttpContextAccessor"/> the server registered. The provider reads that
-/// one claim and hands the id to the profile catalog, so an administrator's default
-/// for one exact device goes first for that device alone. Everything else falls back
-/// to the global default without being treated as an error: an API-key request
-/// (<c>Jellyfin-IsApiKey</c> true - its device id is the server's own system id, not
-/// a client's), a request without a device claim, and the background and DLNA
-/// compositions that run with no HTTP context at all. A default is a UX preference
-/// about ordering; it authorises no playback, and a failure to read the context
-/// costs ordering and nothing else - the resolution never throws. And because the
-/// answer is per-request, it triggers nothing: the materialised version items are
-/// built from the enabled profiles, not this order, so a context-derived default
-/// starts no reconcile pass.
+/// <b>Which default applies.</b> One default decides the order for every client: the
+/// configured global one. The catalog promotes it to the front of the offered list and
+/// the remaining enabled profiles follow in display order, so the answer is the same
+/// for every request, every device and every context - an authenticated playback, an
+/// API-key call, a background or DLNA composition alike. The provider reads nothing
+/// about the request itself: no device, client or user input is consulted, and there
+/// is deliberately no ambient request-context dependency. Exact-device default
+/// matching existed on a pre-release development branch and was removed before this
+/// feature ever shipped, together with its settings entries, admin controls and
+/// request-claim reading; nothing here (or in the catalog, the settings model or the
+/// admin page) matches or applies a device any more. Approximate device categories
+/// remain future research.
 /// </para>
 /// <para>
 /// <b>Hot path.</b> <see cref="GetMediaSources"/> runs on every playback-info request
@@ -102,20 +92,6 @@ namespace Anaglyfin.MediaSources;
 /// </remarks>
 public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
 {
-    /// <summary>
-    /// The claim the server settles the authenticated request's device id onto. The
-    /// literal is deliberate: Jellyfin 12 keeps these claim names in its
-    /// <c>Jellyfin.Api</c> assembly, which a plugin does not reference, and they have
-    /// been stable across the versions this plugin targets.
-    /// </summary>
-    private const string DeviceIdClaimType = "Jellyfin-DeviceId";
-
-    /// <summary>
-    /// The claim that says the request authenticated with an API key rather than a
-    /// client's user token.
-    /// </summary>
-    private const string IsApiKeyClaimType = "Jellyfin-IsApiKey";
-
     private static readonly MediaSourceInfo[] NoSources = Array.Empty<MediaSourceInfo>();
 
     private readonly IMvcSourceDetector _detector;
@@ -123,8 +99,6 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
     private readonly IProfileCatalog _profileCatalog;
 
     private readonly IAnaglyfinConfigurationSource _configurationSource;
-
-    private readonly IHttpContextAccessor _httpContextAccessor;
 
     private readonly ILogger<AnaglyfinMediaSourceProvider> _logger;
 
@@ -134,25 +108,17 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
     /// <param name="detector">Decides which sources may be offered 3D versions.</param>
     /// <param name="profileCatalog">The profiles to offer and their order.</param>
     /// <param name="configurationSource">The live plugin settings.</param>
-    /// <param name="httpContextAccessor">
-    /// The server's ambient request accessor, the seam the playback device's exact id is
-    /// read from. It is registered by the server itself (<c>AddHttpContextAccessor</c>) and
-    /// resolved by the <c>ActivatorUtilities</c> activation of this provider; the plugin must
-    /// not register it.
-    /// </param>
     /// <param name="logger">Logger for decisions and swallowed failures.</param>
     /// <exception cref="ArgumentNullException">Any argument is <c>null</c>.</exception>
     public AnaglyfinMediaSourceProvider(
         IMvcSourceDetector detector,
         IProfileCatalog profileCatalog,
         IAnaglyfinConfigurationSource configurationSource,
-        IHttpContextAccessor httpContextAccessor,
         ILogger<AnaglyfinMediaSourceProvider> logger)
     {
         _detector = detector ?? throw new ArgumentNullException(nameof(detector));
         _profileCatalog = profileCatalog ?? throw new ArgumentNullException(nameof(profileCatalog));
         _configurationSource = configurationSource ?? throw new ArgumentNullException(nameof(configurationSource));
-        _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -394,20 +360,13 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
 
         var configuration = _configurationSource.GetConfiguration();
 
-        // Which device is asking is a fact about the request, not about the item, and the
-        // provider interface cannot carry it - so it is read from the request itself below,
-        // and only now, once a source has actually qualified for a version. The exact-device
-        // default goes first for that one device; every other answer - API-key auth, a
-        // request with no device claim, a composition running with no HTTP context at all -
-        // is null, and null leaves the global default to decide the order. Catalog order is
-        // already default-first either way.
-        var deviceId = ResolveRequestDeviceId();
-        if (deviceId is not null)
-        {
-            _logger.LogDebug("Anaglyfin is ordering versions for the exact device {DeviceId}.", deviceId);
-        }
-
-        IReadOnlyList<StereoProfile> offered = _profileCatalog.GetOfferedProfiles(configuration, deviceId);
+        // The offered order is the global one: the configured global default promoted to
+        // the front, the remaining enabled profiles behind it in catalog display order. It
+        // is the same answer for every client and every context - the provider interface
+        // carries no device, client or user parameter, and the provider deliberately reads
+        // nothing about the request around the call either. Exact-device matching was
+        // removed before release; the global default is the only default that resolves.
+        IReadOnlyList<StereoProfile> offered = _profileCatalog.GetOfferedProfiles(configuration);
         if (offered is null || offered.Count == 0)
         {
             // A catalog that offers nothing (an administrator disabled everything the
@@ -468,75 +427,4 @@ public sealed class AnaglyfinMediaSourceProvider : IMediaSourceProvider
         _logger.LogDebug("Anaglyfin offers {Count} versions for {ItemName}.", sources.Count, item.Name);
         return sources;
     }
-
-    /// <summary>
-    /// Reads the exact device id of the request this call runs inside, if it has one.
-    /// </summary>
-    /// <returns>
-    /// The request's device claim, or <c>null</c> when the request does not identify one
-    /// exact device: no ambient request at all, no authenticated user on it, no device
-    /// claim (or an empty one) on that user, or an API-key request, whose device claim
-    /// carries the server's own system id rather than any client's device.
-    /// </returns>
-    /// <remarks>
-    /// <para>
-    /// Exactly one claim is read - <c>Jellyfin-DeviceId</c> - and nothing else about the
-    /// request is consulted: not the client name, not the user, not the device name, and
-    /// no device category (Jellyfin 12 has no such field server-side to consult). The
-    /// value is the client's own self-reported id, taken verbatim, which makes it a key
-    /// for ordering versions and nothing more: an entry for it decides which version that
-    /// device starts on, never what it may play.
-    /// </para>
-    /// <para>
-    /// Nothing here may throw. <c>GetMediaSources</c> answers on request threads and on
-    /// background ones alike, and the whole value of the context seam is a better default
-    /// order - a cost of losing it is one profile back in the list, so a context that
-    /// cannot be read is answered the way a request with no device already is. The
-    /// accessor itself is the only unexpected shape here, and even it is caught.
-    /// </para>
-    /// </remarks>
-    private string? ResolveRequestDeviceId()
-    {
-        try
-        {
-            var user = _httpContextAccessor.HttpContext?.User;
-            if (user is null)
-            {
-                // No ambient request (background composition, DLNA listener, startup work),
-                // or one that never reached authentication: the global default decides.
-                return null;
-            }
-
-            if (IsApiKeyRequest(user))
-            {
-                return null;
-            }
-
-            var deviceId = user.FindFirst(DeviceIdClaimType)?.Value;
-            return string.IsNullOrWhiteSpace(deviceId) ? null : deviceId;
-        }
-        catch (Exception ex)
-        {
-            // Reading a claim is never worth losing the versions over; this is the same
-            // degradation an empty claim already answers with, logged so a broken
-            // deployment can be diagnosed from the log instead of by the missing default.
-            _logger.LogDebug(ex, "Anaglyfin could not read the request device id; falling back to the global default profile.");
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Checks whether the request authenticated with an API key.
-    /// </summary>
-    /// <param name="user">The authenticated user of the request.</param>
-    /// <returns><c>true</c> when the server marked this request as API-key auth.</returns>
-    /// <remarks>
-    /// An API-key request carries a device claim - the server's own system id - and that
-    /// id is no client's device: treating it as one would let a script pin the default of
-    /// a device nobody is holding. The API key names no device, so the global default
-    /// decides, and the claim's own spelling ("True"/"False", the invariant rendering of
-    /// the server's flag) is parsed rather than string-compared against one spelling.
-    /// </remarks>
-    private static bool IsApiKeyRequest(ClaimsPrincipal user)
-        => bool.TryParse(user.FindFirst(IsApiKeyClaimType)?.Value, out var isApiKey) && isApiKey;
 }

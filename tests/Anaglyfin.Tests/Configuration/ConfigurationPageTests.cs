@@ -319,10 +319,6 @@ public class ConfigurationPageTests
         Assert.Equal(3, configuration.SubtitleDepthShift);
         Assert.Equal(3, configuration.SubtitleDepthPlane);
 
-        var deviceDefault = Assert.Single(configuration.DeviceDefaultProfiles);
-        Assert.Equal("living-room-tv", deviceDefault.DeviceId);
-        Assert.Equal("custom_grayscale", deviceDefault.ProfileId);
-
         // And the same check written against the field list instead of the individual
         // settings, so a setting added to the model cannot join the page half bound.
         foreach (var fieldName in ReadBoundFieldNames())
@@ -371,194 +367,25 @@ public class ConfigurationPageTests
     }
 
     [Fact]
-    public void TheAdminPageSavesADeviceOverrideEntryInTheSpellingTheModelUses()
+    public void TheAdminPageCarriesNoDeviceDefaultControlsEndpointsOrScript()
     {
-        // A device override travels as a nested object of the same body and is bound the same
-        // way, so an entry spelled camelCase is dropped with the same silent success as a
-        // camelCase setting - and its row comes back empty on the next read for the same reason.
+        // Exact-device defaults never shipped, and the feature was taken out of the product
+        // before release: the global default is the only default control this page has.
+        // Nothing device-shaped may survive the removal in any layer the page can carry it
+        // in - the markup, the stylesheet, the script, or a read of the server's device
+        // registry - because a leftover control would advertise a matching tier the
+        // settings model, the catalog and the provider have all dropped, and a save would
+        // post it under a name the endpoint silently ignores.
         var html = ReadPageHtml();
 
-        var emitted = Regex.Matches(FunctionBody(html, "readDeviceRow"), "(?<key>[A-Za-z]+):\\s*textOf\\(")
-            .Cast<Match>()
-            .Select(match => match.Groups["key"].Value)
-            .ToArray();
+        Assert.DoesNotContain("device", html, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("AnaglyfinDeviceDefault", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("getUrl('/Devices'", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("deviceDefault", html, StringComparison.OrdinalIgnoreCase);
 
-        Assert.Equal(
-            DeviceEntryPropertyNames().OrderBy(name => name, StringComparer.Ordinal),
-            emitted.OrderBy(name => name, StringComparer.Ordinal));
-
-        // A stored entry is read from either spelling, because the response a row is filled from
-        // is spelled by whatever the dashboard's client asked the endpoint for.
-        var stored = FunctionBody(html, "entryText");
-        Assert.Contains("hasOwnProperty.call(entry, propertyName)", stored, StringComparison.Ordinal);
-        Assert.Contains("entry[camelCase]", stored, StringComparison.Ordinal);
-
-        // And every entry property is filled through that reader, rather than by one spelling of
-        // one property named inline where the other spelling would read as absent.
-        var filled = FunctionBody(html, "addDeviceRow");
-        Assert.All(DeviceEntryPropertyNames(), name => Assert.Matches($@"entryText\(entry, '{name}'\)", filled));
-        Assert.DoesNotContain("entry.deviceId", filled, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void TheDeviceDefaultSectionIsExactDeviceOnlyAndNeverClientMatching()
-    {
-        // This release pins defaults to exact registered devices and to nothing else. The
-        // heading says so, and the client half of the old rows is gone from every layer the
-        // page can carry it in: the heading, the description, the labels, the field names
-        // and the saved entries. A leftover "Client" control would advertise a matching
-        // tier the settings model and the catalog have both dropped - and would be saved
-        // under a name the endpoint ignores.
-        var html = ReadPageHtml();
-
-        Assert.Contains("<h2 class=\"sectionTitle\">Device defaults</h2>", html, StringComparison.Ordinal);
-        Assert.DoesNotContain("Device and client defaults", html, StringComparison.Ordinal);
-        Assert.DoesNotContain("clientName", html, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("ClientName", html, StringComparison.Ordinal);
-        Assert.DoesNotContain(">Client</label>", html, StringComparison.Ordinal);
-
-        // The description states what a default is and - as importantly for a key the
-        // client itself supplies - what it is not.
-        Assert.Contains("Pin the first offered profile to one exact registered device", html, StringComparison.Ordinal);
-        Assert.Contains("does not authorize playback", html, StringComparison.Ordinal);
-        Assert.Contains("does not apply to any other client", html, StringComparison.Ordinal);
-
-        // A row identifies its device by exactly one of the two device controls plus the
-        // profile it pins. No third field name has room on an exact-device row. The pin
-        // reads the markup attributes only - the leading space keeps the page's own
-        // querySelector template, which spells the attribute with a variable name inside,
-        // out of the capture.
-        var deviceFields = Regex.Matches(html, " data-anaglyfin-device-field=\"(?<name>[^\"]+)\"")
-            .Cast<Match>()
-            .Select(match => match.Groups["name"].Value)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-
-        Assert.Equal(
-            new[] { "deviceId", "deviceIdManual", "profileId" },
-            deviceFields.OrderBy(name => name, StringComparer.Ordinal));
-    }
-
-    [Fact]
-    public void TheDevicePickerIsPopulatedFromTheRegisteredDevices()
-    {
-        // The ids the picker offers are the server's own registry, read through the
-        // dashboard's signed-in client: the user list, then each user's devices, Limit 0
-        // asking for all of them. These are the only device reads the page makes, and the
-        // no-raw-transport rule the dashboard notice pins holds over them because the page
-        // has no other way to reach the endpoints.
-        var html = ReadPageHtml();
-
-        Assert.Contains("window.ApiClient.getJSON(window.ApiClient.getUrl('/Users'))", html, StringComparison.Ordinal);
-
-        var load = FunctionBody(html, "loadDeviceRegistry");
-        Assert.Contains("getUrl('/Devices'", load, StringComparison.Ordinal);
-        Assert.Contains("userId:", load, StringComparison.Ordinal);
-        Assert.Contains("Limit: 0", load, StringComparison.Ordinal);
-
-        // The same device signed into by several users merges into one option by exact id,
-        // and the merge keeps the identity fields the label is made from.
-        var merge = FunctionBody(html, "mergeRegisteredDevices");
-        Assert.Contains("findRegisteredDevice(entries, id)", merge, StringComparison.Ordinal);
-        Assert.Contains("device.CustomName", merge, StringComparison.Ordinal);
-        Assert.Contains("device.Name", merge, StringComparison.Ordinal);
-        Assert.Contains("device.AppName", merge, StringComparison.Ordinal);
-        Assert.Contains("device.LastUserName", merge, StringComparison.Ordinal);
-
-        // The label prefers the administrator's name for the device, then the device's own,
-        // then the id - and labels more than one device wears carry the ids that differ.
-        var label = FunctionBody(html, "labelRegisteredDevices");
-        Assert.Contains("entry.customName || entry.name || entry.id", label, StringComparison.Ordinal);
-        Assert.Contains("entry.appName", label, StringComparison.Ordinal);
-        Assert.Contains("entry.lastUserName", label, StringComparison.Ordinal);
-        Assert.Contains("countLabel(entries", label, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void AStoredDeviceThatIsNoLongerRegisteredKeepsItsExactId()
-    {
-        // A stored default whose device the registry no longer lists - uninstalled, factory
-        // reset, or a server mid-restart - must survive a save of anything else on the page.
-        // The picker therefore grows a labelled option carrying the exact id, rather than
-        // silently showing an empty choice whose save would drop the entry.
-        var fill = FunctionBody(ReadPageHtml(), "fillDevicePicker");
-
-        Assert.Contains("isRegisteredDevice(wanted)", fill, StringComparison.Ordinal);
-        Assert.Contains("profileOption(wanted,", fill, StringComparison.Ordinal);
-        Assert.Contains("not registered", fill, StringComparison.OrdinalIgnoreCase);
-
-        // And the option's value is the id itself, so reading the row back writes the same
-        // id the settings already stored.
-        Assert.Matches(@"select\.value\s*=\s*wanted;", fill);
-    }
-
-    [Fact]
-    public void TheDeviceRowsFallBackToATypedDeviceIdWhenTheRegistryCannotBeRead()
-    {
-        // No device list is a state of the page, not a disability of it: every row - stored
-        // or newly added - switches to one typed device id, the page says why, and the
-        // stored ids survive. A settings page that cannot list devices has to remain a page
-        // an administrator can finish using.
-        var html = ReadPageHtml();
-
-        var manualTag = ReadEditableTags(html)
-            .SingleOrDefault(candidate => ReadAttributes(candidate).GetValueOrDefault("data-anaglyfin-device-field") == "deviceIdManual");
-
-        Assert.True(manualTag is not null, "The device rows lost their typed device id fallback.");
-        var attributes = ReadAttributes(manualTag!);
-        Assert.Equal("text", attributes["type"]);
-        Assert.True(
-            int.TryParse(attributes.GetValueOrDefault("maxlength"), out var maxLength) && maxLength is > 0 and <= 256,
-            "The typed device id has to stay short.");
-
-        // One control per row is active, decided by the registry state and recorded on the
-        // row: the save reads the row's mode rather than whichever control answers first.
-        var mode = FunctionBody(html, "deviceRowMode");
-        Assert.Contains("failed", mode, StringComparison.Ordinal);
-        Assert.Contains("manual", mode, StringComparison.Ordinal);
-
-        var active = FunctionBody(html, "activeDeviceField");
-        Assert.Contains("data-anaglyfin-device-mode", active, StringComparison.Ordinal);
-        Assert.Contains("rowDeviceManual", active, StringComparison.Ordinal);
-        Assert.Contains("rowDevicePicker", active, StringComparison.Ordinal);
-
-        var apply = FunctionBody(html, "applyDeviceRegistryToRow");
-        Assert.Contains("data-anaglyfin-device-mode", apply, StringComparison.Ordinal);
-        Assert.Contains("hidden", apply, StringComparison.Ordinal);
-        Assert.Contains("disabled", apply, StringComparison.Ordinal);
-
-        // Failure names itself on the page and re-modes the rows that are already on it.
-        var failed = FunctionBody(html, "markDeviceRegistryUnavailable");
-        Assert.Contains("AnaglyfinDeviceListNotice", failed, StringComparison.Ordinal);
-        Assert.Contains("syncDeviceRowsWithRegistry", failed, StringComparison.Ordinal);
-
-        // A row that names no device - picked or typed - is not stored.
-        Assert.Contains("if (entry.DeviceId.length > 0) {", html, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void EveryDeviceRowPairsOneDeviceControlWithOneProfilePicker()
-    {
-        // The row is the entry's shape: a device (one control at a time, but two in the
-        // markup for the two states of the registry) and one profile. Two profile pickers
-        // on a row would be two answers for one setting; zero device controls would be a
-        // row the save drops.
-        var html = ReadPageHtml();
-
-        var template = Regex.Match(
-            html,
-            @"<template id=""AnaglyfinDeviceDefaultRowTemplate"">[\s\S]*?</template>");
-        Assert.True(template.Success, "The device default rows no longer arrive from a template.");
-
-        Assert.Single(Regex.Matches(template.Value, "data-anaglyfin-device-field=\"deviceId\""));
-        Assert.Single(Regex.Matches(template.Value, "data-anaglyfin-device-field=\"deviceIdManual\""));
-        Assert.Single(Regex.Matches(template.Value, "data-anaglyfin-device-field=\"profileId\""));
-
-        // Each half of the row is filled by its own registry: the profile options come from
-        // the catalog list, the device half from the request-baked registry state.
-        var add = FunctionBody(html, "addDeviceRow");
-        Assert.Contains("fillProfileOptions(deviceRowField(row, 'profileId'));", add, StringComparison.Ordinal);
-        Assert.Contains("applyDeviceRegistryToRow(row,", add, StringComparison.Ordinal);
+        // The free-text device id box was the page's only text input; with the feature
+        // gone the page has no free text at all to re-grow a row template for.
+        Assert.DoesNotContain("<template", html, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -786,21 +613,11 @@ public class ConfigurationPageTests
             {
                 var type = attributes.GetValueOrDefault("type", string.Empty);
 
-                Assert.Contains(type, new[] { "checkbox", "color", "number", "text" }, StringComparer.OrdinalIgnoreCase);
-
-                if (string.Equals(type, "text", StringComparison.OrdinalIgnoreCase))
-                {
-                    // The only free text on the page types in one exact device id when the
-                    // registry of registered devices could not be read, which the settings
-                    // model matches by id and never executes.
-                    Assert.True(
-                        attributes.ContainsKey("data-anaglyfin-device-field"),
-                        $"A free text field appeared on the admin page: {editable}");
-
-                    Assert.True(
-                        int.TryParse(attributes.GetValueOrDefault("maxlength"), out var maxLength) && maxLength is > 0 and <= 256,
-                        "The device identification fields have to stay short.");
-                }
+                // Every value the page can carry is chosen, not typed: switches, colours and
+                // numbers. The free-text id box the exact-device rows fell back to was the
+                // page's only text input and it left with the feature, so nothing may type
+                // an identifier at all now.
+                Assert.Contains(type, new[] { "checkbox", "color", "number" }, StringComparer.OrdinalIgnoreCase);
             }
 
             foreach (var attribute in attributes)
@@ -1051,28 +868,6 @@ public class ConfigurationPageTests
             .Where(property => property.CanWrite && property.DeclaringType == typeof(PluginConfiguration))
             .Select(property => property.Name);
 
-    /// <summary>
-    /// The names a device override entry is stored under: the same names the settings endpoint
-    /// binds it by, since an entry is a nested object of the settings body. Exactly two are
-    /// writable - one device id and one profile id. A third writable property could only be
-    /// something the row cannot select (the client-name twin this release removed), so the
-    /// count is pinned beside the names.
-    /// </summary>
-    private static IEnumerable<string> DeviceEntryPropertyNames()
-    {
-        var names = typeof(DeviceProfileDefault)
-            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(property => property.CanWrite && property.DeclaringType == typeof(DeviceProfileDefault))
-            .Select(property => property.Name)
-            .ToArray();
-
-        Assert.Equal(
-            new[] { nameof(DeviceProfileDefault.DeviceId), nameof(DeviceProfileDefault.ProfileId) },
-            names.OrderBy(name => name, StringComparer.Ordinal));
-
-        return names;
-    }
-
     private static PropertyInfo SettingsProperty(string fieldName)
         => typeof(PluginConfiguration).GetProperty(fieldName, BindingFlags.Public | BindingFlags.Instance)
             ?? throw new InvalidOperationException($"The admin page binds {fieldName}, which the settings model does not have.");
@@ -1122,16 +917,6 @@ public class ConfigurationPageTests
         if (propertyType == typeof(List<string>))
         {
             return new JsonArray { JsonValue.Create("sbs_full"), JsonValue.Create("two_d_base") };
-        }
-
-        if (propertyType == typeof(List<DeviceProfileDefault>))
-        {
-            // A nested entry is named by the same rule as the setting holding it.
-            return new JsonArray(new JsonObject
-            {
-                ["DeviceId"] = "living-room-tv",
-                ["ProfileId"] = "custom_grayscale"
-            });
         }
 
         throw new InvalidOperationException(

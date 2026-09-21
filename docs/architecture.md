@@ -20,10 +20,9 @@ real FFmpeg should run** when a user picks one of those versions.
 2. `AnaglyfinMediaSourceProvider` checks whether the item is a video file and whether the
    conservative MVC detector accepts it.
 3. For an eligible item the provider asks the catalog which profiles to offer and in what
-   order, naming the device that asked. The interface carries no device parameter, so the
-   exact id is read off the request itself, from the ambient HTTP context the server keeps for
-   the call in flight (see "Which device is asking").
-4. It creates one alternate `MediaSourceInfo` per offered profile - the profile that device's
+   order. The question is global - no device, client or user input is named or consulted - so
+   every client gets the same answer (see "Which default applies").
+4. It creates one alternate `MediaSourceInfo` per offered profile - the configured global
    default resolves to first, the rest in catalog display order.
 5. Each alternate source carries a profile marker URL instead of a playable path:
 
@@ -54,10 +53,9 @@ real FFmpeg should run** when a user picks one of those versions.
 | `PluginServiceRegistrator` | DI registration for catalog, detector, and settings source |
 | `ProfileCatalog` | Fixed profile allowlist and display metadata |
 | `PluginConfiguration` | Persisted profile ids, enabled profiles, concurrency, colors, subtitle depth |
-| `DeviceProfileDefault` | One device's default profile: an exact device id and the profile to offer it first |
 | `Configuration/configPage.html` | Dashboard-served settings page |
 | `MvcSourceDetector` | Conservative MVC eligibility from metadata and names |
-| `AnaglyfinMediaSourceProvider` | Alternate media sources carrying profile markers, offered in the asking device's order |
+| `AnaglyfinMediaSourceProvider` | Alternate media sources carrying profile markers, offered in the global default's order |
 | `ProfileMarker` | Canonical marker construction and security invariants |
 | `ProfileMarkerParser` | Wrapper-side marker recognition and validation |
 | `FfmpegProfileArgumentBuilder` | Exact argument tokens per profile |
@@ -69,31 +67,31 @@ real FFmpeg should run** when a user picks one of those versions.
 | `WrapperConcurrencyGuard` | File-slot concurrency limit for Anaglyfin jobs |
 | `FFmpegProcessLauncher` | Starts real FFmpeg through argv, not a shell |
 
-## Which device is asking
+## Which default applies
 
 `IMediaSourceProvider` is handed the item and nothing else: on Jellyfin 12 the interface carries
-no device, no client and no user. Which device is asking is still a fact about the request, and
-the server settles it onto that request - a `Jellyfin-DeviceId` claim on every authenticated one -
-so the provider reads that one claim from the ambient HTTP context the call runs inside. An
-administrator's default for one exact registered device therefore goes first for that device and
-for nobody else, and the resolution is per request rather than cached or written anywhere.
+no device, no client and no user. This release does not need any of the three. The configured
+global default is the only default tier, so every client - phone, TV, web, VR - is offered the
+same versions in the same order, and the provider deliberately consults nothing about the request
+around a call: it holds no HTTP context dependency of any kind, which the constructor-shape test
+pins so the dependency cannot creep back in unnoticed.
 
-Because the seam is the request rather than a parameter, a request that names no device is an
-ordinary case and not a failure: an API-key call, whose device field carries the server's own
-system id rather than any client's device, and the library, DLNA and startup compositions that
-reach a provider with no HTTP context at all. All of them leave the ordering to the global
-default, and nothing else about the offer changes. A context that cannot be read is answered the
-same way, because the whole thing a default can cost is one profile's place in a list.
+Pre-release builds did ask "which device is asking". The provider read the one `Jellyfin-DeviceId`
+claim the server settles onto every authenticated request and let an administrator pin a default
+to one exact registered device, with API-key calls and context-free compositions falling back to
+the global default. That exact-device feature never shipped: it was removed before this release,
+along with its settings entry, its admin-page rows and the provider's request-context dependency.
+A settings file written by one of those builds still loads - a stale `DeviceDefaultProfiles`
+element decides neither the default nor the offered order, and it is dropped on the next save.
+The removal also fits what the materialised version items already do: an item lives in the library
+for every client at once and is ranked by the one global answer, so a per-device default would
+have ordered the dynamic offer differently from the library the same pick is chosen from.
 
-Selection is by exact device id and nothing else. That id is generated and self-reported by the
-client - a reinstall, a reset, or cleared storage regenerates it, and the server's device list
-only records what a client last claimed rather than issuing the id itself - which makes it a good
-key for a preference and a poor one for anything else: a default authorises no playback, and a
-pinned entry can quietly stop matching when a client re-registers. Client names are not a key at
-all; they are free text that changes between releases of the same app, and matching on one would
-promise a reliability the platform does not have. Rows an older build stored with a client name
-still load, since the name is simply ignored, and they are gone from the settings file on the next
-save; a row that pinned a client and no device matches nothing in the meantime.
+Why the claim was never more than a convenience key stands regardless of the removal: a device id
+is generated and self-reported by the client - a reinstall, a reset, or cleared storage
+regenerates it, and the server's device list only records what a client last claimed - so it can
+quietly stop matching, and it was never a security boundary. A default, global or otherwise, only
+reorders an offer.
 
 Approximate device **categories** are not a key either, and cannot honestly be one today: Jellyfin
 12 computes and stores no device type to consult, so there is no server-side answer to "is this a
@@ -102,8 +100,9 @@ about themselves, would have to say so on its own face, and could not claim accu
 3D TVs, VR headsets or 3D-capable projectors. See "Current follow-up areas".
 
 What a default touches is the order of an offer, never its contents: the enabled profiles are the
-set a client can pick and the set the library materialises version items from, so no device's
-default enables a profile, hides a version, or starts a library write.
+set a client can pick and the set the library materialises version items from, so no default -
+for no client and for every client at once - enables a profile, hides a version, or starts a
+library write.
 
 ## Marker contract
 
@@ -306,8 +305,10 @@ escaped the same way it was found.
 - The wrapper never treats arbitrary command text as filter syntax.
 - The wrapper launches FFmpeg through `ArgumentList`, not a shell.
 - Refusal diagnostics avoid echoing request paths and marker text.
-- A request's device id orders an offer and nothing else. It is text the client chose, so it is
-  never read as an authorisation or as an identity a user can be held to.
+- A default reorders an offer and nothing else, and it is global: the plugin reads no request
+  state at all to pick one. Nothing in settings is ever read as an authorisation, and the stale
+  device ids a pre-release settings file may still carry are applied to nothing - they are text
+  the client chose and can regenerate, never an identity a user can be held to.
 
 ## Current deployment assumptions
 
@@ -330,7 +331,7 @@ escaped the same way it was found.
 - Wire per-playback subtitle selection through marker subtitle ordinals and `SubtitleBurnIn`.
 - Offer approximate device categories (TV, phone, tablet, headset, projector) if a mapping from
   self-reported clients to a category can be built honest enough to be labelled the heuristic it
-  is; Jellyfin 12 has no native device type to key one on, so this is future work rather than a
-  wiring gap in the exact-device defaults already applied.
+  is; Jellyfin 12 has no native device type to key one on, so this is future research layered over
+  the one global default this build ships, not a wiring gap in something already applied.
 - Merge wrapper signal forwarding from `task/T8-wrapper-signal-forwarding`.
 - Add packaging metadata if a plugin repository workflow is desired.

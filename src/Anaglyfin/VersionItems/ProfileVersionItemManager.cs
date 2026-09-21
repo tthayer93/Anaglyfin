@@ -341,14 +341,13 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         // a rank this pass computes (see <see cref="BuildDesiredState"/>), and the rank has to put the
         // page's first offer - the configured default - in front, which is exactly what the catalog's
         // offered list is: the enabled profiles with the default promoted to the front. It is asked for
-        // with no device, so the default promoted is the configured global one and never a single
-        // client's - a version item is in the library for every client, and which of them a given
-        // device should start on stays the dynamic provider's per-request answer (that is the one
-        // question an item cannot ask). The offered list is the enabled set in a different order and
-        // never a wider or a narrower one - the catalog resolves the default to a profile that is
-        // enabled, so a device pin naming a profile nobody switched on cannot reach it here - so what
-        // gets materialised is still exactly the profiles an administrator switched on, whatever any
-        // one device prefers to begin with.
+        // with no client or device input - the configured global default is the only default there is -
+        // because a version item sits in the library for every client at once and must carry one
+        // consistent order for all of them (the dynamic offer in AnaglyfinMediaSourceProvider reads
+        // this same global answer per request). The offered list is the enabled set in a different
+        // order and never a wider or a narrower one - the catalog resolves the default to a profile
+        // that is enabled - so what gets materialised is exactly the profiles an administrator
+        // switched on, whatever the default happens to be.
         var configuration = _configurationSource.GetConfiguration();
         var offered = _profileCatalog.GetOfferedProfiles(configuration) ?? new List<StereoProfile>();
 

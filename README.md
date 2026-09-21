@@ -17,7 +17,7 @@ The source tree now contains the working code path, not just the bootstrap scaff
 - plugin configuration model and dashboard admin page
 - conservative MVC detection rules
 - alternate media source provider that adds profile-marked playback versions
-- default profiles applied per exact registered device, read from the requesting client
+- one global default profile, offered first to every client ahead of the remaining enabled ones
 - profile marker and parser contract
 - exact FFmpeg profile argument builder
 - out-of-process `Anaglyfin.FFmpegWrapper` executable with marker rewrite,
@@ -31,21 +31,23 @@ shapes for a bare-metal server and for `jellyfin/jellyfin:latest` are in `docs/i
 Before either is visited for real, `dev/jellyfin-validation/` runs the packaged plugin and
 wrapper against a disposable `jellyfin/jellyfin:latest` mounted the way the target server is.
 
-Device defaults are applied, not merely stored. The provider reads the exact
-`Jellyfin-DeviceId` claim of the authenticated request it is answering, so a default pinned to
-one registered device is offered first to that device and to no other client; an API-key call,
-or a provider call with no HTTP context behind it at all, falls back to the global default. A
-default only chooses which version is offered first - it authorises no playback and changes no
-library item - and because a device id is client-generated and can be regenerated, it is a
-convenience key rather than a security boundary. What that ordering looks like on a real
-registered device is still an open entry of `docs/validation.md` (V5.2), not a result recorded
-here.
+The default profile is global and only global. The version an administrator picks as the default
+is offered first to every client - phone, TV, web, VR - with the remaining enabled versions
+following in catalog order, and the same ordering is what materialised version items are ranked
+by. A default only chooses which version is offered first; it authorises no playback and changes
+no library item. Exact-device default overrides existed on pre-release builds only: the provider
+once read the request's `Jellyfin-DeviceId` claim so one registered device could start on a
+different version, and that feature was removed before this release. The provider now consults
+nothing about the request itself. Settings XML written by those pre-release builds loads intact -
+a stale `DeviceDefaultProfiles` element decides neither the default nor the offered order, and it
+is dropped the next time the settings are saved.
 
 The remaining implementation follow-ups are documented in those files and include subtitle
 ordinal wiring through the provider. Selecting by approximate device category - TV, phone,
 tablet, VR headset, 3D-capable projector - is deferred future work and not a current capability:
 Jellyfin 12 has no reliable native server-side device type to key one on, so such a feature can
-only ever be an explicitly labelled heuristic over what clients report about themselves.
+only ever be an explicitly labelled heuristic over what clients report about themselves, layered
+over the one global default this release ships.
 
 ## Requirements
 
