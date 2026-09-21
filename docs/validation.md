@@ -22,14 +22,15 @@ In scope:
 - rewritten FFmpeg command lines for the main Anaglyfin profiles
 - wrapper pass-through behavior for ordinary Jellyfin playback
 - concurrency limit behavior and wrapper refusal exit codes
-- known MVP limitations: subtitles, device defaults, and signal forwarding
+- known MVP limitations: subtitles, signal forwarding, and the device-category gap V10 records
 
 Out of scope:
 
 - automated integration tests
 - packaging as an official Jellyfin plugin repository package
-- per-device default application through playback-info device context, which is not wired
-  through the current media-source provider
+- selection by approximate device category (TV, phone, tablet, headset, projector), which Jellyfin
+  12 cannot answer and this build does not attempt; exact registered-device defaults are wired,
+  and what a real device sees about them is V5.2's to record
 - signal forwarding, which is being handled separately in `task/T8-wrapper-signal-forwarding`
 
 ## How to record results
@@ -137,9 +138,9 @@ Check the rendered page against the shipped defaults:
 
 | Field | Shipped default | Validation |
 | --- | --- | --- |
-| Default profile | `3D Anaglyph Red/Cyan (Dubois)` (`anaglyph_arcd`) | Shown and selectable |
+| Default profile | `3D Anaglyph Red/Cyan (Dubois)` (`anaglyph_arcd`) | Shown and selectable; the profile every client with no exact-device entry starts on |
 | Enabled profiles | shipped MVP set | Red/Cyan Dubois, full SBS, half SBS, and 2D Base are enabled by default |
-| Device and client defaults | none | UI allows adding/removing rows |
+| Device defaults | none | UI adds and removes rows, and each row picks its device from the server's registered devices |
 | Custom left eye colour | `#FF0000` | Color input defaults correctly |
 | Custom right eye colour | `#00FFFF` | Color input defaults correctly |
 | Maximum concurrent Anaglyfin transcodes | `1` | Number input defaults correctly |
@@ -165,10 +166,13 @@ Check the rendered page against the shipped defaults:
   the save sees it without another deployment step.
 - [ ] Disabling all enabled profiles is not accepted as an empty offer: saving that state
   should come back as the shipped enabled set.
-- [ ] Changing the default profile changes the first Anaglyfin version offered to a client
-  for an eligible MVC item.
-- [ ] The device/client defaults UI saves rows, but see V10 for the current limitation:
-  the provider does not yet apply those rows.
+- [ ] Changing the default profile changes the first Anaglyfin version offered, for a client that
+  has no exact-device entry of its own.
+- [ ] A device default row names the device it was picked from when the page is reopened, and a
+  row added with no device chosen is not saved at all - an entry that pins no device decides
+  nothing, so the page does not keep one.
+- [ ] The rows are applied by the provider and not merely stored: V5.2 is where an actual client
+  offer is checked against them, and V10 records the device matching they do not do.
 - [ ] A server upgrading from a build whose subtitle depth was switched off (or which
   predates the feature) loads on `Flat`, not on the shipped `Automatic`: an upgrade does not
   start moving captions nobody asked it to. An installation on this build already reopens
@@ -364,10 +368,12 @@ two_d_base
 
 Expected Anaglyfin contribution order:
 
-1. The configured default profile, promoted first.
+1. The default profile for this request, promoted first: the profile pinned to the requesting
+   device by an exact-device entry, or the global default when that device has no entry.
 2. The remaining enabled profiles in catalog display order.
 
-For the default installation, the expected Anaglyfin order is therefore:
+For the default installation, with no device entry configured, the expected Anaglyfin order is
+therefore:
 
 ```text
 1. 3D Anaglyph Red/Cyan (Dubois)
@@ -379,8 +385,10 @@ For the default installation, the expected Anaglyfin order is therefore:
 Notes:
 
 - The server may keep the item's original source first in the client's version list.
-- `DeviceDefaultProfiles` are saved by the admin page but are not applied by the current
-  media-source provider, because the provider receives no device/client context.
+- The promoted first version is per device. `DeviceDefaultProfiles` entries are applied by the
+  provider, which reads the exact device id the server settled onto the playback-info request;
+  the global default decides for every client none of them names. V5.2 checks the ordering on
+  real clients.
 
 For each alternate source, check:
 
@@ -488,6 +496,57 @@ one:
 - [ ] The static sources themselves are untouched: the primary 1080p source and the MVC source
       both keep their real codec, frame size, runtime and stereo declaration.
 - [ ] A single-file MVC movie is unaffected: same ids, same labels, same four versions.
+
+### 5.2 Exact-device default ordering
+
+Only exact-device defaults are wired. A row of **Device defaults** on the admin page names one
+registered device and the profile to offer it first; the provider reads the device id the server
+settled onto the playback-info request and honours that row for that device alone. Everything
+else is the global default's. A row that pins no device - which is what a stored row that pinned
+only a client name became - matches no request at all.
+
+This is ordering, not authorization. The enabled set, the versions in the library, and what a
+user may play are the same on both branches of every check below; only which version the picker
+leads with moves. A check that finds a default opening a version nobody enabled, or hiding one
+somebody did, is a finding worth stopping on.
+
+Set it up with two clients that register as two devices - a TV and a phone, or two browsers on
+two machines - and with the global default differing from the pinned profile:
+
+- [ ] A global default is configured on the page and is the version a client with no entry leads
+      on.
+- [ ] A **different** profile is pinned to one exact device, the device taken from the page's
+      picker rather than typed from memory.
+- [ ] From that exact device the pinned profile is the **first** Anaglyfin version offered, and
+      the rest of the enabled set arrives beside it, unchanged.
+- [ ] The other device still leads on the global default. A pinned row that moved a second
+      client's order matched a device nobody gave it.
+- [ ] A legacy row that pinned a client name only has no effect anywhere. Reach it by upgrading
+      from a build that wrote such rows, or by writing one into the settings file, and confirm
+      it answers no client - and that the next save from the page takes it out of the file.
+- [ ] A provider call that is not a client's playback-info request comes back ordered by the
+      global default: an API-key call to the playback-info API is the shape to run, and a
+      background or DLNA composition is the same answer with no HTTP request in it. Record
+      which one was exercised.
+
+Record both device ids and where each was read from (the server's device list, or its `Devices`
+API), the client that answered each one, and the offer order each saw. Note whether the two
+clients are the same physical device - one television running two apps registers two devices,
+which is precisely why the id is the key and the name is not.
+
+Two degraded shapes belong in the same pass, because with self-reported ids they are ordinary
+life rather than defects:
+
+- [ ] A stored row whose device id the server has never seen - typed by hand, or carried over
+      from a server whose devices were cleared - changes nobody's order and costs nothing else.
+      Record it as inert.
+- [ ] A client that regenerates its id - reinstall, cleared storage, a factory reset - stops
+      matching its row and leads on the global default again. Re-pin the new id from the picker
+      and confirm the pinned order comes back.
+
+No row here is checked off by a CI run or by reading the settings file: CI pins the resolution
+rules, and what this section asks for is what a real device actually sees. Leave every one of
+them open until it has been observed, and record the observations in the result log below.
 
 ### Why `SupportsDirectStream: false` is not a check
 
@@ -1157,19 +1216,42 @@ Validation expectation:
 - [ ] Do not treat missing explicit signal forwarding as a T7 code defect.
 - [ ] Re-validate after T8 is merged.
 
-### Device and client defaults
+### Device defaults
 
 Current state:
 
-- Settings and admin UI can store `DeviceDefaultProfiles`.
-- The profile catalog can resolve them, but `AnaglyfinMediaSourceProvider` does not pass a
-  device/client context into that resolution.
+- Exact-device defaults are applied. The provider reads the `Jellyfin-DeviceId` claim the server
+  settles onto the authenticated request and asks the catalog for that exact device's offered
+  order, so a pinned profile is offered first to one device and to nobody else. V5.2 is where a
+  real client's answer is recorded against it.
+- Nothing else is a key. Client names are not matched, and no approximate device category - TV,
+  phone, tablet, headset, projector - is inferred. Jellyfin 12 has no reliable native server-side
+  device type to key a category on, so a category could only ever be a labelled heuristic over
+  what a client claims about itself. That is deferred future work; it is not implemented, and it
+  cannot claim accurate handling of 3D TVs, VR headsets, or 3D-capable projectors.
+- Legacy rows survive a settings file and decide nothing. A row an older build stored with a
+  `<ClientName>` element still loads, with the name ignored, and a row that pinned a client and
+  no device matches no request. The next save from the page writes neither back, and no migration
+  runs on disk: an upgrading server keeps its device rows and its global default and quietly
+  stops carrying the client half.
+- A device id is the client's own invention - regenerable, re-registrable, and claimable by
+  anything on the network that bothers to claim it. It keys an ordering preference and is not a
+  security boundary: nothing that decides what may be played, or by whom, reads it.
+- A call that did not come from a client's playback-info request has no device to read. An
+  API-key call, whose device claim carries the server's system id rather than any client's
+  device, and a background or DLNA composition with no HTTP request behind it are ordered by the
+  global default. That is the designed fallback, not a missed match.
 
 Validation expectation:
 
-- [ ] Device/client overrides persist in settings.
-- [ ] The current media source provider still orders versions by the global default.
-- [ ] Record this as a provider follow-up, not a broken admin save.
+- [ ] The ordering itself belongs to V5.2; nothing here asks for it twice.
+- [ ] A pinned row that stops matching after its client regenerates its id is recorded as a
+      client finding and an administrator re-pin, not as a plugin regression.
+- [ ] A request that answered with the global default where a device row exists is checked
+      against the list above before it is written up: API-key auth and a background composition
+      are expected answers.
+- [ ] Do not record any device-category behavior as expected, supported, or validated. None is
+      implemented, and the platform would not make the claim accurate if it were.
 
 ### Subtitles
 
@@ -1314,7 +1396,7 @@ checks are optional unless a failure shows a provider-created marker being refus
 | V2 | Admin page | Page renders and settings round-trip |  |  |
 | V3 | Wrapper deployment | Jellyfin -> wrapper -> FFmpeg-mvc works |  |  |
 | V4 | Detection | MVC-positive items offer versions; negatives do not |  |  |
-| V5 | Media sources | GUID source ids per media source, stacked alternate versions, and a video codec no profile can stream-copy |  |  |
+| V5 | Media sources | GUID source ids per media source, stacked alternate versions, a video codec no profile can stream-copy, and the device-default ordering of V5.2 |  |  |
 | V6 | Marker transport | Marker survives one token, names the video stream, never reaches FFmpeg child |  |  |
 | V7 | Profile commands | Required profile fragments appear behind a real video encoder |  |  |
 | V8 | Pass-through | Ordinary playback remains unchanged |  |  |
