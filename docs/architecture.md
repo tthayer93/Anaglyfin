@@ -19,27 +19,31 @@ real FFmpeg should run** when a user picks one of those versions.
 1. Jellyfin asks for playback info.
 2. `AnaglyfinMediaSourceProvider` checks whether the item is a video file and whether the
    conservative MVC detector accepts it.
-3. For an eligible item, the provider creates one alternate `MediaSourceInfo` per enabled
-   profile.
-4. Each alternate source carries a profile marker URL instead of a playable path:
+3. For an eligible item the provider asks the catalog which profiles to offer and in what
+   order, naming the device that asked. The interface carries no device parameter, so the
+   exact id is read off the request itself, from the ambient HTTP context the server keeps for
+   the call in flight (see "Which device is asking").
+4. It creates one alternate `MediaSourceInfo` per offered profile - the profile that device's
+   default resolves to first, the rest in catalog display order.
+5. Each alternate source carries a profile marker URL instead of a playable path:
 
    ```text
    http://127.0.0.1/anaglyfin/profile/<profileId>?source=<percent-encoded-rooted-path>
    ```
 
-5. The user picks a version.
-6. Jellyfin builds its normal transcode command and passes the marker URL as the input path.
-7. The wrapper receives that command because the server's FFmpeg path points at the wrapper.
-8. `WrapperArgumentRewriter`:
+6. The user picks a version.
+7. Jellyfin builds its normal transcode command and passes the marker URL as the input path.
+8. The wrapper receives that command because the server's FFmpeg path points at the wrapper.
+9. `WrapperArgumentRewriter`:
    - recognizes a marker,
    - resolves the profile from the built-in catalog,
    - replaces the marker token with the real source path,
    - inserts the profile's FFmpeg arguments,
    - removes conflicting video and subtitle maps,
    - refuses unsafe or unsupported command shapes.
-9. For a rewritten Anaglyfin command, `WrapperConcurrencyGuard` takes one slot before the
-   real FFmpeg is started.
-10. `FFmpegProcessLauncher` starts the real FFmpeg-mvc binary with no shell and inherited
+10. For a rewritten Anaglyfin command, `WrapperConcurrencyGuard` takes one slot before the
+    real FFmpeg is started.
+11. `FFmpegProcessLauncher` starts the real FFmpeg-mvc binary with no shell and inherited
     stdin/stdout/stderr.
 
 ## Major pieces
@@ -50,9 +54,10 @@ real FFmpeg should run** when a user picks one of those versions.
 | `PluginServiceRegistrator` | DI registration for catalog, detector, and settings source |
 | `ProfileCatalog` | Fixed profile allowlist and display metadata |
 | `PluginConfiguration` | Persisted profile ids, enabled profiles, concurrency, colors, subtitle depth |
+| `DeviceProfileDefault` | One device's default profile: an exact device id and the profile to offer it first |
 | `Configuration/configPage.html` | Dashboard-served settings page |
 | `MvcSourceDetector` | Conservative MVC eligibility from metadata and names |
-| `AnaglyfinMediaSourceProvider` | Alternate media sources carrying profile markers |
+| `AnaglyfinMediaSourceProvider` | Alternate media sources carrying profile markers, offered in the asking device's order |
 | `ProfileMarker` | Canonical marker construction and security invariants |
 | `ProfileMarkerParser` | Wrapper-side marker recognition and validation |
 | `FfmpegProfileArgumentBuilder` | Exact argument tokens per profile |
@@ -63,6 +68,42 @@ real FFmpeg should run** when a user picks one of those versions.
 | `WrapperApplication` | Wrapper outcome, exit codes, diagnostics, slot use |
 | `WrapperConcurrencyGuard` | File-slot concurrency limit for Anaglyfin jobs |
 | `FFmpegProcessLauncher` | Starts real FFmpeg through argv, not a shell |
+
+## Which device is asking
+
+`IMediaSourceProvider` is handed the item and nothing else: on Jellyfin 12 the interface carries
+no device, no client and no user. Which device is asking is still a fact about the request, and
+the server settles it onto that request - a `Jellyfin-DeviceId` claim on every authenticated one -
+so the provider reads that one claim from the ambient HTTP context the call runs inside. An
+administrator's default for one exact registered device therefore goes first for that device and
+for nobody else, and the resolution is per request rather than cached or written anywhere.
+
+Because the seam is the request rather than a parameter, a request that names no device is an
+ordinary case and not a failure: an API-key call, whose device field carries the server's own
+system id rather than any client's device, and the library, DLNA and startup compositions that
+reach a provider with no HTTP context at all. All of them leave the ordering to the global
+default, and nothing else about the offer changes. A context that cannot be read is answered the
+same way, because the whole thing a default can cost is one profile's place in a list.
+
+Selection is by exact device id and nothing else. That id is generated and self-reported by the
+client - a reinstall, a reset, or cleared storage regenerates it, and the server's device list
+only records what a client last claimed rather than issuing the id itself - which makes it a good
+key for a preference and a poor one for anything else: a default authorises no playback, and a
+pinned entry can quietly stop matching when a client re-registers. Client names are not a key at
+all; they are free text that changes between releases of the same app, and matching on one would
+promise a reliability the platform does not have. Rows an older build stored with a client name
+still load, since the name is simply ignored, and they are gone from the settings file on the next
+save; a row that pinned a client and no device matches nothing in the meantime.
+
+Approximate device **categories** are not a key either, and cannot honestly be one today: Jellyfin
+12 computes and stores no device type to consult, so there is no server-side answer to "is this a
+TV?" waiting to be read. A future category feature would be a heuristic over what clients report
+about themselves, would have to say so on its own face, and could not claim accurate handling of
+3D TVs, VR headsets or 3D-capable projectors. See "Current follow-up areas".
+
+What a default touches is the order of an offer, never its contents: the enabled profiles are the
+set a client can pick and the set the library materialises version items from, so no device's
+default enables a profile, hides a version, or starts a library write.
 
 ## Marker contract
 
@@ -265,6 +306,8 @@ escaped the same way it was found.
 - The wrapper never treats arbitrary command text as filter syntax.
 - The wrapper launches FFmpeg through `ArgumentList`, not a shell.
 - Refusal diagnostics avoid echoing request paths and marker text.
+- A request's device id orders an offer and nothing else. It is text the client chose, so it is
+  never read as an authorisation or as an identity a user can be held to.
 
 ## Current deployment assumptions
 
@@ -285,6 +328,9 @@ escaped the same way it was found.
 ## Current follow-up areas
 
 - Wire per-playback subtitle selection through marker subtitle ordinals and `SubtitleBurnIn`.
-- Apply device/client defaults in the provider path, not only in the profile catalog.
+- Offer approximate device categories (TV, phone, tablet, headset, projector) if a mapping from
+  self-reported clients to a category can be built honest enough to be labelled the heuristic it
+  is; Jellyfin 12 has no native device type to key one on, so this is future work rather than a
+  wiring gap in the exact-device defaults already applied.
 - Merge wrapper signal forwarding from `task/T8-wrapper-signal-forwarding`.
 - Add packaging metadata if a plugin repository workflow is desired.
