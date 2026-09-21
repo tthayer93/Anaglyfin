@@ -525,6 +525,74 @@ public class ConfigurationPageTests
     }
 
     [Fact]
+    public void TheAdminPageCarriesTheOriginalMvcVersionSwitch()
+    {
+        var html = ReadPageHtml();
+
+        // The switch is a setting like any other, so the structural tests above already prove it is
+        // bound, displayed, sent and read back. What is pinned here is the half a user sees: the
+        // caption the box is named by, the position it ships in, and what it says turning it off
+        // does - because the honest answer ("only the raw file, and only from the picker") is the
+        // difference between a switch an administrator dares to touch and one they leave alone.
+        var attributes = ReadAttributes(ReadFieldTag(nameof(PluginConfiguration.OfferOriginalMVCVersion)));
+
+        Assert.Equal("checkbox", attributes["type"]);
+        Assert.Equal("emby-checkbox", attributes["is"]);
+        Assert.Equal("checkbox", attributes["data-anaglyfin-kind"]);
+
+        // Shipped ticked: offering the original file is what every build before this setting did,
+        // and hiding it is the decision that has to be made here. Compared against the settings
+        // model rather than against a literal of this test, so the two cannot drift.
+        Assert.Equal(
+            Convert.ToString(new PluginConfiguration().OfferOriginalMVCVersion, CultureInfo.InvariantCulture),
+            attributes["data-anaglyfin-default"]);
+        Assert.Equal("True", attributes["data-anaglyfin-default"]);
+
+        // The dashboard's checkbox shape, for the same reason the profile boxes use it: the
+        // upgrade to emby-checkbox happens while the element is parsed and adopts the first span
+        // of the label as the caption. A box outside that shape is a bare browser checkbox with
+        // nothing beside it.
+        var label = CheckboxLabelContaining(html, nameof(PluginConfiguration.OfferOriginalMVCVersion));
+
+        Assert.Matches(@"<label\b[^>]*checkboxContainer[^>]*>", label);
+        Assert.Contains("<span>Offer original 3D MVC version</span>", label, StringComparison.Ordinal);
+
+        // What the help text owes the administrator: that only the raw file is hidden, that the
+        // converted versions are what is left, that the picker is where it is hidden from, and
+        // that turning it back is reversible. Nothing here promises a deletion, and nothing here
+        // can, because the setting does not delete anything.
+        Assert.Contains("version pickers", label, StringComparison.Ordinal);
+        Assert.Contains("converted versions", label, StringComparison.Ordinal);
+        Assert.Contains("Nothing is deleted", label, StringComparison.Ordinal);
+        Assert.Contains("turning it back on", label, StringComparison.Ordinal);
+
+        // And what it must not promise: no scan, no rescan, no relink - the words of every lever
+        // that would have had to touch the library.
+        Assert.DoesNotContain("scan the library", label, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("rescan", label, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("unlink", label, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TheOriginalMvcVersionSwitchIsReadFromTheBoxItself()
+    {
+        var html = ReadPageHtml();
+
+        // The read is the box's own checked state and the write is that same state: a switch whose
+        // read consulted anything else (a text value, a stored string) would post what the markup
+        // shipped rather than what the administrator left it on.
+        Assert.Matches(@"checkbox:\s*\{\s*read:\s*function\s*\(element\)\s*\{\s*return element\.checked === true;", html);
+        Assert.Contains("element.checked = booleanValue(value, fieldDefault(element));", html, StringComparison.Ordinal);
+
+        // And the default that position comes from is the one the markup declares, which is what
+        // keeps the shipped answer in the page rather than in this test or in the script.
+        var booleanValue = FunctionBody(html, "booleanValue");
+
+        Assert.Contains("parseBoolean(value)", booleanValue, StringComparison.Ordinal);
+        Assert.Contains("parseBoolean(fallback)", booleanValue, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TheSubtitleDepthModeNamesChooseTheFieldsTheyReveal()
     {
         var html = ReadPageHtml();
@@ -817,6 +885,30 @@ public class ConfigurationPageTests
         return tag!;
     }
 
+    /// <summary>
+    /// Reads the whole of the checkbox element a bound switch sits inside: the label, its input,
+    /// the caption the dashboard takes from it and the description beside them.
+    /// </summary>
+    /// <remarks>
+    /// The element and not just the input, because the element is what the dashboard upgrades and
+    /// what the administrator reads - and the input alone can be a perfectly bound checkbox with
+    /// nothing anywhere to say what it switches.
+    /// </remarks>
+    private static string CheckboxLabelContaining(string html, string fieldName)
+    {
+        var field = html.IndexOf($"data-anaglyfin-field=\"{fieldName}\"", StringComparison.Ordinal);
+        Assert.True(field >= 0, $"The admin page has no field named {fieldName}.");
+
+        var opened = html.LastIndexOf("<label", field, StringComparison.Ordinal);
+        var closed = html.IndexOf("</label>", field, StringComparison.Ordinal);
+
+        Assert.True(
+            opened >= 0 && closed > field,
+            $"The {fieldName} switch is not inside a checkbox label of its own.");
+
+        return html[opened..(closed + "</label>".Length)];
+    }
+
     private static List<(string Value, string Text)> ReadOptionValues(string fieldName)
     {
         var html = ReadPageHtml();
@@ -903,9 +995,14 @@ public class ConfigurationPageTests
 
         if (propertyType == typeof(bool))
         {
-            // Ticked, so that a switch the endpoint did not bind comes back as the shipped
-            // default and shows up as a difference.
-            return JsonValue.Create(true)!;
+            // The opposite of whatever the model ships, which is the one answer that makes a
+            // missed binding visible either way: a switch the endpoint did not bind comes back as
+            // the shipped default, and a payload that happened to send that default would let it
+            // pass unnoticed. Ticking a box that ships ticked proves nothing about the box.
+            var shipped = SettingsProperty(fieldName).GetValue(new PluginConfiguration())
+                ?? throw new InvalidOperationException($"The default of {nameof(PluginConfiguration)}.{fieldName} is null.");
+
+            return JsonValue.Create(!(bool)shipped)!;
         }
 
         if (propertyType.IsEnum)

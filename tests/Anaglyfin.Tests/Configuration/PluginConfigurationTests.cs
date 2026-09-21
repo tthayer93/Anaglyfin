@@ -31,6 +31,10 @@ public class PluginConfigurationTests
         Assert.Equal(SubtitleDepthMode.Automatic, configuration.SubtitleDepthMode);
         Assert.Equal(0, configuration.SubtitleDepthShift);
         Assert.Equal(0, configuration.SubtitleDepthPlane);
+
+        // The raw MVC file is offered as a version of its own until an administrator says
+        // otherwise, which is the behaviour every build before the setting had.
+        Assert.True(configuration.OfferOriginalMVCVersion);
     }
 
     [Fact]
@@ -123,6 +127,84 @@ public class PluginConfigurationTests
         var reloaded = RoundTripXml(RoundTripXml(configuration));
 
         Assert.Equal(new[] { ProfileIds.TwoDBase }, reloaded.EnabledProfileIds);
+    }
+
+    [Theory]
+    // Whichever way the switch was left, what the server stored is what the next boot reads: the
+    // setting is the whole of the decision about whether a client is offered the raw file, so a
+    // save that did not travel is a picker that quietly changed shape on the restart.
+    [InlineData(true)]
+    [InlineData(false)]
+    public void TheOriginalMvcVersionSettingSurvivesTheServerXmlRoundTrip(bool offerOriginal)
+    {
+        var configuration = new PluginConfiguration { OfferOriginalMVCVersion = offerOriginal };
+
+        var reloaded = RoundTripXml(configuration);
+
+        Assert.Equal(offerOriginal, reloaded.OfferOriginalMVCVersion);
+
+        // Spelled out in the file rather than implied by its absence, so the next reader of the
+        // settings - including a human with an editor - sees the decision that was made.
+        Assert.Contains(
+            offerOriginal ? "<OfferOriginalMVCVersion>true</OfferOriginalMVCVersion>" : "<OfferOriginalMVCVersion>false</OfferOriginalMVCVersion>",
+            SerializeXml(reloaded),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ASettingsFileWrittenBeforeTheSettingExistsKeepsOfferingTheOriginalVersion()
+    {
+        // What an upgrading server has on disk: a settings file from a build that had no
+        // OfferOriginalMVCVersion element at all, and no opinion about the raw MVC file because it
+        // always offered it. The XML serialiser leaves an element it cannot find at the value the
+        // property starts life with, so the upgrade changes nothing - which is the reason the
+        // shipped default is true and the reason there is nothing to migrate here (compare the
+        // subtitle depth, whose shipped default would have switched a feature on by itself: see
+        // PluginConfigurationMigrationTests).
+        const string PreSettingXml = """
+            <PluginConfiguration xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+              <DefaultProfileId>sbs_half</DefaultProfileId>
+              <MaxConcurrentTranscodes>2</MaxConcurrentTranscodes>
+              <SubtitleDepthMode>Flat</SubtitleDepthMode>
+            </PluginConfiguration>
+            """;
+
+        var serializer = new XmlSerializer(typeof(PluginConfiguration));
+        using var reader = new StringReader(PreSettingXml);
+
+        var loaded = (PluginConfiguration?)serializer.Deserialize(reader)
+            ?? throw new InvalidOperationException("The pre-setting settings XML did not load a configuration.");
+
+        Assert.True(loaded.OfferOriginalMVCVersion);
+
+        // The surviving settings are intact: the missing element is the only thing that was
+        // inferred rather than read.
+        Assert.Equal(ProfileIds.SideBySideHalf, loaded.DefaultProfileId);
+        Assert.Equal(2, loaded.MaxConcurrentTranscodes);
+        Assert.Equal(SubtitleDepthMode.Flat, loaded.SubtitleDepthMode);
+    }
+
+    [Fact]
+    public void TheOriginalMvcVersionSettingSurvivesTheAdminUiJsonRoundTrip()
+    {
+        // The settings endpoint binds a JSON body, so the switch has to travel in that shape too -
+        // and a switch the endpoint ignored would come back as the shipped default, which is the
+        // one answer that looks like the administrator never touched it.
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            Converters = { new JsonStringEnumConverter() }
+        };
+
+        var configuration = new PluginConfiguration { OfferOriginalMVCVersion = false };
+
+        var payload = JsonSerializer.Serialize(configuration, options);
+        var reloaded = JsonSerializer.Deserialize<PluginConfiguration>(payload, options);
+
+        Assert.Contains("\"OfferOriginalMVCVersion\":false", payload, StringComparison.Ordinal);
+
+        var saved = Assert.IsAssignableFrom<PluginConfiguration>(reloaded);
+        Assert.False(saved.OfferOriginalMVCVersion);
     }
 
     [Fact]

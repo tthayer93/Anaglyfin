@@ -1,15 +1,30 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
+using Anaglyfin.Configuration;
 using Anaglyfin.Detection;
 using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
 using Anaglyfin.Tests.Stubs;
+using Anaglyfin.Tests.VersionItems;
 using Anaglyfin.VersionItems;
+using Jellyfin.Database.Implementations.Entities;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
+using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Controller.Plugins;
+using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Anaglyfin.Tests;
@@ -202,6 +217,116 @@ public class PluginServiceRegistratorTests
         Assert.IsAssignableFrom<IProfileVersionReconcileTrigger>(resolved);
     }
 
+    [Fact]
+    public void RegisterServicesDoesNotInventAMediaSourceManagerToDecorate()
+    {
+        // The filter wraps the server's manager and cannot answer for the server's job on its own.
+        // Without the earlier registration there is no list to filter and no object to wrap, so the
+        // plugin leaves the service type to the server rather than answering it with a half feature.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IMediaSourceManager));
+    }
+
+    [Fact]
+    public void RegisterServicesAppendsTheOriginalMvcVersionFilterAfterTheServersManager()
+    {
+        var services = new FakeServiceCollection();
+        var core = new RegistrationCoreManager();
+        services.Add(new ServiceDescriptor(typeof(IMediaSourceManager), core));
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        var managerDescriptors = services.Where(descriptor => descriptor.ServiceType == typeof(IMediaSourceManager)).ToArray();
+
+        Assert.Equal(2, managerDescriptors.Length);
+        Assert.Same(core, Assert.Single(managerDescriptors, descriptor => descriptor.ImplementationInstance is not null).ImplementationInstance);
+
+        var filterDescriptor = Assert.Single(
+            managerDescriptors,
+            descriptor => descriptor.ImplementationFactory is not null);
+
+        Assert.Equal(ServiceLifetime.Singleton, filterDescriptor.Lifetime);
+        Assert.Equal(typeof(IMediaSourceManager), filterDescriptor.ServiceType);
+    }
+
+    [Fact]
+    public void RegisterServicesResolvesTheOriginalMvcVersionFilterOverTheRegisteredManager()
+    {
+        var services = new FakeServiceCollection();
+        var core = new RegistrationCoreManager();
+        services.Add(new ServiceDescriptor(typeof(IMediaSourceManager), core));
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        var filterDescriptor = Assert.Single(
+            services,
+            descriptor => descriptor.ServiceType == typeof(IMediaSourceManager) && descriptor.ImplementationFactory is not null);
+
+        var provider = new FakeServiceProvider(
+            (typeof(IMvcSourceDetector), new MvcSourceDetector()),
+            (typeof(IProfileCatalog), new ProfileCatalog()),
+            (typeof(IAnaglyfinConfigurationSource), new StubConfigurationSource()),
+            (typeof(ILogger<MediaSourceManagerSuppressionDecorator>), NullLogger<MediaSourceManagerSuppressionDecorator>.Instance));
+
+        var resolved = Assert.IsType<MediaSourceManagerSuppressionDecorator>(filterDescriptor.ImplementationFactory!(provider));
+        var wrapped = typeof(MediaSourceManagerSuppressionDecorator)
+            .GetField("_core", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(resolved);
+
+        // A handover is not a build: the container still owns the instance behind the descriptor, so
+        // the decorator takes the core out of the swap but leaves its disposal to its owner.
+        Assert.Same(core, wrapped);
+        resolved.Dispose();
+        Assert.False(core.Disposed);
+    }
+
+    [Fact]
+    public void RegisterServicesBuildsTheCoreManagerWhenTheServerRegisteredAType()
+    {
+        var services = new FakeServiceCollection();
+        services.Add(new ServiceDescriptor(typeof(IMediaSourceManager), typeof(RegistrationCoreManager), ServiceLifetime.Singleton));
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        var filterDescriptor = Assert.Single(
+            services,
+            descriptor => descriptor.ServiceType == typeof(IMediaSourceManager) && descriptor.ImplementationFactory is not null);
+
+        var provider = new FakeServiceProvider(
+            (typeof(IMvcSourceDetector), new MvcSourceDetector()),
+            (typeof(IProfileCatalog), new ProfileCatalog()),
+            (typeof(IAnaglyfinConfigurationSource), new StubConfigurationSource()),
+            (typeof(ILogger<MediaSourceManagerSuppressionDecorator>), NullLogger<MediaSourceManagerSuppressionDecorator>.Instance));
+
+        var resolved = Assert.IsType<MediaSourceManagerSuppressionDecorator>(filterDescriptor.ImplementationFactory!(provider));
+        var wrapped = Assert.IsType<RegistrationCoreManager>(
+            typeof(MediaSourceManagerSuppressionDecorator)
+                .GetField("_core", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .GetValue(resolved));
+
+        // Only the last registration is ever activated, so the decorator must build the object the
+        // container stopped building - and take over disposing the live-stream closer along with it.
+        resolved.Dispose();
+        Assert.True(wrapped.Disposed);
+    }
+
+    [Fact]
+    public void RegisterServicesDoesNotDecorateTheOriginalMvcVersionFilterAgain()
+    {
+        var services = new FakeServiceCollection();
+        services.Add(new ServiceDescriptor(
+            typeof(IMediaSourceManager),
+            typeof(MediaSourceManagerSuppressionDecorator),
+            ServiceLifetime.Singleton));
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        Assert.Single(services, descriptor => descriptor.ServiceType == typeof(IMediaSourceManager));
+    }
+
     /// <summary>
     /// A container that knows exactly the services a test hands it, so a registration's factory can
     /// be run without the container implementation the plugin deliberately does not reference.
@@ -215,5 +340,101 @@ public class PluginServiceRegistratorTests
 
         public object? GetService(Type serviceType)
             => _services.TryGetValue(serviceType, out var service) ? service : null;
+    }
+
+    /// <summary>
+    /// The server's manager as the registrator sees it: an object shape that may be handed over or
+    /// built from a type, plus the disposal answer the decorator has to take over when it builds it.
+    /// </summary>
+    private sealed class RegistrationCoreManager : IMediaSourceManager, IDisposable
+    {
+        public bool Disposed { get; private set; }
+
+        public void AddParts(IEnumerable<IMediaSourceProvider> providers)
+            => throw new NotSupportedException();
+
+        public void Dispose() => Disposed = true;
+
+        public IReadOnlyList<MediaStream> GetMediaStreams(Guid itemId)
+            => throw new NotSupportedException();
+
+        public IReadOnlyList<MediaStream> GetMediaStreams(MediaStreamQuery query)
+            => throw new NotSupportedException();
+
+        public IReadOnlyList<MediaAttachment> GetMediaAttachments(Guid itemId)
+            => throw new NotSupportedException();
+
+        public IReadOnlyList<MediaAttachment> GetMediaAttachments(MediaAttachmentQuery query)
+            => throw new NotSupportedException();
+
+        public IReadOnlyList<MediaSourceInfo> GetStaticMediaSources(BaseItem item, bool enablePathSubstitution, User? user = null)
+            => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<MediaSourceInfo>> GetPlaybackMediaSources(
+            BaseItem item,
+            User? user,
+            bool allowMediaProbe,
+            bool enablePathSubstitution,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<MediaSourceInfo> GetMediaSource(
+            BaseItem item,
+            string mediaSourceId,
+            string liveStreamId,
+            bool enablePathSubstitution,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<LiveStreamResponse> OpenLiveStream(LiveStreamRequest request, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<Tuple<LiveStreamResponse, IDirectStreamProvider>> OpenLiveStreamInternal(
+            LiveStreamRequest request,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<MediaSourceInfo> GetLiveStream(string id, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<Tuple<MediaSourceInfo, IDirectStreamProvider>> GetLiveStreamWithDirectStreamProvider(
+            string id,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ILiveStream GetLiveStreamInfo(string id)
+            => throw new NotSupportedException();
+
+        public ILiveStream GetLiveStreamInfoByUniqueId(string uniqueId)
+            => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<MediaSourceInfo>> GetRecordingStreamMediaSources(
+            ActiveRecordingInfo info,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task CloseLiveStream(string id)
+            => throw new NotSupportedException();
+
+        public Task<MediaSourceInfo> GetLiveStreamMediaInfo(string id, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public bool SupportsDirectStream(string path, MediaProtocol protocol)
+            => throw new NotSupportedException();
+
+        public MediaProtocol GetPathProtocol(string path)
+            => throw new NotSupportedException();
+
+        public void SetDefaultAudioAndSubtitleStreamIndices(BaseItem item, MediaSourceInfo source, User? user)
+            => throw new NotSupportedException();
+
+        public Task AddMediaInfoWithProbe(
+            MediaSourceInfo mediaSource,
+            bool isAudio,
+            string? cacheKey,
+            bool addProbeDelay,
+            bool isLiveStream,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
     }
 }
