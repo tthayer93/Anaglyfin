@@ -321,7 +321,6 @@ public class ConfigurationPageTests
 
         var deviceDefault = Assert.Single(configuration.DeviceDefaultProfiles);
         Assert.Equal("living-room-tv", deviceDefault.DeviceId);
-        Assert.Equal("AndroidTV", deviceDefault.ClientName);
         Assert.Equal("custom_grayscale", deviceDefault.ProfileId);
 
         // And the same check written against the field list instead of the individual
@@ -892,13 +891,25 @@ public class ConfigurationPageTests
 
     /// <summary>
     /// The names a device override entry is stored under: the same names the settings endpoint
-    /// binds it by, since an entry is a nested object of the settings body.
+    /// binds it by, since an entry is a nested object of the settings body. Exactly two are
+    /// writable - one device id and one profile id. A third writable property could only be
+    /// something the row cannot select (the client-name twin this release removed), so the
+    /// count is pinned beside the names.
     /// </summary>
     private static IEnumerable<string> DeviceEntryPropertyNames()
-        => typeof(DeviceProfileDefault)
+    {
+        var names = typeof(DeviceProfileDefault)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Where(property => property.CanWrite && property.DeclaringType == typeof(DeviceProfileDefault))
-            .Select(property => property.Name);
+            .Select(property => property.Name)
+            .ToArray();
+
+        Assert.Equal(
+            new[] { nameof(DeviceProfileDefault.DeviceId), nameof(DeviceProfileDefault.ProfileId) },
+            names.OrderBy(name => name, StringComparer.Ordinal));
+
+        return names;
+    }
 
     private static PropertyInfo SettingsProperty(string fieldName)
         => typeof(PluginConfiguration).GetProperty(fieldName, BindingFlags.Public | BindingFlags.Instance)
@@ -957,7 +968,6 @@ public class ConfigurationPageTests
             return new JsonArray(new JsonObject
             {
                 ["DeviceId"] = "living-room-tv",
-                ["ClientName"] = "AndroidTV",
                 ["ProfileId"] = "custom_grayscale"
             });
         }

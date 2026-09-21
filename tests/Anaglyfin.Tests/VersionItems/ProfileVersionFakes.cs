@@ -576,15 +576,15 @@ public sealed class NoEnabledProfilesCatalog : IProfileCatalog
     public IReadOnlyList<StereoProfile> GetEnabledProfiles(PluginConfiguration configuration) => Array.Empty<StereoProfile>();
 
     /// <inheritdoc />
-    public string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
-        => _inner.ResolveDefaultProfileId(configuration, deviceId, clientName);
+    public string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null)
+        => _inner.ResolveDefaultProfileId(configuration, deviceId);
 
     /// <inheritdoc />
-    public StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
-        => _inner.GetDefaultProfile(configuration, deviceId, clientName);
+    public StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null)
+        => _inner.GetDefaultProfile(configuration, deviceId);
 
     /// <inheritdoc />
-    public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null, string? clientName = null)
+    public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null)
         => Array.Empty<StereoProfile>();
 }
 

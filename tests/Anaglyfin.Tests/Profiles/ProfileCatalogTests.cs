@@ -239,7 +239,7 @@ public class ProfileCatalogTests
     }
 
     [Fact]
-    public void DeviceOverrideBeatsClientOverrideAndGlobalDefault()
+    public void TheExactDeviceOverrideBeatsTheGlobalDefault()
     {
         var configuration = new PluginConfiguration
         {
@@ -247,14 +247,8 @@ public class ProfileCatalogTests
         };
         configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
         {
-            ClientName = "AndroidTV",
-            ProfileId = ProfileIds.SideBySideHalf
-        });
-        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
-        {
             DeviceId = "living-room-tv",
-            ClientName = "AndroidTV",
-            ProfileId = ProfileIds.SideBySideFull
+            ProfileId = ProfileIds.SideBySideHalf
         });
         configuration.EnabledProfileIds.AddRange(new[]
         {
@@ -264,14 +258,94 @@ public class ProfileCatalogTests
         });
 
         Assert.Equal(
-            ProfileIds.SideBySideFull,
-            _catalog.ResolveDefaultProfileId(configuration, "living-room-tv", "AndroidTV"));
-        Assert.Equal(
             ProfileIds.SideBySideHalf,
-            _catalog.ResolveDefaultProfileId(configuration, "bedroom-tv", "AndroidTV"));
+            _catalog.ResolveDefaultProfileId(configuration, "living-room-tv"));
+
+        // Another device - and a request with no device at all - keeps the global default:
+        // the override is a pin on one id, not a rule for the rest of the fleet.
         Assert.Equal(
             ProfileIds.SideBySideFull,
-            _catalog.ResolveDefaultProfileId(configuration, "kitchen-tv", "Web"));
+            _catalog.ResolveDefaultProfileId(configuration, "bedroom-tv"));
+        Assert.Equal(
+            ProfileIds.SideBySideFull,
+            _catalog.ResolveDefaultProfileId(configuration));
+    }
+
+    [Fact]
+    public void ThereIsNoClientOverrideAnymore()
+    {
+        // The settings API carries no client-name tier: an entry pinned to no device is
+        // inert even when a settings file left over from the client-matching build still
+        // carries its old element. The catalog's resolution call has no client argument to
+        // hand back - this test is the compile-time pin as much as the runtime one.
+        var configuration = new PluginConfiguration
+        {
+            DefaultProfileId = ProfileIds.SideBySideFull
+        };
+        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault { ProfileId = ProfileIds.SideBySideHalf });
+        configuration.EnabledProfileIds.AddRange(new[] { ProfileIds.SideBySideFull, ProfileIds.SideBySideHalf });
+
+        Assert.Equal(ProfileIds.SideBySideFull, _catalog.ResolveDefaultProfileId(configuration, "any-device"));
+        Assert.Equal(ProfileIds.SideBySideFull, _catalog.ResolveDefaultProfileId(configuration, "AndroidTV"));
+    }
+
+    [Fact]
+    public void DuplicateDeviceEntriesAreAnsweredbyTheFirst()
+    {
+        // Two entries pinned to one device is one entry too many, but the settings file is
+        // not asked to be tidy: the one listed first wins, deterministically, so an
+        // administrator can see which row is answering by deleting the other.
+        var configuration = new PluginConfiguration
+        {
+            DefaultProfileId = ProfileIds.SideBySideFull
+        };
+        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
+        {
+            DeviceId = "living-room-tv",
+            ProfileId = ProfileIds.TwoDBase
+        });
+        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
+        {
+            DeviceId = "living-room-tv",
+            ProfileId = ProfileIds.SideBySideHalf
+        });
+        configuration.EnabledProfileIds.AddRange(new[]
+        {
+            ProfileIds.SideBySideFull,
+            ProfileIds.SideBySideHalf,
+            ProfileIds.TwoDBase
+        });
+
+        Assert.Equal(ProfileIds.TwoDBase, _catalog.ResolveDefaultProfileId(configuration, "living-room-tv"));
+    }
+
+    [Fact]
+    public void ADeviceOverrideNamingAnUnusableProfileDegradesToTheGlobalDefault()
+    {
+        // An entry pointing at a profile the administrator disabled (or a build does not
+        // know) is ignored by the same enabled check that guards the global default - the
+        // entry matches the device, yet cannot put an unplayable version first.
+        var configuration = new PluginConfiguration
+        {
+            DefaultProfileId = ProfileIds.SideBySideFull
+        };
+        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
+        {
+            DeviceId = "living-room-tv",
+            ProfileId = ProfileIds.SideBySideHalf
+        });
+        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
+        {
+            DeviceId = "bedroom-tv",
+            ProfileId = "profile_from_the_future"
+        });
+        configuration.EnabledProfileIds.AddRange(new[] { ProfileIds.SideBySideFull, ProfileIds.TwoDBase });
+
+        // The disabled target loses to the global default...
+        Assert.Equal(ProfileIds.SideBySideFull, _catalog.ResolveDefaultProfileId(configuration, "living-room-tv"));
+
+        // ...and so does the id this build cannot name at all.
+        Assert.Equal(ProfileIds.SideBySideFull, _catalog.ResolveDefaultProfileId(configuration, "bedroom-tv"));
     }
 
     [Fact]
@@ -284,7 +358,7 @@ public class ProfileCatalogTests
         configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault { ProfileId = ProfileIds.TwoDBase });
         configuration.EnabledProfileIds.AddRange(new[] { ProfileIds.SideBySideFull, ProfileIds.TwoDBase });
 
-        Assert.Equal(ProfileIds.SideBySideFull, _catalog.ResolveDefaultProfileId(configuration, "any-device", "Web"));
+        Assert.Equal(ProfileIds.SideBySideFull, _catalog.ResolveDefaultProfileId(configuration, "any-device"));
     }
 
     [Fact]
@@ -341,11 +415,11 @@ public class ProfileCatalogTests
         });
         configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
         {
-            ClientName = "AndroidTV",
+            DeviceId = "living-room-tv",
             ProfileId = ProfileIds.SideBySideHalf
         });
 
-        var offered = _catalog.GetOfferedProfiles(configuration, "any", "AndroidTV").Select(profile => profile.Id).ToArray();
+        var offered = _catalog.GetOfferedProfiles(configuration, "living-room-tv").Select(profile => profile.Id).ToArray();
 
         Assert.Equal(
             new[] { ProfileIds.SideBySideHalf, ProfileIds.SideBySideFull, ProfileIds.AnaglyphRedCyanDubois, ProfileIds.CustomGrayscale },
@@ -362,7 +436,7 @@ public class ProfileCatalogTests
         };
         configuration.EnabledProfileIds.Add("an arbitrary string");
 
-        var offered = _catalog.GetOfferedProfiles(configuration, null, null);
+        var offered = _catalog.GetOfferedProfiles(configuration, null);
 
         Assert.NotEmpty(offered);
         Assert.All(offered, profile => Assert.True(_catalog.IsKnownProfileId(profile.Id)));
@@ -423,7 +497,7 @@ public class ProfileCatalogTests
             CustomRightEyeColor = "#FF0000"
         };
 
-        var custom = _catalog.GetDefaultProfile(WithCustomEnabled(configuration), null, null);
+        var custom = _catalog.GetDefaultProfile(WithCustomEnabled(configuration), null);
 
         Assert.Equal(ProfileIds.CustomGrayscale, custom.Id);
         Assert.Equal("#0A1B2C", custom.LeftEyeColor?.ToHexString());
