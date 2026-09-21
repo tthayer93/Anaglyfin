@@ -32,12 +32,17 @@ public class PluginConfiguration : BasePluginConfiguration
     public const int DefaultMaxConcurrentTranscodes = 1;
 
     /// <summary>
-    /// Gets or sets the profile offered to clients that have no exact-device override.
+    /// Gets or sets the profile offered first to every client.
     /// </summary>
     /// <remarks>
     /// <para>
     /// Defaults to the red/cyan Dubois anaglyph, the general purpose 3D glasses choice.
-    /// The value is a profile id and is resolved through the profile catalog.
+    /// The value is a profile id and is resolved through the profile catalog. This is the
+    /// only default profile setting: the same default orders the offer for every client,
+    /// device and context. Exact-device default overrides existed on a pre-release
+    /// development branch and were removed before release; a settings file that still
+    /// carries their element loads unchanged because the serialiser ignores what it
+    /// cannot place, the entries decide nothing, and the next save drops the element.
     /// </para>
     /// <para>
     /// There is no separate fallback setting: when the default cannot be served - it is
@@ -47,23 +52,6 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </para>
     /// </remarks>
     public string DefaultProfileId { get; set; } = ProfileIds.AnaglyphRedCyanDubois;
-
-    /// <summary>
-    /// Gets or sets the per device default profile overrides.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Empty by default: a fresh installation has one global default. Each entry pins one
-    /// exact device id and is evaluated by <see cref="DeviceProfileDefault.MatchStrength"/>;
-    /// its profile id is only honoured when enabled in <see cref="EnabledProfileIds"/>.
-    /// </para>
-    /// <para>
-    /// The setter exists because both settings serialisers the server uses replace the
-    /// collection when they load a value: the XML serialiser will only assign a property
-    /// it can set, and the admin UI endpoint deserialises JSON into a fresh instance.
-    /// </para>
-    /// </remarks>
-    public List<DeviceProfileDefault> DeviceDefaultProfiles { get; set; } = new();
 
     /// <summary>
     /// Gets or sets the profile ids the administrator wants offered.

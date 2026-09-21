@@ -130,45 +130,44 @@ public sealed class ProfileCatalog : IProfileCatalog
     }
 
     /// <inheritdoc />
-    public string ResolveDefaultProfileId(PluginConfiguration configuration, string? deviceId = null)
+    public string ResolveDefaultProfileId(PluginConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
         var enabled = GetEnabledProfileIds(configuration);
 
-        // Most specific first: the exact-device override, then the global default. A
-        // candidate only wins when it is a known profile that the administrator has
-        // actually enabled; when neither is, the first enabled profile in display order is
-        // what the page offered as the version to fall back to, and GetEnabledProfileIds
-        // guarantees there is one.
-        var deviceOverride = FindDeviceOverrideProfileId(configuration, deviceId);
-        foreach (var candidate in new[] { deviceOverride, configuration.DefaultProfileId })
+        // The global default is the only default tier. It wins only when it is a known
+        // profile that the administrator has actually enabled; when it is not, the first
+        // enabled profile in display order is what the page offered as the version to
+        // fall back to, and GetEnabledProfileIds guarantees there is one. There is no
+        // device, client or user matching to consult before either of these two: the
+        // exact-device override that existed on a pre-release build was removed before
+        // release, and a settings file that still carries its entries has nothing left
+        // that reads them.
+        var candidate = ProfileIds.Normalize(configuration.DefaultProfileId);
+        if (candidate.Length > 0 && enabled.Contains(candidate, StringComparer.OrdinalIgnoreCase))
         {
-            var id = ProfileIds.Normalize(candidate);
-            if (id.Length > 0 && enabled.Contains(id, StringComparer.OrdinalIgnoreCase))
-            {
-                return id;
-            }
+            return candidate;
         }
 
         return enabled[0];
     }
 
     /// <inheritdoc />
-    public StereoProfile GetDefaultProfile(PluginConfiguration configuration, string? deviceId = null)
+    public StereoProfile GetDefaultProfile(PluginConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
-        return Configured(GetProfile(ResolveDefaultProfileId(configuration, deviceId)), configuration);
+        return Configured(GetProfile(ResolveDefaultProfileId(configuration)), configuration);
     }
 
     /// <inheritdoc />
-    public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration, string? deviceId = null)
+    public IReadOnlyList<StereoProfile> GetOfferedProfiles(PluginConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
         var enabled = GetEnabledProfiles(configuration);
-        var defaultProfile = GetDefaultProfile(configuration, deviceId);
+        var defaultProfile = GetDefaultProfile(configuration);
 
         var offered = new List<StereoProfile>(enabled.Count) { defaultProfile };
         foreach (var profile in enabled)
@@ -198,44 +197,6 @@ public sealed class ProfileCatalog : IProfileCatalog
         var right = RgbColor.TryParse(configuration.CustomRightEyeColor, out var parsedRight) ? parsedRight : DefaultCustomRightEyeColor;
 
         return profile.WithEyeColors(left, right);
-    }
-
-    /// <summary>
-    /// Finds the profile id of the settings entry that matches this exact device.
-    /// </summary>
-    /// <remarks>
-    /// Every matching entry pins the same single field, so they all score alike and the
-    /// first match in declared order wins - two entries pinned to one device are
-    /// answered by whichever the settings file lists first. An entry whose profile is
-    /// unknown or disabled is ignored by the caller's enabled check.
-    /// </remarks>
-    private static string? FindDeviceOverrideProfileId(PluginConfiguration configuration, string? deviceId)
-    {
-        var overrides = configuration.DeviceDefaultProfiles;
-        if (overrides is null || overrides.Count == 0)
-        {
-            return null;
-        }
-
-        string? bestProfileId = null;
-        var bestStrength = 0;
-
-        foreach (var entry in overrides)
-        {
-            if (entry is null)
-            {
-                continue;
-            }
-
-            var strength = entry.MatchStrength(deviceId);
-            if (strength > bestStrength)
-            {
-                bestStrength = strength;
-                bestProfileId = entry.ProfileId;
-            }
-        }
-
-        return bestProfileId;
     }
 
     private static List<string> FilterKnown(IEnumerable<string>? candidateIds)
