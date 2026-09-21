@@ -544,12 +544,14 @@ public class ProfileVersionIdempotentMetadataTests
     [Fact]
     public async Task AVersionWhoseSortNameTheServerReDerivesFromItsLabelSettlesAnyway()
     {
-        // The cp13 signature: four version items rewritten on every boot, reason "metadata", and
-        // nothing observable ever different through the API. A version's Name is its profile label; the
-        // source it copies wears the movie's title-derived SortName/ForcedSortName. The item model answers
-        // an item's sort name by deriving it from the item's own Name on every read, so the pair the
-        // plugin wrote never round-trips - and a comparison that read it back found a drift no write
-        // could settle. This is the fake being exactly that server for the version item.
+        // The cp13 signature: version items rewritten on every boot, reason "metadata", and nothing
+        // observable ever different through the API. A version's Name is its profile label, and the item
+        // model answers an item's derived SortName lazily from that name - dropping it on every read - so
+        // a copy of the source's title-derived pair never round-tripped, and a comparison that read the
+        // derived half back found a drift no write could settle. The fix left the derived half out of the
+        // contract; the rank this plugin now forces onto ForcedSortName is the version's own persisted
+        // value and does round-trip, which is exactly why the pass can compare that half and settle. This
+        // is the fake being exactly that server - re-deriving the sort name on every read - for the item.
         var store = StackedStore(out var movie, out var mvc);
         var manager = CreateManager(store);
 
@@ -562,31 +564,33 @@ public class ProfileVersionIdempotentMetadataTests
         var versionId = VersionIdOf(movie.StaticSources[1], SideBySideFull);
         var version = (Video)store.FindItem(versionId)!;
 
-        // A settled version is named for its profile label, and that label - not the movie title - is
-        // what the server will derive its sort names from.
+        // A settled version is still named for its profile label - the label the picker shows - even
+        // though the string it is now ordered under is its sort rank, forced onto ForcedSortName. The
+        // label and the source's title are different strings, and the source's pair was never copied.
         Assert.Equal(new ProfileCatalog().GetProfile(SideBySideFull).DisplayName, version.Name);
 
-        // The database under this item now re-derives its sort name from its Name on every read, and
-        // hands back no forced sort name, exactly as the load path does. Before the fix this is the state
-        // that rewrote the item forever: the plugin had asked it to sort under "ready player one", and
-        // every read answered a label-derived sort name.
+        // The database under this item now re-runs the sort-name resolution on every read: it hands the
+        // forced sort name back exactly as the write persisted it (that column round-trips - the rank) and
+        // drops the derived SortName so it re-derives from it. Before the fix this was the state that
+        // rewrote the item forever, when the plugin had asked it to sort under the source's "ready player
+        // one" and every read answered a label-derived sort name instead.
         store.ReDeriveSortNameFromNameFor.Add(versionId);
 
         var created = store.Created.Count;
 
         var second = await manager.ReconcileLibraryAsync(CancellationToken.None);
 
-        // Read, and stop. The sort name comes back different from anything the copy wrote, and the pass
-        // notices nothing - because it no longer reads that pair at all.
+        // Read, and stop. The derived SortName comes back re-derived and the pass never reads it; the
+        // ForcedSortName it does compare comes back exactly as it wrote it, so there is nothing to repair.
         Assert.False(second.Changed);
         Assert.Equal(0, second.Created + second.Updated + second.Deleted + second.Skipped);
         Assert.Equal(created, store.Created.Count);
         Assert.Empty(store.Updated);
         Assert.Empty(store.Deleted);
 
-        // And it stays settled boot after boot: the sort name still comes back label-derived, and the
-        // pass still has no reason to write, because the pair is out of the contract rather than merely
-        // matched by luck.
+        // And it stays settled boot after boot: the derived sort name keeps being re-derived, the forced
+        // rank keeps round-tripping, and the pass still has no reason to write - because the derived half
+        // is out of the contract and the persisted half is compared against exactly what it writes.
         var third = await manager.ReconcileLibraryAsync(CancellationToken.None);
         Assert.False(third.Changed);
         Assert.Empty(store.Updated);

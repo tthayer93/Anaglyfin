@@ -92,11 +92,13 @@ public class ProfileVersionItemMetadataTests
         Assert.Equal("Ready Player One", version.OriginalTitle);
         Assert.Equal("Ready Player One (2018) [1080p]", movie.OriginalTitle);
 
-        // The sort-name pair is deliberately NOT copied. A version's Name is its profile label and the
-        // server derives SortName/ForcedSortName from that name, so the source's title-derived pair
-        // never round-trips back through the item - copying and comparing it is the rewrite-on-every-
-        // boot this excludes. Left alone, the version sorts under its label, so what it answers for its
-        // sort name is not the source's, and its forced sort name is whatever the server set (nothing).
+        // The source's sort-name pair is deliberately NOT copied. What the version carries instead is its
+        // own rank (see <c>ProfileVersionItemManager.ApplySortRank</c>) - a value this plugin computes and
+        // persists onto ForcedSortName, refreshed into SortName from it - and not the source's title-derived
+        // pair, whose derived half the server would re-derive from the version's own label and never read
+        // back (the cp13 rewrite-on-every-boot the copy excludes). So neither half of the source's pair
+        // reaches the version: the source still answers the movie's title, the version its rank, and the
+        // two are different strings on both columns.
         Assert.NotEqual(mvc.SortName, version.SortName);
         Assert.NotEqual(mvc.ForcedSortName, version.ForcedSortName);
     }
