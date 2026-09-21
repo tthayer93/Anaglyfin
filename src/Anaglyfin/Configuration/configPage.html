@@ -76,7 +76,8 @@
                 <h1 class="headerLogo">Anaglyfin</h1>
                 <div class="fieldDescription anaglyfin-intro">
                     Choose the 3D versions Anaglyfin offers and the subtitle depth it asks
-                    for. Every field is a bounded choice: a profile, a colour or a number.
+                    for. Every field is a bounded choice: a profile, a switch, a colour or a
+                    number.
                 </div>
 
                 <!--
@@ -115,6 +116,19 @@
                             The versions a client can pick from.
                         </div>
                         <div id="AnaglyfinEnabledProfiles" data-anaglyfin-field="EnabledProfileIds" data-anaglyfin-kind="profileChoiceList"></div>
+                    </div>
+
+                    <div class="section anaglyfin-section">
+                        <h2 class="sectionTitle">Original 3D MVC version</h2>
+                        <label class="checkboxContainer checkboxContainer-withDescription">
+                            <input type="checkbox" is="emby-checkbox" data-anaglyfin-field="OfferOriginalMVCVersion" data-anaglyfin-kind="checkbox" data-anaglyfin-default="True">
+                            <span>Offer original 3D MVC version</span>
+                            <div class="fieldDescription checkboxFieldDescription">
+                                Turned off, the original MVC file is hidden from version pickers
+                                while the converted versions above stay available.
+                                Nothing is deleted, and turning it back on brings the original file back at once.
+                            </div>
+                        </label>
                     </div>
 
                     <div class="section anaglyfin-section">
@@ -297,6 +311,14 @@
                         },
                         write: function (element, value) {
                             element.value = boundedInteger(value, element, fieldDefault(element));
+                        }
+                    },
+                    checkbox: {
+                        read: function (element) {
+                            return element.checked === true;
+                        },
+                        write: function (element, value) {
+                            element.checked = booleanValue(value, fieldDefault(element));
                         }
                     },
                     profileChoiceList: {
@@ -502,6 +524,51 @@
                     }
 
                     return parsed;
+                }
+
+                /*
+                 * A switch, in whichever spelling the settings layer answered with: the endpoint
+                 * sends true/false, a hand written settings file sends the text, and an enum-style
+                 * reader can hand back 1/0. What decides is the stored value, and nothing stored at
+                 * all is answered by the default the markup declares for itself - which is why the
+                 * shipped position of a switch lives in the markup and not in this script. A field
+                 * that declares no default is a switch nobody declared, and nobody declared means off.
+                 */
+                function booleanValue(value, fallback) {
+                    var stored = parseBoolean(value);
+                    if (stored !== null) {
+                        return stored;
+                    }
+
+                    var declared = parseBoolean(fallback);
+                    if (declared !== null) {
+                        return declared;
+                    }
+
+                    return false;
+                }
+
+                function parseBoolean(value) {
+                    if (typeof value === 'boolean') {
+                        return value;
+                    }
+
+                    if (typeof value === 'number') {
+                        return isFinite(value) ? value !== 0 : null;
+                    }
+
+                    if (typeof value === 'string') {
+                        var stated = value.trim().toLowerCase();
+                        if (stated === 'true' || stated === '1') {
+                            return true;
+                        }
+
+                        if (stated === 'false' || stated === '0') {
+                            return false;
+                        }
+                    }
+
+                    return null;
                 }
 
                 function profileOption(value, text) {

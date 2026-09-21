@@ -83,6 +83,38 @@ public class PluginConfiguration : BasePluginConfiguration
     public int MaxConcurrentTranscodes { get; set; } = DefaultMaxConcurrentTranscodes;
 
     /// <summary>
+    /// Gets or sets whether the original 3D MVC file is offered to clients as a version of
+    /// its own, beside the versions Anaglyfin converts it into.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What the switch decides, and where.</b> A server running a matching FFmpeg-mvc build
+    /// can already play the raw MVC file, so offering it has always been the honest default and
+    /// still is. Unchecked, the raw file is dropped from the two lists a user picks a version
+    /// from - the details-page version list and PlaybackInfo - by
+    /// <c>Anaglyfin.MediaSources.MediaSourceManagerSuppressionDecorator</c>, which filters what
+    /// the server's media source manager hands out and changes nothing else. The library item,
+    /// its links, its paths, its resume state and the item's own enumeration of its sources all
+    /// stay as the scanner left them, so ticking the box back brings the entry back on the next
+    /// request without a library scan.
+    /// </para>
+    /// <para>
+    /// <b>Why the shipped default is <see langword="true"/>.</b> The behaviour this setting turns
+    /// off is the behaviour every build before it had, and a settings file that predates the
+    /// setting says nothing about it. The XML serialiser leaves an element it cannot find at the
+    /// value the property was initialised with, so an upgrading server keeps playing exactly what
+    /// it offered before, and there is nothing to migrate: only a save that writes
+    /// <see langword="false"/> changes anything.
+    /// </para>
+    /// <para>
+    /// <b>What unchecked never does.</b> It never hides a version of its own conversion, never
+    /// hides the file of the item being asked about, and never hides the raw file of a movie that
+    /// has no converted version to offer instead - see the decorator, which refuses all three.
+    /// </para>
+    /// </remarks>
+    public bool OfferOriginalMVCVersion { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets the colour the custom grayscale anaglyph tints the left eye with,
     /// as <c>#RRGGBB</c> text.
     /// </summary>
