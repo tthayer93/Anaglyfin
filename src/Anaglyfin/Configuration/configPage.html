@@ -42,6 +42,14 @@
                 min-width: 10em;
             }
 
+            /* A device row shows one device control - the picker, or the typed id when the
+               registered devices cannot be read - and the same lesson as every other hidden
+               element on this page applies: the attribute alone does not hide anything once
+               the dashboard's own sheet decides about div elements. */
+            .anaglyfin-deviceDefault-field[hidden] {
+                display: none;
+            }
+
             .anaglyfin-colorRow {
                 display: flex;
                 flex-wrap: wrap;
@@ -139,14 +147,20 @@
                     </div>
 
                     <div class="section anaglyfin-section">
-                        <h2 class="sectionTitle">Device and client defaults</h2>
+                        <h2 class="sectionTitle">Device defaults</h2>
                         <div class="fieldDescription">
-                            Pin the default for one device or one client. An entry naming both
-                            beats one naming either; an entry naming neither is ignored.
+                            Pin the first offered profile to one exact registered device.
+                            A default is an ordering for that one device: it does not
+                            authorize playback, and it does not apply to any other client.
                         </div>
                         <div id="AnaglyfinDeviceDefaults" class="anaglyfin-deviceDefaults" data-anaglyfin-field="DeviceDefaultProfiles" data-anaglyfin-kind="deviceDefaultList"></div>
+                        <div id="AnaglyfinDeviceListNotice" class="fieldDescription" hidden>
+                            The registered devices could not be read from the server, so
+                            these rows ask for the exact device id directly. Stored device
+                            ids keep their rows; nothing is dropped for being unfamiliar.
+                        </div>
                         <button is="emby-button" type="button" id="AnaglyfinAddDeviceDefault" class="raised button-alt block emby-button">
-                            <span>Add override</span>
+                            <span>Add device default</span>
                         </button>
                     </div>
 
@@ -245,13 +259,13 @@
         <template id="AnaglyfinDeviceDefaultRowTemplate">
             <div class="anaglyfin-deviceDefault">
                 <div class="anaglyfin-deviceDefault-fields">
-                    <div class="inputContainer anaglyfin-deviceDefault-field">
+                    <div class="selectContainer anaglyfin-deviceDefault-field" data-anaglyfin-device-picker-field>
                         <label class="inputLabel inputLabelUnfixed">Device</label>
-                        <input type="text" is="emby-input" maxlength="128" data-anaglyfin-device-field="deviceId">
+                        <select is="emby-select" class="emby-select-withcolor emby-select" data-anaglyfin-device-field="deviceId"></select>
                     </div>
-                    <div class="inputContainer anaglyfin-deviceDefault-field">
-                        <label class="inputLabel inputLabelUnfixed">Client</label>
-                        <input type="text" is="emby-input" maxlength="128" data-anaglyfin-device-field="clientName">
+                    <div class="inputContainer anaglyfin-deviceDefault-field" data-anaglyfin-device-manual-field hidden>
+                        <label class="inputLabel inputLabelUnfixed">Device id</label>
+                        <input type="text" is="emby-input" maxlength="128" data-anaglyfin-device-field="deviceIdManual">
                     </div>
                     <div class="selectContainer anaglyfin-deviceDefault-field">
                         <label class="inputLabel inputLabelUnfixed">Default profile</label>
@@ -385,9 +399,10 @@
                             for (var i = 0; i < rows.length; i++) {
                                 var entry = readDeviceRow(rows[i]);
 
-                                // An entry pinning neither device nor client matches nothing,
-                                // so an empty row is dropped instead of stored.
-                                if (entry.DeviceId.length > 0 || entry.ClientName.length > 0) {
+                                // An entry that names no device matches nothing, so a row
+                                // whose device was never chosen - or whose typed id was
+                                // never filled in - is dropped instead of stored.
+                                if (entry.DeviceId.length > 0) {
                                     entries.push(entry);
                                 }
                             }
@@ -663,10 +678,12 @@
                 function readDeviceRow(row) {
                     // The entry is spelled the way the settings model spells it, because a save
                     // posts this object straight through: the endpoint binds an entry's
-                    // properties by the model's own spelling and ignores any other one.
+                    // properties by the model's own spelling and ignores any other one. The
+                    // device value is whatever the row's active control holds - the exact id
+                    // from the picker of registered devices, or the typed id when the list
+                    // could not be read.
                     return {
-                        DeviceId: textOf(deviceRowField(row, 'deviceId')),
-                        ClientName: textOf(deviceRowField(row, 'clientName')),
+                        DeviceId: textOf(activeDeviceField(row)),
                         ProfileId: textOf(deviceRowField(row, 'profileId'))
                     };
                 }
@@ -697,10 +714,6 @@
 
                     fillProfileOptions(deviceRowField(row, 'profileId'));
 
-                    deviceRowField(row, 'deviceId').value = entryText(entry, 'DeviceId');
-                    deviceRowField(row, 'clientName').value = entryText(entry, 'ClientName');
-                    deviceRowField(row, 'profileId').value = knownProfileId(entryText(entry, 'ProfileId'), profileIds()[0]);
-
                     var remove = row.querySelector('.anaglyfin-deviceDefault-remove');
                     remove.addEventListener('click', function () {
                         if (row.parentNode) {
@@ -709,7 +722,308 @@
                     });
 
                     container.appendChild(row);
+
+                    // The device half is filled last, from the registry state the page is in at
+                    // that moment: a row added while the list is still loading starts on the
+                    // picker and is re-filled by the sync that finishes the load, and a row
+                    // added after a failed read starts on the typed id straight away.
+                    applyDeviceRegistryToRow(row, entryText(entry, 'DeviceId'));
+                    deviceRowField(row, 'profileId').value = knownProfileId(entryText(entry, 'ProfileId'), profileIds()[0]);
+
                     return row;
+                }
+
+                /*
+                 * The registry of devices the device pickers offer.
+                 *
+                 * A default is pinned by device id, and that id is an opaque string the client
+                 * invented - nobody can type it from memory, so the page reads it from the
+                 * server's own registry instead of asking the administrator: the user list
+                 * first, then every user's devices (Limit 0 asks for all of them, not one page),
+                 * merged by exact id because the same TV is one device however many users sign
+                 * into it. Both reads ride the dashboard's signed-in client - the page has no
+                 * credential of its own, and it does not improvise a transport.
+                 *
+                 * A read that fails is a state of the page, not an error: the rows switch to
+                 * asking for a typed device id, because a settings page that cannot list
+                 * devices must still be able to keep and save the defaults it already stored.
+                 */
+                var deviceRegistry = { state: 'loading', devices: [] };
+
+                function deviceApiClientAvailable() {
+                    return typeof window.ApiClient !== 'undefined'
+                        && !!window.ApiClient
+                        && typeof window.ApiClient.getJSON === 'function'
+                        && typeof window.ApiClient.getUrl === 'function';
+                }
+
+                function loadDeviceRegistry() {
+                    // One read attempt at a time, and once the list stands it stands for the
+                    // page: a device picker does not need the registry to be re-walked on every
+                    // visit, only to have been walked.
+                    if (deviceRegistry.state !== 'loading') {
+                        return;
+                    }
+
+                    if (!deviceApiClientAvailable()) {
+                        markDeviceRegistryUnavailable();
+                        return;
+                    }
+
+                    window.ApiClient.getJSON(window.ApiClient.getUrl('/Users')).then(function (users) {
+                        var people = queryResultItems(users);
+                        var reads = [];
+
+                        for (var i = 0; i < people.length; i++) {
+                            reads.push(window.ApiClient.getJSON(
+                                window.ApiClient.getUrl('/Devices', { userId: people[i].Id, Limit: 0 })));
+                        }
+
+                        return Promise.all(reads).then(function (perUser) {
+                            var merged = [];
+                            for (var j = 0; j < perUser.length; j++) {
+                                mergeRegisteredDevices(merged, queryResultItems(perUser[j]));
+                            }
+
+                            labelRegisteredDevices(merged);
+                            deviceRegistry.devices = sortRegisteredDevices(merged);
+                            deviceRegistry.state = 'ready';
+                            syncDeviceRowsWithRegistry();
+                        });
+                    }, function () {
+                        markDeviceRegistryUnavailable();
+                    });
+                }
+
+                function markDeviceRegistryUnavailable() {
+                    deviceRegistry.state = 'failed';
+                    deviceRegistry.devices = [];
+
+                    var page = pageElement();
+                    var notice = page ? page.querySelector('#AnaglyfinDeviceListNotice') : null;
+                    if (notice) {
+                        notice.hidden = false;
+                    }
+
+                    syncDeviceRowsWithRegistry();
+                }
+
+                function queryResultItems(payload) {
+                    // The user list answers as a plain array and the device list as a query
+                    // result. Both spellings mean "the items", and any other shape is the empty
+                    // list, which the merge reads as exactly what an empty list is.
+                    if (Array.isArray(payload)) {
+                        return payload;
+                    }
+
+                    if (payload && Array.isArray(payload.Items)) {
+                        return payload.Items;
+                    }
+
+                    return [];
+                }
+
+                function findRegisteredDevice(entries, deviceId) {
+                    for (var i = 0; i < entries.length; i++) {
+                        if (entries[i].id === deviceId) {
+                            return entries[i];
+                        }
+                    }
+
+                    return null;
+                }
+
+                function mergeRegisteredDevices(entries, devices) {
+                    for (var i = 0; i < devices.length; i++) {
+                        var device = devices[i] || {};
+                        var id = textValue(device.Id);
+
+                        if (id.length === 0) {
+                            continue;
+                        }
+
+                        var entry = findRegisteredDevice(entries, id);
+                        if (!entry) {
+                            entry = { id: id, customName: '', name: '', appName: '', lastUserName: '', label: '' };
+                            entries.push(entry);
+                        }
+
+                        // One device reported by several users is one device: the first report
+                        // carrying a field is the one that names it, and every report agrees on
+                        // the id, which is the only thing the entry pins on.
+                        entry.customName = entry.customName || textValue(device.CustomName);
+                        entry.name = entry.name || textValue(device.Name);
+                        entry.appName = entry.appName || textValue(device.AppName);
+                        entry.lastUserName = entry.lastUserName || textValue(device.LastUserName);
+                    }
+                }
+
+                function textValue(value) {
+                    return typeof value === 'string' ? value.trim() : '';
+                }
+
+                function labelRegisteredDevices(entries) {
+                    for (var i = 0; i < entries.length; i++) {
+                        var entry = entries[i];
+
+                        // The most useful registered identity the report carries: the name the
+                        // administrator gave the device, failing that the name the device gave
+                        // itself, failing that its id - the only text left that is not a guess.
+                        // The app and the last user say which install of which person.
+                        var primary = entry.customName || entry.name || entry.id;
+                        var label = entry.appName.length > 0 ? primary + ' - ' + entry.appName : primary;
+                        if (entry.lastUserName.length > 0) {
+                            label = label + ' (' + entry.lastUserName + ')';
+                        }
+
+                        entry.label = label;
+                    }
+
+                    // Two devices answering to one label is a choice nobody can make, so a
+                    // label more than one device wears carries the ids that do differ.
+                    for (var j = 0; j < entries.length; j++) {
+                        if (countLabel(entries, entries[j].label) > 1) {
+                            entries[j].label = entries[j].label + ' [id: ' + entries[j].id + ']';
+                        }
+                    }
+                }
+
+                function countLabel(entries, label) {
+                    var count = 0;
+
+                    for (var i = 0; i < entries.length; i++) {
+                        if (entries[i].label === label) {
+                            count++;
+                        }
+                    }
+
+                    return count;
+                }
+
+                function sortRegisteredDevices(entries) {
+                    return entries.slice().sort(function (left, right) {
+                        var leftKey = left.label.toLowerCase();
+                        var rightKey = right.label.toLowerCase();
+
+                        if (leftKey !== rightKey) {
+                            return leftKey < rightKey ? -1 : 1;
+                        }
+
+                        if (left.id !== right.id) {
+                            return left.id < right.id ? -1 : 1;
+                        }
+
+                        return 0;
+                    });
+                }
+
+                /*
+                 * A device row shows one device control at a time: the picker of registered
+                 * devices while the list stands, one plain box for a typed id when it does not.
+                 * The decision lives on the row as an attribute because the row is read back
+                 * later, by a save that no longer knows why the page looked the way it did, and
+                 * whichever control is not the row's mode is disabled as well as hidden - a
+                 * value read out of the wrong control is a default pinned to a device nobody
+                 * picked.
+                 */
+                function deviceRowMode() {
+                    return deviceRegistry.state === 'failed' ? 'manual' : 'picker';
+                }
+
+                function rowDevicePicker(row) {
+                    return deviceRowField(row, 'deviceId');
+                }
+
+                function rowDeviceManual(row) {
+                    return deviceRowField(row, 'deviceIdManual');
+                }
+
+                function activeDeviceField(row) {
+                    if (attributeName(row, 'data-anaglyfin-device-mode') === 'manual') {
+                        return rowDeviceManual(row);
+                    }
+
+                    return rowDevicePicker(row);
+                }
+
+                function isRegisteredDevice(deviceId) {
+                    for (var i = 0; i < deviceRegistry.devices.length; i++) {
+                        if (deviceRegistry.devices[i].id === deviceId) {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                }
+
+                function fillDevicePicker(select, selectedDeviceId) {
+                    while (select.firstChild) {
+                        select.removeChild(select.firstChild);
+                    }
+
+                    select.appendChild(profileOption('', 'Choose a device'));
+
+                    for (var i = 0; i < deviceRegistry.devices.length; i++) {
+                        select.appendChild(profileOption(deviceRegistry.devices[i].id, deviceRegistry.devices[i].label));
+                    }
+
+                    var wanted = typeof selectedDeviceId === 'string' ? selectedDeviceId.trim() : '';
+                    if (wanted.length > 0 && !isRegisteredDevice(wanted)) {
+                        // A stored device the registry no longer lists - uninstalled, factory
+                        // reset, or a server mid-restart - keeps its row and its exact id: a
+                        // page that dropped the id would delete an administrator's default
+                        // while saving something else entirely. The option says what it is,
+                        // because an unnamed option would be a device nobody chose.
+                        select.appendChild(profileOption(wanted, 'Stored device (not registered): ' + wanted));
+                    }
+
+                    select.value = wanted;
+                }
+
+                function applyDeviceRegistryToRow(row, deviceId) {
+                    var mode = deviceRowMode();
+                    var picker = rowDevicePicker(row);
+                    var manual = rowDeviceManual(row);
+                    var pickerBox = row.querySelector('[data-anaglyfin-device-picker-field]');
+                    var manualBox = row.querySelector('[data-anaglyfin-device-manual-field]');
+                    var wanted = typeof deviceId === 'string' ? deviceId.trim() : '';
+
+                    if (mode === 'manual') {
+                        manual.value = wanted;
+                        picker.disabled = true;
+                        manual.disabled = false;
+                    } else {
+                        fillDevicePicker(picker, wanted);
+                        manual.disabled = true;
+                        picker.disabled = false;
+                    }
+
+                    if (pickerBox) {
+                        pickerBox.hidden = mode !== 'picker';
+                    }
+
+                    if (manualBox) {
+                        manualBox.hidden = mode !== 'manual';
+                    }
+
+                    row.setAttribute('data-anaglyfin-device-mode', mode);
+                }
+
+                function syncDeviceRowsWithRegistry() {
+                    var page = pageElement();
+                    var container = page ? page.querySelector('#AnaglyfinDeviceDefaults') : null;
+                    if (!container) {
+                        return;
+                    }
+
+                    var rows = deviceRows(container);
+                    for (var i = 0; i < rows.length; i++) {
+                        // The value travels with the row across the mode switch: a stored id
+                        // that was the picker's retained option is the typed id in the box,
+                        // and a typed id the list later recognises becomes the option the
+                        // picker names.
+                        applyDeviceRegistryToRow(rows[i], textOf(activeDeviceField(rows[i])));
+                    }
                 }
 
                 /*
@@ -955,16 +1269,23 @@
                 if (page) {
                     // The dashboard raises pageshow every time it brings a plugin page
                     // forward, which is how the page learns to re-read its settings when an
-                    // administrator comes back to it.
+                    // administrator comes back to it. The device registry rides the same
+                    // moment - the settings say which defaults are stored, and the registry
+                    // says which devices those defaults can name today.
                     page.addEventListener('pageshow', loadConfiguration);
+                    page.addEventListener('pageshow', loadDeviceRegistry);
                 }
 
                 // A page injected into a document that has already finished loading never
                 // sees a pageshow of its own, so it reads its settings once on its own.
                 if (document.readyState === 'loading') {
-                    document.addEventListener('DOMContentLoaded', loadConfiguration);
+                    document.addEventListener('DOMContentLoaded', function () {
+                        loadConfiguration();
+                        loadDeviceRegistry();
+                    });
                 } else {
                     loadConfiguration();
+                    loadDeviceRegistry();
                 }
             }());
         </script>
