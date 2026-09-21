@@ -2126,7 +2126,11 @@ public class AnaglyfinMediaSourceProviderTests
     /// </summary>
     private sealed class ThrowingHttpContextAccessor : IHttpContextAccessor
     {
-        public HttpContext? HttpContext => throw new InvalidOperationException("accessor failure under test");
+        public HttpContext? HttpContext
+        {
+            get => throw new InvalidOperationException("accessor failure under test");
+            set => throw new InvalidOperationException("accessor failure under test");
+        }
     }
 
     /// <summary>
