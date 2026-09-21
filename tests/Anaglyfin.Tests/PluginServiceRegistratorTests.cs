@@ -114,13 +114,14 @@ public class PluginServiceRegistratorTests
     [Fact]
     public void RegisterServicesNeverShadowsAServerOwnedService()
     {
-        // The provider reads the request's device claim through IHttpContextAccessor, which
-        // the server itself registers (Startup adds it to the root container) and through
-        // which the server's own helpers read the same claims. A plugin-side registration
-        // would not merely be dead weight - it would risk replacing the server's accessor
-        // with one the server's request pipeline does not feed. The provider is activated
-        // with ActivatorUtilities, which resolves the server's registration directly, so
-        // there is nothing for Anaglyfin to register.
+        // Anaglyfin's settings are user and library scoped, never request scoped: nothing on
+        // the plugin side reads HttpContext, claims or any other request state to decide
+        // which version to offer - the exact-device feature that once did was taken out
+        // before release. The server owns services such as IHttpContextAccessor (Startup
+        // registers it on the root container, where the request pipeline and the server's own
+        // helpers feed and read it), so a plugin-side registration would not be dead weight
+        // but an active hazard: it could shadow the server's instance. There is nothing for
+        // Anaglyfin to register here, and this assertion keeps it that way.
         var services = new FakeServiceCollection();
 
         new PluginServiceRegistrator().RegisterServices(services, null!);

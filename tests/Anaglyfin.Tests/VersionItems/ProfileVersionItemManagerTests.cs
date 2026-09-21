@@ -537,19 +537,16 @@ public class ProfileVersionItemManagerTests
     }
 
     [Fact]
-    public async Task TheVersionsBuiltAreTheEnabledOnesAndNotTheOnesOneDevicePrefers()
+    public async Task TheVersionsBuiltAreTheEnabledOnesForEveryClient()
     {
+        // The materialised set is the enabled set and nothing else. The offered order the
+        // pass plans over is the global one (default promoted, no device asked), so no
+        // client's preference can widen or narrow what the library carries - one row set,
+        // the same for everyone. With a single enabled profile the pass must create that
+        // one version and nothing beside it.
         var store = NewStore(out var movie);
 
-        // An administrator who pins one device's default to 2D has said what that device should start
-        // on, not that every client should be handed a 2D item in its library: which profile a client
-        // begins with is an answer a request gives, not a fact about the file.
         var configuration = ConfigurationWith(SideBySideFull);
-        configuration.Configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
-        {
-            DeviceId = "living-room-tv",
-            ProfileId = TwoDBase
-        });
 
         await CreateManager(store, configuration).ReconcileLibraryAsync(CancellationToken.None);
 

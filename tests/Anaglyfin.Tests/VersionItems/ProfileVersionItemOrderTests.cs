@@ -29,8 +29,9 @@ namespace Anaglyfin.Tests.VersionItems;
 /// sort alphabetically - "2D Base" before "3D Anaglyph..." before "3D Half..." - which is nobody's
 /// choice of what to start on. Writing a fixed-width rank into <c>ForcedSortName</c> (and refreshing
 /// the derived <c>SortName</c> from it) is what makes that order say "the default first". It is a
-/// global answer, asked with no device: per-device ordering lives on the dynamic provider path, not
-/// here (see <c>.shared/discovery/cp27-device-ordering_20260921.md</c>).
+/// global answer, asked with no device - and the dynamic provider path reads that same global
+/// default, because the exact-device matching a pre-release build carried was removed before
+/// release (the history is kept in <c>.shared/discovery/cp27-device-ordering_20260921.md</c>).
 /// </para>
 /// <para>
 /// The other half of what these tests pin is the settle discipline the whole manager is built on: a

@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml.Serialization;
@@ -24,7 +26,6 @@ public class PluginConfigurationTests
         Assert.Equal(PluginConfiguration.DefaultMaxConcurrentTranscodes, configuration.MaxConcurrentTranscodes);
         Assert.Equal(1, configuration.MaxConcurrentTranscodes);
         Assert.Empty(configuration.EnabledProfileIds);
-        Assert.Empty(configuration.DeviceDefaultProfiles);
         Assert.Equal("#FF0000", configuration.CustomLeftEyeColor);
         Assert.Equal("#00FFFF", configuration.CustomRightEyeColor);
         Assert.Equal(SubtitleDepthMode.Automatic, configuration.SubtitleDepthMode);
@@ -48,10 +49,10 @@ public class PluginConfigurationTests
     public void SettingsOnlyReferenceAllowlistedProfileIds()
     {
         var configuration = new PluginConfiguration();
-        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault { DeviceId = "tv", ProfileId = ProfileIds.SideBySideHalf });
+        configuration.DefaultProfileId = ProfileIds.SideBySideHalf;
 
         Assert.True(ProfileIds.IsAllowed(configuration.DefaultProfileId));
-        Assert.All(configuration.DeviceDefaultProfiles, entry => Assert.True(ProfileIds.IsAllowed(entry.ProfileId)));
+        Assert.All(configuration.EnabledProfileIds, id => Assert.True(ProfileIds.IsAllowed(id)));
     }
 
     [Theory]
@@ -95,16 +96,6 @@ public class PluginConfigurationTests
             SubtitleDepthPlane = 5
         };
         configuration.EnabledProfileIds.AddRange(new[] { ProfileIds.SideBySideFull, ProfileIds.SideBySideHalf, ProfileIds.CustomGrayscale });
-        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
-        {
-            DeviceId = "living-room-tv",
-            ProfileId = ProfileIds.CustomGrayscale
-        });
-        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault
-        {
-            DeviceId = "den-tablet",
-            ProfileId = ProfileIds.SideBySideFull
-        });
 
         var reloaded = RoundTripXml(configuration);
 
@@ -117,10 +108,6 @@ public class PluginConfigurationTests
         Assert.Equal(
             new[] { ProfileIds.SideBySideFull, ProfileIds.SideBySideHalf, ProfileIds.CustomGrayscale },
             reloaded.EnabledProfileIds);
-
-        var deviceEntry = Assert.Single(reloaded.DeviceDefaultProfiles, entry => entry.DeviceId == "living-room-tv");
-        Assert.Equal(ProfileIds.CustomGrayscale, deviceEntry.ProfileId);
-        Assert.Equal(2, reloaded.DeviceDefaultProfiles.Count);
     }
 
     [Fact]
@@ -157,7 +144,6 @@ public class PluginConfigurationTests
         Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, loaded.DefaultProfileId);
         Assert.Equal(1, loaded.MaxConcurrentTranscodes);
         Assert.Empty(loaded.EnabledProfileIds);
-        Assert.Empty(loaded.DeviceDefaultProfiles);
 
         // Raw deserialisation leaves the shipped default here: Automatic. This is the pre-depth
         // file that the migration turns into Flat - see PluginConfigurationMigrationTests and the
@@ -189,7 +175,6 @@ public class PluginConfigurationTests
             CustomRightEyeColor = "#445566"
         };
         configuration.EnabledProfileIds.Add(ProfileIds.CustomGrayscale);
-        configuration.DeviceDefaultProfiles.Add(new DeviceProfileDefault { DeviceId = "kitchen-tablet", ProfileId = ProfileIds.SideBySideFull });
 
         var payload = JsonSerializer.Serialize(configuration, options);
         var reloaded = JsonSerializer.Deserialize<PluginConfiguration>(payload, options);
@@ -203,65 +188,71 @@ public class PluginConfigurationTests
         // The settings endpoint hands these collections back on every save, so they have
         // to travel in both directions, not just out.
         Assert.Contains("\"EnabledProfileIds\":[\"custom_grayscale\"]", payload);
-        Assert.Contains("\"DeviceDefaultProfiles\":[", payload);
         Assert.Contains("\"ConstantShift\"", payload);
 
+        // The exact-device default feature never shipped and has no property on this
+        // model: a JSON save round-trips the settings and nothing device-shaped.
+        Assert.DoesNotContain("DeviceDefaultProfiles", payload, StringComparison.Ordinal);
+
         Assert.Equal(ProfileIds.CustomGrayscale, Assert.Single(reloaded.EnabledProfileIds));
-        Assert.Equal("kitchen-tablet", Assert.Single(reloaded.DeviceDefaultProfiles).DeviceId);
-        Assert.Equal(ProfileIds.SideBySideFull, Assert.Single(reloaded.DeviceDefaultProfiles).ProfileId);
     }
 
     [Fact]
-    public void AStoredClientNameOnADeviceEntryStillLoads()
+    public void AStoredDeviceDefaultEntryLoadsIgnoredAndIsGoneAfterTheNextSave()
     {
-        // What an upgrading server has on disk: device entries written by the build that
-        // also matched on client name. ClientName is no longer a property of the model,
-        // and the XML serialiser's job is to ignore what it cannot place - so the file
-        // loads with every surviving entry intact rather than failing the plugin at
-        // start-up. No disk migration runs, and none is needed: the entries that pinned a
-        // device keep working, and one pinned to a client alone (the second entry below)
-        // pins no device here, so it matches nothing rather than hijacking everything.
-        const string ClientEraXml = """
+        // What an upgrading server can have on disk: a settings file written by a build
+        // that carried the exact-device defaults feature. That feature never shipped and
+        // this model has no property for it, so the XML serialiser's job is to ignore what
+        // it cannot place. Three promises, in the order a loader meets them:
+        //
+        //   1. the file loads without throwing - a stale element never fails the plugin,
+        //   2. the stale entries decide nothing - neither the default nor the offered
+        //      order moves because of a hidden device row,
+        //   3. the next save drops them - what this build writes back is this build's
+        //      model, so the entries are not silently preserved for the next upgrade.
+        //
+        // Nothing is migrated on disk and nothing is honoured from the dark.
+        const string DeviceEraXml = """
             <PluginConfiguration xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+              <DefaultProfileId>two_d_base</DefaultProfileId>
               <DeviceDefaultProfiles>
                 <DeviceProfileDefault>
-                  <DeviceId>living-room-tv</DeviceId>
-                  <ClientName>AndroidTV</ClientName>
-                  <ProfileId>two_d_base</ProfileId>
-                </DeviceProfileDefault>
-                <DeviceProfileDefault>
-                  <DeviceId></DeviceId>
-                  <ClientName>Web</ClientName>
-                  <ProfileId>sbs_full</ProfileId>
+                  <DeviceId>old-device</DeviceId>
+                  <ProfileId>sbs_half</ProfileId>
                 </DeviceProfileDefault>
               </DeviceDefaultProfiles>
             </PluginConfiguration>
             """;
 
         var serializer = new XmlSerializer(typeof(PluginConfiguration));
-        using var reader = new StringReader(ClientEraXml);
+        PluginConfiguration loaded;
+        using (var reader = new StringReader(DeviceEraXml))
+        {
+            loaded = (PluginConfiguration?)serializer.Deserialize(reader)
+                ?? throw new InvalidOperationException("The device-era settings XML did not load a configuration.");
+        }
 
-        var loaded = (PluginConfiguration?)serializer.Deserialize(reader)
-            ?? throw new InvalidOperationException("The client-era settings XML did not load a configuration.");
+        // 1. It loaded, and the settings this build understands are intact.
+        Assert.Equal(ProfileIds.TwoDBase, loaded.DefaultProfileId);
 
-        Assert.Equal(2, loaded.DeviceDefaultProfiles.Count);
-
-        var deviceEntry = Assert.Single(loaded.DeviceDefaultProfiles, entry => !string.IsNullOrEmpty(entry.DeviceId));
-        Assert.Equal("living-room-tv", deviceEntry.DeviceId);
-        Assert.Equal(ProfileIds.TwoDBase, deviceEntry.ProfileId);
-
-        // The client-only entry survived as an entry that pins no device, and an entry
-        // that pins no device answers no request.
-        var clientOnlyEntry = Assert.Single(loaded.DeviceDefaultProfiles, entry => string.IsNullOrEmpty(entry.DeviceId));
-        Assert.Equal(string.Empty, clientOnlyEntry.DeviceId);
-        Assert.False(clientOnlyEntry.Matches("any-device"));
-        Assert.False(clientOnlyEntry.Matches("Web"));
-
-        // And the catalog agrees on a real resolution: the device entry decides its device,
-        // the client-era husk never decides anybody.
+        // 2. The stale entry decides nothing. Were it still applied, "old-device" would
+        // start on sbs_half; there is no longer any reader that could ask that question,
+        // so the global default and the catalog's global order stand.
         var catalog = new ProfileCatalog();
-        Assert.Equal(ProfileIds.TwoDBase, catalog.ResolveDefaultProfileId(loaded, "living-room-tv"));
-        Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, catalog.ResolveDefaultProfileId(loaded, "someone-elses-device"));
+        Assert.Equal(ProfileIds.TwoDBase, catalog.ResolveDefaultProfileId(loaded));
+        Assert.Equal(
+            new[] { ProfileIds.TwoDBase, ProfileIds.SideBySideFull, ProfileIds.AnaglyphRedCyanDubois, ProfileIds.SideBySideHalf },
+            catalog.GetOfferedProfiles(loaded).Select(profile => profile.Id).ToArray());
+
+        // 3. The next save - what the settings path writes from this model - carries the
+        // surviving settings and drops the device element with its entry.
+        var saved = SerializeXml(loaded);
+
+        Assert.Contains("<DefaultProfileId>two_d_base</DefaultProfileId>", saved, StringComparison.Ordinal);
+        Assert.DoesNotContain("DeviceDefaultProfiles", saved, StringComparison.Ordinal);
+        Assert.DoesNotContain("DeviceProfileDefault", saved, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-device", saved, StringComparison.Ordinal);
+        Assert.DoesNotContain("sbs_half", saved, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -560,5 +551,20 @@ public class PluginConfigurationTests
         var reloaded = (PluginConfiguration?)serializer.Deserialize(read);
 
         return reloaded ?? throw new InvalidOperationException("The settings XML did not contain a configuration.");
+    }
+
+    /// <summary>
+    /// Writes the settings the way the server's settings save path does and hands back the
+    /// text: what a stale settings file must have shrunk to after the next save is visible
+    /// in this text and nowhere else.
+    /// </summary>
+    private static string SerializeXml(PluginConfiguration configuration)
+    {
+        var serializer = new XmlSerializer(typeof(PluginConfiguration));
+
+        using var written = new MemoryStream();
+        serializer.Serialize(written, configuration);
+
+        return Encoding.UTF8.GetString(written.ToArray());
     }
 }
