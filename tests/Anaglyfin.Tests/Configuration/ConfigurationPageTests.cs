@@ -424,8 +424,11 @@ public class ConfigurationPageTests
         Assert.Contains("does not apply to any other client", html, StringComparison.Ordinal);
 
         // A row identifies its device by exactly one of the two device controls plus the
-        // profile it pins. No third field name has room on an exact-device row.
-        var deviceFields = Regex.Matches(html, "data-anaglyfin-device-field=\"(?<name>[^\"]+)\"")
+        // profile it pins. No third field name has room on an exact-device row. The pin
+        // reads the markup attributes only - the leading space keeps the page's own
+        // querySelector template, which spells the attribute with a variable name inside,
+        // out of the capture.
+        var deviceFields = Regex.Matches(html, " data-anaglyfin-device-field=\"(?<name>[^\"]+)\"")
             .Cast<Match>()
             .Select(match => match.Groups["name"].Value)
             .Distinct(StringComparer.Ordinal)
