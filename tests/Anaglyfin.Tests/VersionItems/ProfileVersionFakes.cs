@@ -98,14 +98,16 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
     public HashSet<Guid> RotateChildrenFor { get; } = new();
 
     /// <summary>
-    /// Gets the ids whose sort name the server re-derives from the item's own Name on every read, the
-    /// way the item model's lazy sort-name getter does once anything has dropped its cached value.
-    /// Naming an item or setting its forced sort name drops that cache, and reading a stored row back
-    /// names the item; a row the update path carried no forced sort name on answers none. So a real
-    /// read hands back a sort name derived from the item's Name - never the <c>SortName</c> a caller
-    /// wrote last pass - which for a version (whose Name is its profile label, not the movie title) is
-    /// a value that can never equal the one copied off the source. A test that wants to be that server
-    /// for one item puts its id in this list.
+    /// Gets the ids whose sort name the server re-derives on every read, the way the item model's lazy
+    /// sort-name getter does once anything has dropped its cached value. Naming an item or setting its
+    /// forced sort name drops that cache, and reading a stored row back does both. The forced sort name
+    /// itself is a stored column and round-trips as written - which is the whole reason Anaglyfin ranks
+    /// its versions through it - but the derived <c>SortName</c> does not: the next read re-derives it,
+    /// from the persisted forced sort name when the row carries one and from the item's own Name when it
+    /// carries none, and never from the <c>SortName</c> a caller wrote last pass. For a version with no
+    /// forced sort name of its own - the cp13 shape, where the plugin copied the source's title-derived
+    /// pair onto an item the server names for its profile label - that is a value that can never equal
+    /// the one copied. A test that wants to be that server for one item puts its id in this list.
     /// </summary>
     public HashSet<Guid> ReDeriveSortNameFromNameFor { get; } = new();
 
@@ -175,12 +177,14 @@ public sealed class FakeProfileVersionItemStore : IProfileVersionItemStore
         if (ReDeriveSortNameFromNameFor.Contains(itemId))
         {
             // The item model answers SortName lazily and drops the cached value the instant the item is
-            // named or its forced sort name set; reading a stored row back names the item, and the row
-            // carries no forced sort name the update path did not persist. So the sort name the next read
-            // answers with is derived from this item's Name - never the SortName written last pass, and
-            // for a version (named for its profile label) never the source's title-derived pair either.
-            // Dropping the cache the way the load does is the two assignments below.
-            item.ForcedSortName = null;
+            // named or its forced sort name set; reading a stored row back does both. What the row keeps
+            // is the forced sort name - a stored column, and it round-trips exactly as written, which is
+            // what lets Anaglyfin rank a version through it and read the rank back. What it does not keep
+            // is the SortName a caller wrote: the next read re-derives it, from the persisted forced sort
+            // name when the row carries one and from the item's own Name when it does not. Re-setting the
+            // forced sort name to the value the row carries is what drops that cache the way the load does,
+            // without throwing the value away; naming the item drops it again from the name side.
+            item.ForcedSortName = item.ForcedSortName;
             var name = item.Name;
             item.Name = name;
         }

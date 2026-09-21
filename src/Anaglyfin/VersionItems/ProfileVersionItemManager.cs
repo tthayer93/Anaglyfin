@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using Anaglyfin.Detection;
@@ -58,6 +59,13 @@ namespace Anaglyfin.VersionItems;
 /// </remarks>
 public sealed class ProfileVersionItemManager : IProfileVersionReconciler
 {
+    /// <summary>
+    /// The text between a version's rank and its human label in the sort name the item is written with.
+    /// A hyphen with spaces around it, so the number and the words stay legible apart and no rank prefix
+    /// can run into a label to spell another rank. See <see cref="FormatSortRank"/>.
+    /// </summary>
+    private const string SortRankSeparator = " - ";
+
     private readonly IProfileVersionItemStore _store;
 
     private readonly IMvcSourceDetector _detector;
@@ -329,20 +337,26 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             return await ReconcileOrphanVersionAsync(root, cancellationToken).ConfigureAwait(false);
         }
 
-        // The enabled profiles, not the offered ones: an offered list is a per-request answer, with a
-        // device's default promoted to the front and - for a device override naming a profile nobody
-        // enabled - a profile that is not enabled at all. A version item is not per-request. It is in
-        // the library, visible to every client, so it is materialised for exactly the profiles an
-        // administrator switched on. Which of them a given client should start on stays the dynamic
-        // provider's answer, because that is the one question an item cannot ask.
+        // The offered order, not the enabled order. A materialised version sorts in its picker under
+        // a rank this pass computes (see <see cref="BuildDesiredState"/>), and the rank has to put the
+        // page's first offer - the configured default - in front, which is exactly what the catalog's
+        // offered list is: the enabled profiles with the default promoted to the front. It is asked for
+        // with no device, so the default promoted is the configured global one and never a single
+        // client's - a version item is in the library for every client, and which of them a given
+        // device should start on stays the dynamic provider's per-request answer (that is the one
+        // question an item cannot ask). The offered list is the enabled set in a different order and
+        // never a wider or a narrower one - the catalog resolves the default to a profile that is
+        // enabled, so a device pin naming a profile nobody switched on cannot reach it here - so what
+        // gets materialised is still exactly the profiles an administrator switched on, whatever any
+        // one device prefers to begin with.
         var configuration = _configurationSource.GetConfiguration();
-        var enabled = _profileCatalog.GetEnabledProfiles(configuration) ?? new List<StereoProfile>();
+        var offered = _profileCatalog.GetOfferedProfiles(configuration) ?? new List<StereoProfile>();
 
         var scan = MvcEligibleSourceScanner.IsOfferableVideo(root)
             ? MvcEligibleSourceScanner.Scan(root, _detector, _logger)
             : new MvcSourceScan(new List<MvcEligibleSource>(), new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
-        var desired = BuildDesiredState(root, scan, enabled);
+        var desired = BuildDesiredState(root, scan, offered);
 
         var existing = CollectExisting(root, scan, out var linkedIds);
 
@@ -452,8 +466,12 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     /// </summary>
     /// <param name="root">The item whose versions are being planned.</param>
     /// <param name="scan">The files of that item a profile could convert.</param>
-    /// <param name="enabled">The profiles an administrator has switched on.</param>
-    /// <returns>The wanted versions, in source-then-profile order.</returns>
+    /// <param name="offered">
+    /// The profiles an administrator has switched on, in offered order: the configured default first,
+    /// then the rest in display order. The set is the enabled set; only its order carries information,
+    /// and that order is what the rank each version is born wearing is read from.
+    /// </param>
+    /// <returns>The wanted versions, in source-then-offered-profile order, each carrying its rank.</returns>
     /// <remarks>
     /// A planned version is the source the client picks <em>and</em> the metadata the item behind it
     /// has to carry, because those two come from different places: the source is a fact about the
@@ -462,20 +480,36 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
     /// metadata once per file rather than once per version is deliberate: it is the same answer for
     /// every profile that file converts, and a pass over a large library has no reason to ask for it
     /// five times per movie.
+    /// <para>
+    /// <b>The rank.</b> Every planned version also carries the label its item is sorted under: a
+    /// fixed-width running count over the whole plan, taken in source-then-offered-profile order. One
+    /// count does two jobs. It groups - every version of one file sorts beside its own file, ahead of
+    /// the next file's - and it promotes, because within a file the profile the page offers first (the
+    /// configured default) wears the lowest rank and therefore comes out first in the server's
+    /// order-by-sort-name of the version list. The width is fixed so the eleventh version still sorts
+    /// numerically after the tenth, which a bare number would not; it is deliberately not a persisted
+    /// setting, because the order a version sorts under is a consequence of the settings (which
+    /// profile is default, which are enabled) and nothing the library has to remember on its own.
+    /// A rank is spent only on a version that is actually planned, so the identity de-duplication
+    /// below cannot leave a hole in the sequence.
+    /// </para>
     /// </remarks>
     private Dictionary<Guid, PlannedVersion> BuildDesiredState(
         Video root,
         MvcSourceScan scan,
-        IReadOnlyList<StereoProfile> enabled)
+        IReadOnlyList<StereoProfile> offered)
     {
         var desired = new Dictionary<Guid, PlannedVersion>();
 
-        if (enabled.Count == 0 || scan.Candidates.Count == 0)
+        if (offered.Count == 0 || scan.Candidates.Count == 0)
         {
             return desired;
         }
 
         var labelSources = scan.Candidates.Count > 1;
+
+        // The one running rank, spent on each version as it is accepted into the plan. See the remarks.
+        var rank = 0;
 
         foreach (var source in scan.Candidates)
         {
@@ -486,21 +520,29 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             var metadata = VersionItemMetadata.FromSource(metadataSource);
             var credits = _store.GetPeople(metadataSource.Id);
 
-            foreach (var profile in enabled)
+            foreach (var profile in offered)
             {
                 var version = ProfileVersionSource.Build(root, source, profile, labelSources);
                 var id = ProfileVersionSource.GetVersionItemId(version.Id);
 
-                if (!desired.TryAdd(id, new PlannedVersion(version, profile.Id, metadata, credits)))
+                // The rank the version wears is the next one in line, but the line only advances when
+                // the version is actually taken - a fold to an id already planned spends nothing, so
+                // the sequence the library settles on is contiguous whatever the catalog or the scan
+                // throws at it.
+                var sortName = FormatSortRank(rank + 1, version.Name);
+                if (desired.TryAdd(id, new PlannedVersion(version, profile.Id, metadata, credits, sortName)))
                 {
-                    // Two files of one item folding to one version id is the identity collision the
-                    // derivation exists to avoid; the first answer wins, exactly as the provider's
-                    // dedup keeps the first offer.
-                    _logger.LogDebug(
-                        "Anaglyfin already has a {Profile} version planned for {ItemName}; the second one is not a separate version.",
-                        profile.Id,
-                        root.Name);
+                    rank++;
+                    continue;
                 }
+
+                // Two files of one item folding to one version id is the identity collision the
+                // derivation exists to avoid; the first answer wins, exactly as the provider's
+                // dedup keeps the first offer.
+                _logger.LogDebug(
+                    "Anaglyfin already has a {Profile} version planned for {ItemName}; the second one is not a separate version.",
+                    profile.Id,
+                    root.Name);
             }
         }
 
@@ -556,12 +598,21 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         /// snapshot rather than inside it; each version gets its own copy of them, because a credit
         /// names the item it is credited on.
         /// </param>
-        public PlannedVersion(MediaSourceInfo source, string profileId, VersionItemMetadata metadata, IReadOnlyList<PersonInfo> sourceCredits)
+        /// <param name="sortName">
+        /// The label the item this plan materialises into is sorted under: a fixed-width rank that
+        /// puts the page's first offer ahead of the rest of its file's versions (see
+        /// <see cref="BuildDesiredState"/>). It is carried beside the source rather than derived from
+        /// it because the rank is a fact about the whole plan - where this version sits among its
+        /// siblings - and not about this one version, and because the plan computes it once so the
+        /// create and repair paths write one and the same value.
+        /// </param>
+        public PlannedVersion(MediaSourceInfo source, string profileId, VersionItemMetadata metadata, IReadOnlyList<PersonInfo> sourceCredits, string sortName)
         {
             Source = source ?? throw new ArgumentNullException(nameof(source));
             ProfileId = profileId ?? throw new ArgumentNullException(nameof(profileId));
             Metadata = metadata ?? throw new ArgumentNullException(nameof(metadata));
             SourceCredits = sourceCredits ?? throw new ArgumentNullException(nameof(sourceCredits));
+            SortName = sortName ?? throw new ArgumentNullException(nameof(sortName));
         }
 
         /// <summary>Gets the version as the media source a client picks.</summary>
@@ -575,6 +626,12 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
 
         /// <summary>Gets the credits the version carries, as the source item carries them.</summary>
         public IReadOnlyList<PersonInfo> SourceCredits { get; }
+
+        /// <summary>
+        /// Gets the rank label the version item is written into <c>ForcedSortName</c> and, through it,
+        /// into <c>SortName</c>: the fixed-width form of the position this version holds in the plan.
+        /// </summary>
+        public string SortName { get; }
     }
 
     /// <summary>
@@ -750,6 +807,15 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         var needsLink = !linkedIds.Contains(current.Id);
         var needsName = NeedsName(current, version.Name);
 
+        // The rank the version's item must be sorted under. It is compared on ForcedSortName - the
+        // column this method writes and the item model persists and reads back verbatim - and never on
+        // SortName. SortName is the half the server derives (and may re-derive from the label on a
+        // read), which is exactly the never-settling pair cp13 was filed for; ForcedSortName round-
+        // trips, so the comparison and the write below read and put the same value and the item settles
+        // the pass after it is written. An item born before this rank existed answers no forced sort
+        // name at all, so its first pass after the upgrade is the pass that gives it one.
+        var needsSortRank = !string.Equals(current.ForcedSortName, planned.SortName, StringComparison.Ordinal);
+
         // The metadata is asked once, and for the field it is wrong on rather than the bare fact that
         // it is wrong somewhere: the same walk answers "does anything differ" and "which one", and the
         // reason below can name the field a hunt would otherwise have to find by hand.
@@ -798,6 +864,7 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
         var needsPrimary = currentVideo is not null && currentVideo.PrimaryVersionId != root.Id;
 
         var needsItem = needsName
+                        || needsSortRank
                         || needsPath
                         || needsDuration
                         || needsSize
@@ -837,6 +904,7 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             AddIf("link", needsLink);
             AddIf("credits", needsCredits);
             AddIf("name", needsName);
+            AddIf("sortrank", needsSortRank);
             AddIf("path", needsPath);
             AddIf("duration", needsDuration);
             AddIf("size", needsSize);
@@ -883,6 +951,16 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             current.IsLocked = true;
 
             planned.Metadata.ApplyTo(current);
+
+            if (needsSortRank)
+            {
+                // Written after the metadata copy on purpose: that copy deliberately leaves the item's
+                // own sort names alone, and writing the rank here keeps that separation honest whatever
+                // the copy grows to touch. The value written is exactly the one the comparison above
+                // read, so a rank this pass had to repair is a rank it will not have to repair again -
+                // the compare-what-you-write rule, applied to the sort column.
+                ApplySortRank(current, planned.SortName);
+            }
 
             if (needsFrame && currentVideo is not null && frame.HasValue)
             {
@@ -1057,10 +1135,72 @@ public sealed class ProfileVersionItemManager : IProfileVersionReconciler
             item.Height = frame.Value.Height;
         }
 
+        // The rank this version was planned to sort under, written the same way the repair path writes
+        // it and compared the same way it is compared (see <see cref="EnsureCurrentAsync"/>). A version
+        // is born wearing its place in the picker: the server orders an item's versions by their sort
+        // name, so putting the page's first offer first is a matter of the item carrying the right rank
+        // from the day it exists - and not of a later pass noticing it was missing.
+        ApplySortRank(item, planned.SortName);
+
         item.SetPrimaryVersionId(root.Id);
 
         return item;
     }
+
+    /// <summary>
+    /// Puts a version's rank on its item and refreshes the derived sort column from it.
+    /// </summary>
+    /// <param name="item">The version item to rank.</param>
+    /// <param name="sortName">The rank label from <see cref="PlannedVersion.SortName"/>.</param>
+    /// <remarks>
+    /// <para>
+    /// The rank is forced onto <c>ForcedSortName</c>, which the item model persists as its own column
+    /// and reads back verbatim - the one half of the sort-name pair that round-trips, and therefore the
+    /// half the settle comparison reads. <c>SortName</c>, the column the server actually orders the
+    /// version list by, is then refreshed from it: the item model derives <c>SortName</c> from a forced
+    /// sort name, so reading it straight back is the value the server itself would persist, and writing
+    /// exactly that settles the two columns on the same text rather than leaving the ordered one to be
+    /// re-derived behind this plugin's back. Neither write touches the item's <c>Name</c>, which stays
+    /// the human label the version picker shows.
+    /// </para>
+    /// <para>
+    /// This is what the cp13 lesson permits rather than forbids: the never-settling rewrite there was a
+    /// copy of the <em>source item's</em> derived pair, which the version could never read back. A rank
+    /// this plugin forces onto its own item is its own persisted value, read back exactly as written -
+    /// compared and written by the same two lines, which is the rule, not the exception to it.
+    /// </para>
+    /// </remarks>
+    private static void ApplySortRank(BaseItem item, string sortName)
+    {
+        item.ForcedSortName = sortName;
+
+        var derivedSortName = item.SortName;
+        item.SortName = derivedSortName;
+    }
+
+    /// <summary>
+    /// The sort label one rank in the plan wears.
+    /// </summary>
+    /// <param name="rank">The 1-based position in the plan, in source-then-offered-profile order.</param>
+    /// <param name="label">
+    /// The version's human label (<see cref="MediaSourceInfo.Name"/>), carried behind the number so the
+    /// sort column names what it ranks for anyone reading it and so a rank the human label never quite
+    /// separates still breaks in a stable order.
+    /// </param>
+    /// <returns>The rank prefix and the label, joined.</returns>
+    /// <remarks>
+    /// The number is the whole of the ordering and the label is decoration behind it, so the number has
+    /// to sort as a number: fixed width, zero padded, and formatted in the invariant culture so the
+    /// digits are the ASCII digits an ordinal sort compares, whatever the server's locale. The width is
+    /// fixed at three, which bounds one item's plan at a thousand versions - comfortably more than the
+    /// profiles the catalog knows multiplied by the files a single item reports, and enough never to
+    /// carry a rank into a wider spelling that would reorder it against a smaller one.
+    /// </remarks>
+    private static string FormatSortRank(int rank, string label)
+        => string.Concat(
+            rank.ToString("D3", CultureInfo.InvariantCulture),
+            SortRankSeparator,
+            label);
 
     /// <summary>
     /// The item that owns an item's versions.
