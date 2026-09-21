@@ -39,8 +39,10 @@ permissions:
 
 # Republishing the same tag twice must not interleave: both runs would fight over the same three
 # release assets and try to replace the same manifest entry. The later run waits and then wins.
+# The group is keyed on the tag either way, so a manual dispatch of v0.1.0 queues behind the run
+# that pushing v0.1.0 started rather than racing it.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
