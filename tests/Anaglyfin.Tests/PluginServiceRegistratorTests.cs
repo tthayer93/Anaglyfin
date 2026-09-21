@@ -13,11 +13,14 @@ using Anaglyfin.Tests.Stubs;
 using Anaglyfin.Tests.VersionItems;
 using Anaglyfin.VersionItems;
 using Jellyfin.Database.Implementations.Entities;
+using MediaBrowser.Controller;
+using MediaBrowser.Controller.Devices;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Controller.Plugins;
+using MediaBrowser.Controller.Session;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
@@ -127,20 +130,79 @@ public class PluginServiceRegistratorTests
     }
 
     [Fact]
-    public void RegisterServicesNeverShadowsAServerOwnedService()
+    public void RegisterServicesShadowsOnlyTheApprovedMediaSourceManagerDecoration()
     {
-        // Anaglyfin's settings are user and library scoped, never request scoped: nothing on
-        // the plugin side reads HttpContext, claims or any other request state to decide
-        // which version to offer - the exact-device feature that once did was taken out
-        // before release. The server owns services such as IHttpContextAccessor (Startup
-        // registers it on the root container, where the request pipeline and the server's own
-        // helpers feed and read it), so a plugin-side registration would not be dead weight
-        // but an active hazard: it could shadow the server's instance. There is nothing for
-        // Anaglyfin to register here, and this assertion keeps it that way.
+        // A plugin registration for a service the server already registered is not dead weight. A
+        // service type resolves to its last registration, so the plugin's object becomes the one
+        // every controller, helper and static in the server receives - which is exactly why the
+        // plugin's one shadow of a server-owned service is spelled out here instead of assumed:
+        // IMediaSourceManager, deliberately, for the original MVC version filter, and reasoned in
+        // PluginServiceRegistrator. Every other server-owned type in the same collection has to
+        // come back exactly as the server left it.
         var services = new FakeServiceCollection();
+        var seeded = new Dictionary<Type, ServiceDescriptor>();
+
+        foreach (var serviceType in ServerOwnedServices)
+        {
+            // The manager is seeded in the shape the host registers it in, with an object of its
+            // own, because it is the one service here a registration is later built from. The rest
+            // carry a factory that refuses, which is the honest answer to a service nobody is about
+            // to resolve: they are here to be counted, not to be built.
+            seeded[serviceType] = serviceType == typeof(IMediaSourceManager)
+                ? new ServiceDescriptor(serviceType, new RegistrationCoreManager())
+                : new ServiceDescriptor(serviceType, _ => throw new NotSupportedException(), ServiceLifetime.Singleton);
+
+            services.Add(seeded[serviceType]);
+        }
 
         new PluginServiceRegistrator().RegisterServices(services, null!);
 
+        foreach (var serverOwned in seeded)
+        {
+            // IMediaSourceManager is the exception this test exists to keep, and it is kept by the
+            // assertions below rather than by this one: the server's descriptor stays, and the one
+            // entry appended after it is the version filter and nothing else.
+            if (serverOwned.Key != typeof(IMediaSourceManager))
+            {
+                Assert.Equal(1, services.Count(descriptor => descriptor.ServiceType == serverOwned.Key));
+            }
+
+            Assert.Contains(serverOwned.Value, services);
+        }
+
+        var managerRegistrations = services.Where(descriptor => descriptor.ServiceType == typeof(IMediaSourceManager)).ToArray();
+
+        Assert.Equal(2, managerRegistrations.Length);
+        Assert.Same(seeded[typeof(IMediaSourceManager)], managerRegistrations[0]);
+
+        var decoration = managerRegistrations[1];
+        Assert.Null(decoration.ImplementationType);
+        Assert.Null(decoration.ImplementationInstance);
+        Assert.NotNull(decoration.ImplementationFactory);
+        Assert.Equal(ServiceLifetime.Singleton, decoration.Lifetime);
+
+        var provider = new FakeServiceProvider(
+            (typeof(IMvcSourceDetector), new MvcSourceDetector()),
+            (typeof(IProfileCatalog), new ProfileCatalog()),
+            (typeof(IAnaglyfinConfigurationSource), new StubConfigurationSource()),
+            (typeof(ILogger<MediaSourceManagerSuppressionDecorator>), NullLogger<MediaSourceManagerSuppressionDecorator>.Instance));
+
+        using var resolved = Assert.IsType<MediaSourceManagerSuppressionDecorator>(decoration.ImplementationFactory!(provider));
+
+        // The approval is for a filter around the server's manager, not for a manager of Anaglyfin's
+        // own: what the decoration answers with is the object the server registered.
+        var wrapped = typeof(MediaSourceManagerSuppressionDecorator)
+            .GetField("_core", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(resolved);
+
+        Assert.Same(seeded[typeof(IMediaSourceManager)].ImplementationInstance, wrapped);
+
+        // One more shadow is refused for the reason the first one is granted: the server registers
+        // IHttpContextAccessor on the root container and the request pipeline feeds it, so a
+        // plugin-side registration would answer the server's own helpers with Anaglyfin's object.
+        // Anaglyfin's settings are user and library scoped, never request scoped - the exact-device
+        // feature that once read a request claim was taken out before release - so there is nothing
+        // here to register, and this keeps it that way.
         Assert.DoesNotContain(
             services,
             descriptor => descriptor.ServiceType.Assembly == typeof(Microsoft.AspNetCore.Http.IHttpContextAccessor).Assembly);
@@ -314,18 +376,90 @@ public class PluginServiceRegistratorTests
     }
 
     [Fact]
-    public void RegisterServicesDoesNotDecorateTheOriginalMvcVersionFilterAgain()
+    public void RegisterServicesDoesNotDecorateTheOriginalMvcVersionFilterTwice()
     {
-        var services = new FakeServiceCollection();
-        services.Add(new ServiceDescriptor(
+        // The filter is appended as a factory, which is the one registration shape with no type to
+        // name, so a second pass over the same collection has to recognise it by the delegate it
+        // carries. The shapes that do name a type - a build that registered the decorator itself, or
+        // a host that handed one over - are recognised by that type. A shape the guard fails to
+        // answer is a filter wrapped in a filter: a settings read and a drop list twice over on every
+        // request, and a core manager with two owners of its disposal.
+        var registrator = new PluginServiceRegistrator();
+        var core = new RegistrationCoreManager();
+
+        var appended = new FakeServiceCollection();
+        appended.Add(new ServiceDescriptor(typeof(IMediaSourceManager), core));
+
+        registrator.RegisterServices(appended, null!);
+        registrator.RegisterServices(appended, null!);
+
+        // The server's manager and one filter after it: the second pass found its own work already
+        // there and added nothing.
+        var appendedManagers = OriginalMvcVersionFilterRegistrations(appended);
+
+        Assert.Equal(2, appendedManagers.Length);
+        Assert.Same(core, Assert.Single(appendedManagers, d => d.ImplementationInstance is not null).ImplementationInstance);
+        Assert.Single(appendedManagers, d => d.ImplementationFactory is not null);
+
+        var typed = new FakeServiceCollection();
+        typed.Add(new ServiceDescriptor(typeof(IMediaSourceManager), core));
+        typed.Add(new ServiceDescriptor(
             typeof(IMediaSourceManager),
             typeof(MediaSourceManagerSuppressionDecorator),
             ServiceLifetime.Singleton));
 
-        new PluginServiceRegistrator().RegisterServices(services, null!);
+        registrator.RegisterServices(typed, null!);
 
-        Assert.Single(services, descriptor => descriptor.ServiceType == typeof(IMediaSourceManager));
+        // Nothing to decorate that is not already decorated, so nothing was appended: what the
+        // container answers with is the decorator it was given, once.
+        Assert.Equal(2, OriginalMvcVersionFilterRegistrations(typed).Length);
+
+        var handedOver = new FakeServiceCollection();
+        handedOver.Add(new ServiceDescriptor(typeof(IMediaSourceManager), core));
+        handedOver.Add(new ServiceDescriptor(
+            typeof(IMediaSourceManager),
+            new MediaSourceManagerSuppressionDecorator(
+                core,
+                ownsCore: false,
+                new MvcSourceDetector(),
+                new ProfileCatalog(),
+                new StubConfigurationSource(),
+                NullLogger<MediaSourceManagerSuppressionDecorator>.Instance)));
+
+        registrator.RegisterServices(handedOver, null!);
+
+        Assert.Equal(2, OriginalMvcVersionFilterRegistrations(handedOver).Length);
     }
+
+    /// <summary>
+    /// The registrations answering <see cref="IMediaSourceManager"/>, in the order the container
+    /// would walk them.
+    /// </summary>
+    private static ServiceDescriptor[] OriginalMvcVersionFilterRegistrations(FakeServiceCollection services)
+        => services.Where(descriptor => descriptor.ServiceType == typeof(IMediaSourceManager)).ToArray();
+
+    /// <summary>
+    /// A representative set of the services the server registers for its own use, out of the one
+    /// assembly the plugin is written against.
+    /// </summary>
+    /// <remarks>
+    /// Representative, not exhaustive: the rule they are used to state is about any service the
+    /// server owns. Contracts the server fills from many registrations - <see cref="IHostedService"/>,
+    /// the media source providers, the registrators themselves - are not on it, because appending to
+    /// one of those adds a contributor rather than shadowing an instance, and each has its own test
+    /// here.
+    /// </remarks>
+    private static Type[] ServerOwnedServices { get; } =
+    [
+        typeof(IMediaSourceManager),
+        typeof(ILibraryManager),
+        typeof(ILibraryMonitor),
+        typeof(IUserManager),
+        typeof(ISessionManager),
+        typeof(IDeviceManager),
+        typeof(IItemRepository),
+        typeof(IServerApplicationHost)
+    ];
 
     /// <summary>
     /// A container that knows exactly the services a test hands it, so a registration's factory can
