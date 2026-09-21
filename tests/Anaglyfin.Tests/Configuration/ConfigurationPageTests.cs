@@ -547,9 +547,9 @@ public class ConfigurationPageTests
             @"<template id=""AnaglyfinDeviceDefaultRowTemplate"">[\s\S]*?</template>");
         Assert.True(template.Success, "The device default rows no longer arrive from a template.");
 
-        Assert.Equal(1, Regex.Matches(template.Value, "data-anaglyfin-device-field=\"deviceId\"").Count);
-        Assert.Equal(1, Regex.Matches(template.Value, "data-anaglyfin-device-field=\"deviceIdManual\"").Count);
-        Assert.Equal(1, Regex.Matches(template.Value, "data-anaglyfin-device-field=\"profileId\"").Count);
+        Assert.Single(Regex.Matches(template.Value, "data-anaglyfin-device-field=\"deviceId\""));
+        Assert.Single(Regex.Matches(template.Value, "data-anaglyfin-device-field=\"deviceIdManual\""));
+        Assert.Single(Regex.Matches(template.Value, "data-anaglyfin-device-field=\"profileId\""));
 
         // Each half of the row is filled by its own registry: the profile options come from
         // the catalog list, the device half from the request-baked registry state.
