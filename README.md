@@ -18,6 +18,7 @@ The source tree now contains the working code path, not just the bootstrap scaff
 - conservative MVC detection rules
 - alternate media source provider that adds profile-marked playback versions
 - one global default profile, offered first to every client ahead of the remaining enabled ones
+- one admin switch over the raw 3D MVC file's place in the version pickers, on by default
 - profile marker and parser contract
 - exact FFmpeg profile argument builder
 - out-of-process `Anaglyfin.FFmpegWrapper` executable with marker rewrite,
@@ -41,6 +42,35 @@ different version, and that feature was removed before this release. The provide
 nothing about the request itself. Settings XML written by those pre-release builds loads intact -
 a stale `DeviceDefaultProfiles` element decides neither the default nor the offered order, and it
 is dropped the next time the settings are saved.
+
+The admin page has one switch over the original file itself:
+
+```text
+Offer original 3D MVC version
+```
+
+It ships checked, because offering the raw file is what every build before the setting did and what
+a settings file that predates it says nothing about. Checked, the raw MVC file the scanner filed
+beside a movie is offered as a version of that movie. Unchecked, that one raw source is left out of
+the two lists a client picks a version from - the details-page version list and PlaybackInfo - and
+nothing else moves:
+
+- Anaglyfin's converted versions of that file stay offered, in the same order, because the converted
+  versions are what the switch is an alternative to rather than a replacement for.
+- The MVC library item, its alternate-version link to the movie it was filed beside, its path and its
+  resume state are untouched. The switch is a read filter over the version lists, which is why saving
+  it back brings the entry back on the next request: no library scan, no re-link, nothing re-scraped.
+- An entry is only ever left out when a converted version of that same file is offered in its place, so
+  the switch cannot leave a film with a version taken away and none added.
+- An MVC movie asked about as itself keeps its own source: the entry this switch takes out of a list is
+  a sibling version of the item being asked about, never that item's own entry.
+- While an entry is out of those lists, a client cannot choose it through them. A PlaybackInfo request
+  naming the hidden source id is answered the way the server answers any request for a source that is
+  not in the list, and turning the switch back on restores it. This is the setting's known boundary, and
+  the item, its source and its data are intact on the other side of it.
+
+No branch of that list writes to the library, so the switch needs no migration and no rescan in
+either direction.
 
 The remaining implementation follow-ups are documented in those files and include subtitle
 ordinal wiring through the provider. Selecting by approximate device category - TV, phone,
@@ -80,8 +110,9 @@ Runtime-validation state - a throwaway Jellyfin config, cache, and media mount -
   `src/Anaglyfin/Plugin.manifest.xml`, which is embedded in the assembly;
   `PluginManifestTests` fails if the two ever disagree.
 * `PluginServiceRegistrator` is the DI seam Jellyfin discovers by assembly scan.
-  It registers the profile catalog, MVC detector, and settings source, and must
-  keep a public parameterless constructor.
+  It registers the profile catalog, MVC detector, and settings source, appends the version-picker
+  filter over the server's own media source manager, and must keep a public parameterless
+  constructor.
 * `AnaglyfinMediaSourceProvider` is discovered by Jellyfin's media-source provider
   scan. It must not be registered manually in DI.
 * `Anaglyfin.FFmpegWrapper` is a normal executable, not a plugin. In a wrapper-based
