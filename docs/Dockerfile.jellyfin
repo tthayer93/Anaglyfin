@@ -1,0 +1,92 @@
+# syntax=docker/dockerfile:1
+#
+# Sample Anaglyfin runtime image: the official Jellyfin image with the Anaglyfin FFmpeg
+# trio built into it.
+#
+# Anaglyfin needs three files in one directory - the `anaglyfin-ffmpeg` wrapper, an
+# FFmpeg-mvc build shipped as `ffmpeg-mvc`, and the `ffprobe` from that same build. This
+# image downloads and compiles all three itself, so an administrator on a Docker host
+# places nothing and mounts nothing for them. Build it from the repository root and point
+# the Jellyfin service at the result:
+#
+#   docker build -t anaglyfin-jellyfin:0.1.0 -f docs/Dockerfile.jellyfin .
+#
+# The FFmpeg path and the wrapper environment are set at the bottom of this file, so the
+# service needs no environment of its own. `docs/install.md` is the quickstart.
+
+# The validated target: Jellyfin 12.0.0 on the official Debian-based image, which is what
+# this file's apt package names and the FFmpeg build below are written against.
+ARG JELLYFIN_IMAGE=jellyfin/jellyfin:latest
+
+FROM ${JELLYFIN_IMAGE}
+
+# Declared after FROM, so both defaults are the ones the RUN below expands.
+#   ANAGLYFIN_RELEASE - the GitHub release the self-contained wrapper asset is fetched from.
+#   FFMPEG_MVC_TAG    - the FFmpeg-mvc tag compiled here. `n8.1.2-mvc7-jf4` is the build
+#                       Anaglyfin is validated against; it is also what Jellyfin's version
+#                       probe parses as `8.1.2`.
+ARG ANAGLYFIN_RELEASE=v0.1.0
+ARG FFMPEG_MVC_TAG=n8.1.2-mvc7-jf4
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# One layer, for one job: install what FFmpeg needs to configure and compile, and what it
+# links against afterwards; fetch the wrapper release asset; fetch the FFmpeg-mvc source
+# as a tag tarball (an archive, so no git in the image); build it with the validated
+# configure line; and lay the three files down in one directory, because Jellyfin looks
+# for `ffprobe` beside the FFmpeg path it was given rather than on PATH.
+#
+# The packages are deliberately NOT removed at the end: `ffmpeg-mvc` and `ffprobe` are
+# dynamically linked against libass, libfreetype, libva, libvpl, libx264 and friends, and
+# those packages are what put the shared libraries in this image. Removing them would
+# leave a binary that does not start.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        make \
+        nasm \
+        pkg-config \
+        libass-dev \
+        libdrm-dev \
+        libfontconfig-dev \
+        libfreetype-dev \
+        libfribidi-dev \
+        libnuma-dev \
+        libva-dev \
+        libvpl-dev \
+        libx264-dev; \
+    curl -fsSL -o /tmp/anaglyfin-ffmpeg \
+        "https://github.com/tthayer93/Anaglyfin/releases/download/${ANAGLYFIN_RELEASE}/anaglyfin-ffmpeg"; \
+    curl -fsSL -o /tmp/ffmpeg-mvc.tar.gz \
+        "https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/${FFMPEG_MVC_TAG}.tar.gz"; \
+    mkdir -p /tmp/ffmpeg-mvc; \
+    tar -xzf /tmp/ffmpeg-mvc.tar.gz -C /tmp/ffmpeg-mvc --strip-components=1; \
+    cd /tmp/ffmpeg-mvc; \
+    ./configure \
+        --disable-doc \
+        --enable-gpl \
+        --enable-libx264 \
+        --enable-libass \
+        --enable-vaapi \
+        --enable-libvpl; \
+    make -j"$(nproc)"; \
+    mkdir -p /opt/anaglyfin/ffmpeg; \
+    install -m 0755 /tmp/anaglyfin-ffmpeg /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg; \
+    install -m 0755 /tmp/ffmpeg-mvc/ffmpeg  /opt/anaglyfin/ffmpeg/ffmpeg-mvc; \
+    install -m 0755 /tmp/ffmpeg-mvc/ffprobe /opt/anaglyfin/ffmpeg/ffprobe; \
+    cd /; \
+    rm -rf /tmp/anaglyfin-ffmpeg /tmp/ffmpeg-mvc /tmp/ffmpeg-mvc.tar.gz; \
+    rm -rf /var/lib/apt/lists/*
+
+# The deployment contract, set once in the image rather than in compose: the server's
+# FFmpeg path is the wrapper, `ANAGLYFIN_REAL_FFMPEG` is what the wrapper hands commands
+# to, and the concurrency slots plus the settings document live under the server data
+# directory. The last two are created on demand, so they need no first-time mkdir - only
+# a writable `/config`, which the official image's `./jellyfin/config` mount already is.
+ENV JELLYFIN_FFMPEG=/opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg \
+    ANAGLYFIN_REAL_FFMPEG=/opt/anaglyfin/ffmpeg/ffmpeg-mvc \
+    ANAGLYFIN_LOCK_DIR=/config/anaglyfin/lock \
+    ANAGLYFIN_WRAPPER_SETTINGS=/config/anaglyfin/wrapper/anaglyfin-wrapper-settings.json
