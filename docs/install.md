@@ -37,9 +37,10 @@ on bare metal — named exactly:
 Jellyfin finds `ffprobe` **beside the FFmpeg path it was given** — beside the wrapper — never on `PATH`.
 The two server shapes differ only in who fills that directory:
 
-- **Docker:** a series of `docker compose exec` commands against the running container installs the
-  packages, compiles FFmpeg-mvc, and publishes the wrapper, into `/config/anaglyfin/ffmpeg`. The
-  Docker host places nothing.
+- **Docker:** a series of `docker compose exec` commands against the running container compiles
+  FFmpeg-mvc and publishes the wrapper into `/config/anaglyfin/ffmpeg`, linking the two FFmpeg
+  binaries onto the FFmpeg runtime libraries the official image already ships. The Docker host places
+  nothing, and the container needs no extra packages to run what the commands produce.
 - **Bare metal:** you install all three yourself (§4).
 
 ## 3. Docker server (recommended)
@@ -50,18 +51,25 @@ and nothing extra is mounted for the runtime. Assumes the service is named `jell
 `docker compose exec` hands you root, which is what the package install needs. This flow targets
 `linux-x64`, because the wrapper publish targets that RID.
 
-Two things get installed, in two different places, and the sequence turns on that:
+Three things are involved, in three different places, and the sequence turns on which is which:
 
 - the three runtime files, plus the `lock` and `wrapper` directories, go under `/config` — the
   persisted volume, so they outlive the container;
-- the apt packages go into the container's own filesystem — so they last until it is recreated,
-  which is why step 11 installs them a second time.
+- the apt packages are **build-time only**. They are the compiler, `curl`, the headers and the
+  `pkg-config` data the two builds read, and they live in the container's own filesystem, so a
+  recreate discards them. Nothing installed at run time needs them: they come back only when §3.2
+  recompiles something;
+- the libraries the encoder loads when it runs come from the official image itself: mostly the
+  `/usr/lib/jellyfin-ffmpeg/lib` set its own FFmpeg uses, and for the rest the Debian libraries the
+  image already carries. Step 4 links `ffmpeg-mvc` and `ffprobe` onto that first directory, so a
+  recreated container runs the runtime files with no packages installed.
 
 ### 3.1 Initial install
 
-**1. Dependencies** — the build tools both halves need, the shared libraries the encoder links
-against when it runs, and the ICU the wrapper globalises with. This block is run again later, so
-keep it.
+**1. Dependencies** — the compiler, `curl`, `make`, and the `-dev` packages both builds read, plus
+the ICU the wrapper globalises with. This is the **build** half of the install and nothing more: the
+binaries it produces run on the libraries inside the image (step 4), not on these. Run it again
+whenever §3.2 rebuilds something in a container that has since been recreated.
 
 ```sh
 docker compose exec jellyfin sh -c '
@@ -115,6 +123,12 @@ docker compose exec jellyfin sh -c '
 into the directory the wrapper lives in — that is where Jellyfin looks for `ffprobe`. The compile
 is the slow part of this sequence.
 
+The last two `configure` lines are what makes the result outlive the container that built it. The
+official image ships its own FFmpeg runtime libraries — `libass`, `libva`, `libva-drm`, `libvpl`,
+the font stack, and the VA-API drivers under `dri/` — in `/usr/lib/jellyfin-ffmpeg/lib`; baking that
+directory into the two binaries as their run path means the encoder loads them from there at run
+time, instead of from anything apt put in the container.
+
 ```sh
 docker compose exec jellyfin sh -c '
   cd /tmp/ffmpeg-mvc-src
@@ -124,7 +138,9 @@ docker compose exec jellyfin sh -c '
     --enable-libx264 \
     --enable-libass \
     --enable-vaapi \
-    --enable-libvpl
+    --enable-libvpl \
+    --extra-ldflags=-Wl,-rpath,/usr/lib/jellyfin-ffmpeg/lib \
+    --extra-ldexeflags=-Wl,-rpath,/usr/lib/jellyfin-ffmpeg/lib
 '
 
 docker compose exec jellyfin sh -c '
@@ -214,50 +230,25 @@ environment:
 docker compose up -d --force-recreate jellyfin
 ```
 
-**11. The dependencies again — only that command.** The recreate assembled a new container out of
-the stock image, so the packages from step 1 went out with the old one, while everything steps 2–8
-put under `/config` is exactly where it was left. Without them the encoder cannot start: a stock
-container carries no `libass`, `libva`, `libva-drm` or `libvpl`, and `ffmpeg-mvc` is linked against
-those — as well as libdrm, fontconfig, freetype, fribidi and libx264, which the stock image does
-ship. The wrapper is published self-contained and the image already carries the ICU it globalises
-with, so this block is for the encoder, not for the wrapper.
-
-```sh
-docker compose exec jellyfin sh -c '
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    build-essential \
-    ca-certificates \
-    curl \
-    make \
-    nasm \
-    pkg-config \
-    libass-dev \
-    libdrm-dev \
-    libfontconfig-dev \
-    libfreetype-dev \
-    libfribidi-dev \
-    libicu-dev \
-    libnuma-dev \
-    libva-dev \
-    libvpl-dev \
-    libx264-dev \
-    zlib1g-dev
-'
-```
-
-Nothing under `/config` needs rebuilding, and neither the encoder nor the wrapper moves. A
-recreate is `up -d --force-recreate`, an image pull, or `down` and `up`; a plain
-`docker compose restart` is **not** one — it keeps this container and its filesystem, so the
-packages installed here are still in place after it and nothing has to be reinstalled.
-
-**12. Restart Jellyfin:**
+**11. Restart Jellyfin:**
 
 ```sh
 docker compose restart jellyfin
 ```
 
 which is also what loads the plugin from §1, if it was waiting to install or update.
+
+Nothing from steps 1–7 has to be repeated after the recreate, and that is the whole point of the RPATH
+in step 4. The recreate throws away the build packages, but those only ever fed the compiler; what the
+server runs is the three files under `/config`, which the recreate leaves exactly where they were, and
+the FFmpeg runtime libraries the image ships in `/usr/lib/jellyfin-ffmpeg/lib`, which come back with
+the image. A recreate is `up -d --force-recreate`, an image pull, or `down` and `up`; a plain
+`docker compose restart` is **not** one, and needs nothing either.
+
+The one thing that can genuinely move under this arrangement is the image itself: a new
+`jellyfin/jellyfin` release carries its own copy of those libraries, so if a pull ever changes what
+`ffmpeg-mvc` resolves against — `docker compose exec jellyfin ldd
+/config/anaglyfin/ffmpeg/ffmpeg-mvc` will say `not found` — that is the moment to redo steps 3–4.
 
 ### 3.2 Upgrade
 
@@ -267,9 +258,15 @@ top of the same three filenames, so nothing has to be uninstalled or removed fir
 - **The wrapper** — repeat steps 5–7 with the new tag in the source URL (step 5 is only needed if
   `/tmp/dotnet` is gone, which a recreate does to it).
 - **FFmpeg-mvc** — repeat steps 3–4 with the new tag in the source URL; `ffmpeg-mvc` and `ffprobe`
-  come out of one compile and are replaced together.
-- Either way, **if the container has been recreated since the build you are replacing**, run the
-  dependency block (step 1) first — the new container does not have the packages.
+  come out of one compile and are replaced together. Keep both `-rpath` lines in the `configure`
+  command — they are what lets the new build keep running on the image's own libraries.
+- **Either half, if the container has been recreated since the build you are replacing** — run the
+  step 1 dependency block first. That is a rebuild, and a rebuild needs the compiler and the headers
+  the recreate took away; it is the only case in which that block is ever run a second time.
+
+A container that was only restarted since the last build needs nothing ahead of either half. Once
+the files are under `/config`, no dependency block is a runtime requirement at all: apt is for
+building, the image is for running.
 
 Then:
 
@@ -291,8 +288,9 @@ docker compose up -d --force-recreate jellyfin
 ```
 
 That is the stock container again: its own FFmpeg, the runtime files gone with `/config/anaglyfin`,
-and the apt packages this guide added discarded with the container they were installed into.
-Take the plugin out of Dashboard → Plugins too if it should go with it.
+and any build packages from step 1 discarded with the container they were installed into — they were
+never part of the runtime, so there is nothing else to undo. Take the plugin out of Dashboard →
+Plugins too if it should go with it.
 
 ## 4. Bare-metal server
 
