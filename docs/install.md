@@ -27,34 +27,41 @@ install, run `sudo chown -R jellyfin:jellyfin /var/lib/jellyfin/plugins/Anaglyfi
 
 All three live in **one** directory, `/opt/anaglyfin/ffmpeg`, named exactly:
 
-- `anaglyfin-ffmpeg` — the [release asset](https://github.com/tthayer93/Anaglyfin/releases).
+- `anaglyfin-ffmpeg` — the Anaglyfin wrapper: a
+  [release asset](https://github.com/tthayer93/Anaglyfin/releases) on bare metal, built from
+  source by the Docker image.
 - `ffmpeg-mvc` — a Jellyfin-compatible FFmpeg-mvc build; target `n8.1.2-mvc7-jf4`.
 - `ffprobe` — the `ffprobe` from that **same** build.
 
 Jellyfin finds `ffprobe` **beside the FFmpeg path it was given** — beside the wrapper — never on `PATH`.
 The two server shapes differ only in who fills that directory:
 
-- **Docker:** the sample image downloads the wrapper and compiles FFmpeg-mvc into
-  `/opt/anaglyfin/ffmpeg` while the image is being built. The Docker host places nothing.
+- **Docker:** the sample image builds the wrapper from the Anaglyfin source tree and compiles
+  FFmpeg-mvc into `/opt/anaglyfin/ffmpeg` while the image is being built. The Docker host
+  places nothing.
 - **Bare metal:** you install all three yourself (§4).
 
 ## 3. Docker server (recommended)
 
 Nothing is installed on the Docker host and nothing extra is mounted for the runtime — the
 image carries the server and the three files together. Assumes `./jellyfin/config` mounted
-at `/config`.
+at `/config`. This flow targets `linux-x64`, because the wrapper publish inside the image
+targets that RID.
 
-1. **Build the sample image**, from the repository root:
+1. **Build the sample image**, from a checkout of this repository:
 
    ```sh
+   git clone --branch v0.1.0 https://github.com/tthayer93/Anaglyfin.git
+   cd Anaglyfin
    docker build -t anaglyfin-jellyfin:0.1.0 -f docs/Dockerfile.jellyfin .
    ```
 
-   It starts from `jellyfin/jellyfin:latest`, fetches `anaglyfin-ffmpeg` from the
-   [GitHub release](https://github.com/tthayer93/Anaglyfin/releases), compiles FFmpeg-mvc
-   `n8.1.2-mvc7-jf4` inside the image, and installs all three under `/opt/anaglyfin/ffmpeg`.
-   The compile takes a few minutes and is cached in an image layer; `--build-arg` on
-   `ANAGLYFIN_RELEASE` or `FFMPEG_MVC_TAG` moves the image to another version.
+   Both halves are compiled in containers, during the build and in throwaway build stages: a
+   temporary container publishes the .NET wrapper from the source you just cloned, and the
+   runtime layer downloads FFmpeg-mvc `n8.1.2-mvc7-jf4` and compiles it in a build layer. The
+   three files land under `/opt/anaglyfin/ffmpeg` and the host places nothing by hand.
+   Compiling both takes the build longer than downloading would; each half is cached in its own
+   layer, so a rebuild is quick, and `--build-arg FFMPEG_MVC_TAG=…` moves just the FFmpeg half.
 
 2. **Point the Jellyfin service at it** — one line of your compose file:
 
