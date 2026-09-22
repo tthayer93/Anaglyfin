@@ -5,28 +5,23 @@ Jellyfin plugin that exposes 3D MVC sources as selectable playback versions
 Jellyfin HLS pipeline.
 
 Runtime design and validation notes live in `docs/architecture.md` and
-`docs/validation.md`. Install and packaging layout - bare-metal and Docker - is in
-`docs/install.md`. Orchestrator planning notes are not tracked in this checkout.
+`docs/validation.md`. Installation steps - bare-metal and Docker - are in `docs/install.md`.
+Orchestrator planning notes are not tracked in this checkout.
 
 ## Installing it on a server
 
-Anaglyfin is installed from a Jellyfin plugin repository, so a server needs one URL and no
-download. In **Dashboard -> Plugins -> Catalogs -> Repositories -> Add plugin repository**:
+Add the Anaglyfin plugin repository in **Dashboard -> Plugins -> Catalogs -> Repositories -> Add
+plugin repository**, install **Anaglyfin** from the catalogue, and restart Jellyfin:
 
 | Field | Value |
 | --- | --- |
 | Name | `Anaglyfin` |
 | Url | `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json` |
 
-Then install Anaglyfin from the catalogue and restart the server. A bare-metal server and a
-containerised one use the same URL and the same plugin archive. Jellyfin shows its usual
-"this is a third-party repository" warning before it installs anything from a repository that is
-not `repo.jellyfin.org`; that warning is expected and is not a problem with the package.
-
-That installs the plugin only. The Anaglyfin FFmpeg entry point - `anaglyfin-ffmpeg`, an `ffprobe`
-beside it, and an FFmpeg-mvc build for it to hand commands to - is deployed separately on both
-server shapes and is never bundled in or installed by the plugin. `docs/install.md` covers the
-repository URL, the manual route, and the whole FFmpeg deployment.
+That installs the plugin only. The FFmpeg entry point - `anaglyfin-ffmpeg`, plus a Jellyfin-compatible
+`ffmpeg-mvc` and its matching `ffprobe` - is installed separately on both server shapes and is never
+bundled in or installed by the plugin. The full step-by-step quickstart (Docker and bare-metal) is in
+`docs/install.md`.
 
 ## Current state
 
