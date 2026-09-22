@@ -1,0 +1,423 @@
+# Releases Anaglyfin so that a Jellyfin administrator can install it by typing one URL.
+#
+# Pushing a version tag is the entire release procedure. This workflow rebuilds the tagged
+# commit through the same gate every branch has to pass, puts the plugin zip, the FFmpeg wrapper
+# and SHA256SUMS.txt on a GitHub release, and republishes the manifest that every server reads
+# from the `metadata` branch:
+#
+#   https://raw.githubusercontent.com/<owner>/<repo>/metadata/manifest.json
+#
+# That branch - not GitHub Pages, and not an asset attached to one release - is the address an
+# administrator bookmarks, because it does not move when the version does. Keeping the manifest
+# on a one-file branch is a deliberate choice, not a shortcut: it needs no Pages enablement, no
+# build job, and no second workflow, and the published document is one reviewable file.
+#
+# Two disciplines hold this file together. It never creates and never pushes a tag; it publishes
+# a tag that already exists, and the historical `cp*` checkpoints are local to whoever made them
+# and are not an input here. And the plugin zip is the only archive Jellyfin ever downloads -
+# `anaglyfin-ffmpeg` is a release asset an administrator places by hand, which is what the
+# wrapper is for.
+name: Release
+
+on:
+  push:
+    tags:
+      # A glob, not a version. The first job rejects everything that is not a version; this only
+      # decides what is worth starting a run for.
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing version tag to publish, for example v0.1.0
+        required: true
+        type: string
+
+# Release assets and the manifest branch are both repository content, and the workflow's own
+# token is the only credential either one uses. No personal secret publishes the manifest.
+permissions:
+  contents: write
+
+# Republishing the same tag twice must not interleave: both runs would fight over the same three
+# release assets and try to replace the same manifest entry. The later run waits and then wins.
+# The group is keyed on the tag either way, so a manual dispatch of v0.1.0 queues behind the run
+# that pushing v0.1.0 started rather than racing it.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+  # The branch an administrator's URL points at, and the one file on it. Both are public
+  # interface the moment one server has added the repository, so they are named once here.
+  MANIFEST_BRANCH: metadata
+  MANIFEST_FILE: manifest.json
+
+jobs:
+  # Tag shape first, build second. A mistagged push should be over in five seconds with a
+  # sentence about the tag, not twelve minutes later with a compiler error.
+  resolve-tag:
+    name: Resolve the release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.choose.outputs.tag }}
+      version: ${{ steps.choose.outputs.version }}
+    steps:
+      - name: Read the tag out of the event
+        id: choose
+        shell: bash
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+          PUSHED_TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+
+          # On a dispatch, github.ref_name is the branch the dispatch was started from, so the
+          # dispatched name wins whenever it is there. On a tag push there is no input at all.
+          tag="${PUSHED_TAG}"
+          if [ -n "${DISPATCH_TAG}" ]; then
+            tag="${DISPATCH_TAG}"
+          fi
+          tag=$(printf '%s' "$tag" | tr -d '[:space:]')
+
+          # `v*` lets `v`, `vNext` and `v1.2-rc1` start a run. What a release has to be is the
+          # shape the packaging job accepts in <version> and the server accepts as a
+          # System.Version: `v`, then three or four dot-separated numbers, and nothing else.
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+(\.[0-9]+){2,3}$'; then
+            echo "::error::'${tag}' is not a release tag. A release tag is 'v' followed by three or four dot-separated numbers, for example v0.1.0."
+            exit 1
+          fi
+
+          version="${tag#v}"
+
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Publishing Anaglyfin ${version} from tag ${tag}."
+
+      - name: Confirm the tag is already in the repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.choose.outputs.tag }}
+        run: |
+          set -eu
+
+          # Publishing is only ever a response to a tag that is already here. `gh release create`
+          # will happily mint a tag it was never handed, so the tag has to exist before anything
+          # is built - and nothing later in this file pushes a tag at all.
+          if ! gh api --silent "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > /dev/null; then
+            echo "::error::tag '${TAG}' is not in ${GITHUB_REPOSITORY}. Create and push it first; this workflow never creates a tag."
+            exit 1
+          fi
+
+  release:
+    name: Publish the release and the repository manifest
+    needs: resolve-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TAG: ${{ needs.resolve-tag.outputs.tag }}
+      VERSION: ${{ needs.resolve-tag.outputs.version }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.resolve-tag.outputs.tag }}
+          # The manifest branch is extended with a commit on top of its own tip, so this clone
+          # must not be shallow: git will not push a commit whose history it does not have.
+          fetch-depth: 0
+
+      # The product gate below is .ci/test.yml's command list, run here instead of in the CI
+      # container because a release is published from the tag, not from a worktree someone happens
+      # to have checked out. Same commands in the same order, so a green branch and a green
+      # release mean the same thing. Everything it needs is either a GitHub-official action or
+      # something the runner already ships: setup-dotnet brings the SDK that global.json pins,
+      # and git, jq, gh and the checksum tools are the runner's own. Nothing else is installed.
+      - name: Install the .NET SDK global.json pins
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Confirm the .NET SDK satisfies global.json
+        shell: bash
+        run: |
+          set -eu
+          dotnet --list-sdks
+          # Run bare. `dotnet --version` is resolved through global.json, so this is the pin being
+          # checked and it exits non-zero when no installed SDK satisfies `rollForward: latestMinor`
+          # for .NET 10 - better learned here than in the middle of a restore. It has to be a line
+          # of its own: in `echo "... $(dotnet --version)"` the failure is invisible to `set -e`,
+          # because the status that command reports is echo's. The line below therefore only echoes
+          # a version this step has already proved it could obtain.
+          dotnet --version
+          echo "SDK this build resolves to: $(dotnet --version)"
+
+      - name: Restore
+        shell: bash
+        run: dotnet restore Anaglyfin.sln
+
+      - name: Build Release with warnings as errors
+        shell: bash
+        run: dotnet build Anaglyfin.sln --configuration Release --no-restore -warnaserror
+
+      - name: Test
+        shell: bash
+        run: dotnet test tests/Anaglyfin.Tests/Anaglyfin.Tests.csproj --configuration Release --no-build --results-directory "${RUNNER_TEMP}/TestResults"
+
+      - name: Verify whitespace formatting
+        shell: bash
+        run: dotnet format whitespace Anaglyfin.sln --no-restore --verify-no-changes
+
+      - name: Publish the self-contained linux-x64 wrapper
+        shell: bash
+        run: |
+          set -eu
+          dotnet publish src/Anaglyfin.FFmpegWrapper/Anaglyfin.FFmpegWrapper.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishSingleFile=true
+          # The same assertion .ci/test.yml makes between publishing and packing: a publish that
+          # reported success without leaving the single-file binary where the packager is about to
+          # read it is caught here, by name, rather than as a missing-input error two steps later.
+          test -f src/Anaglyfin.FFmpegWrapper/bin/Release/net10.0/linux-x64/publish/Anaglyfin.FFmpegWrapper
+
+      - name: Pack the plugin zip, meta.json, and the staged wrapper
+        shell: bash
+        run: dotnet run --project tools/Anaglyfin.Packager --configuration Release --no-build -- pack --plugin-dll src/Anaglyfin/bin/Release/net10.0/Anaglyfin.dll --manifest src/Anaglyfin/Plugin.manifest.xml --output artifacts --wrapper-input src/Anaglyfin.FFmpegWrapper/bin/Release/net10.0/linux-x64/publish/Anaglyfin.FFmpegWrapper
+
+      - name: Verify the artifacts against the manifest alone
+        shell: bash
+        run: dotnet run --project tools/Anaglyfin.Packager --configuration Release --no-build -- verify --manifest src/Anaglyfin/Plugin.manifest.xml --artifacts artifacts --wrapper-file anaglyfin-ffmpeg
+
+      - name: Measure the artifacts
+        id: digest
+        shell: bash
+        run: |
+          set -eu
+
+          test -f artifacts/meta.json
+          test -f artifacts/anaglyfin-ffmpeg
+
+          # The zip is named from the identity in src/Anaglyfin/Plugin.manifest.xml, and the
+          # archive carries that identity inside it. The tag has to agree with it before anything
+          # is published: the server reconciles the repository entry against the meta.json in the
+          # zip, and an entry that disagrees with the archive it points at is an install it marks
+          # malfunctioned rather than a release that looks fine.
+          meta_version=$(jq -r '.version' artifacts/meta.json)
+          if [ "$meta_version" != "$VERSION" ]; then
+            echo "::error::tag '${TAG}' declares version ${VERSION}, but this build's meta.json declares ${meta_version}. Bump <version> in src/Anaglyfin/Plugin.manifest.xml, or tag the version this tree actually builds."
+            exit 1
+          fi
+
+          archive=$(jq -r '.zipFileName' artifacts/meta.json)
+          if [ "$archive" != "Anaglyfin_${VERSION}.zip" ]; then
+            echo "::error::this build packaged '${archive}' while tag '${TAG}' implies 'Anaglyfin_${VERSION}.zip'."
+            exit 1
+          fi
+
+          test -f "artifacts/${archive}"
+
+          # Jellyfin 12 hashes the downloaded zip with MD5 and compares it to the manifest's
+          # `checksum` field before it extracts a single entry, so that field carries this digest
+          # and NOT the SHA-256 the install record holds. Both digests are published for people to
+          # check; only the MD5 is an input to the server. Getting this wrong is not a warning -
+          # it is an install that fails on a checksum mismatch with nothing in the dashboard to
+          # explain it.
+          md5=$(md5sum "artifacts/${archive}" | cut -d ' ' -f1)
+          printf '%s' "$md5" | grep -Eq '^[0-9a-f]{32}$'
+
+          # Written from inside artifacts/, so the names in it are the asset names and
+          # `sha256sum -c SHA256SUMS.txt` works in the directory the files were downloaded to.
+          ( cd artifacts && sha256sum "${archive}" anaglyfin-ffmpeg ) > artifacts/SHA256SUMS.txt
+
+          {
+            echo "archive=${archive}"
+            echo "md5=${md5}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "${archive}: md5 ${md5}"
+          echo 'sha256 (published as SHA256SUMS.txt):'
+          cat artifacts/SHA256SUMS.txt
+
+      - name: Publish the GitHub release
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.digest.outputs.archive }}
+        run: |
+          set -eu
+
+          assets=("artifacts/${ARCHIVE}" artifacts/anaglyfin-ffmpeg artifacts/SHA256SUMS.txt)
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # Rerunning a tag is a normal thing to do. Replace the assets by name instead of
+            # failing on the clash or leaving a second copy of a superseded zip in the list.
+            echo "Release '${TAG}' already exists; replacing its assets."
+            gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            # The tag is already here, which the first job made sure of, so this writes a release
+            # against it rather than writing a tag. The generated notes become the release
+            # description, and the description is what a server shows as the changelog.
+            echo "Creating release '${TAG}'."
+            gh release create "$TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Anaglyfin ${VERSION}" \
+              --generate-notes
+          fi
+
+          # Asserted rather than intended: a version entry carries exactly one `sourceUrl`, so a
+          # second archive among the assets would be a build no server can reach, and a zip named
+          # anything else would not be the one the manifest points at.
+          listing=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,assets)
+          archives=$(printf '%s' "$listing" | jq '[.assets[] | select(.name | endswith(".zip"))] | length')
+          if [ "$archives" != "1" ]; then
+            echo "::error::release '${TAG}' carries ${archives} zip assets; Jellyfin installs from exactly one, so exactly one is published."
+            exit 1
+          fi
+
+          echo "url=$(printf '%s' "$listing" | jq -r '.url')" >> "$GITHUB_OUTPUT"
+
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY"
+
+      - name: Take the release description as the changelog
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          # Whatever wrote it - generated notes, an edited description, or text typed onto the
+          # release page - the release description is the changelog a server shows for this
+          # revision. A release with no description still has to leave the plugin with something
+          # in its revision list, so the fallback text belongs to the merge step, not here: this
+          # file hands over the description or nothing.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' \
+            > "${RUNNER_TEMP}/changelog.md"
+
+          if [ -s "${RUNNER_TEMP}/changelog.md" ]; then
+            echo "Changelog: the release description, $(wc -c < "${RUNNER_TEMP}/changelog.md") bytes."
+          else
+            echo "The release has no description; the manifest will say 'Anaglyfin ${VERSION}'."
+          fi
+
+      - name: Read back the manifest already published
+        shell: bash
+        run: |
+          set -eu
+
+          previous="${RUNNER_TEMP}/previous-manifest.json"
+          : > "$previous"
+
+          tip=$(git ls-remote --exit-code --heads origin "refs/heads/${MANIFEST_BRANCH}" | cut -f1 || true)
+
+          if [ -z "$tip" ]; then
+            echo "There is no '${MANIFEST_BRANCH}' branch yet, so this publication writes the first manifest and starts the branch with one file and no product tree."
+            exit 0
+          fi
+
+          # The branch's own history, fetched into a ref of its own rather than checked out: the
+          # working tree keeps holding the tagged build the artifacts were packed from, and the
+          # branch keeps its own past. No --depth, because the commit reached for has to be a
+          # complete commit - this clone is not shallow and this push must not be either.
+          git fetch --no-tags origin "refs/heads/${MANIFEST_BRANCH}:refs/published/${MANIFEST_BRANCH}"
+
+          if git show "refs/published/${MANIFEST_BRANCH}:${MANIFEST_FILE}" > "$previous" 2> /dev/null; then
+            echo "Reading the manifest at ${MANIFEST_BRANCH} ${tip}: previously published versions are carried over, and this run replaces only its own entry."
+          else
+            echo "'${MANIFEST_BRANCH}' exists at ${tip} but carries no ${MANIFEST_FILE} yet; this publication writes the first one."
+          fi
+
+      - name: Merge this release into the repository manifest
+        id: manifest
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.digest.outputs.archive }}
+          MD5: ${{ steps.digest.outputs.md5 }}
+        run: |
+          set -eu
+
+          # The stable release-asset address: anonymous to GET, it outlives the run that wrote the
+          # bytes, and the server follows GitHub's redirect. This is the address Jellyfin
+          # downloads the zip from. It is not the address an administrator types - that is the
+          # manifest on the branch, printed by the last step.
+          source_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ARCHIVE}"
+
+          # Identity, ABI, description and GUID come from the install record the packaging job
+          # wrote beside the zip; the version comes from the tag; the digest is the zip's MD5. The
+          # helper refuses a document it would not install, and writes nothing if it refuses.
+          sh .ci/release-manifest.sh \
+            --meta artifacts/meta.json \
+            --version "$VERSION" \
+            --source-url "$source_url" \
+            --checksum "$MD5" \
+            --changelog-file "${RUNNER_TEMP}/changelog.md" \
+            --previous "${RUNNER_TEMP}/previous-manifest.json" \
+            --timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --out "${RUNNER_TEMP}/manifest.json"
+
+          # Stated a second time as this workflow's own gate, so that the one-line check a
+          # reviewer runs is the check the release ran: what is about to be published is JSON.
+          jq -e . "${RUNNER_TEMP}/manifest.json" > /dev/null
+
+          echo "source_url=${source_url}" >> "$GITHUB_OUTPUT"
+
+          echo 'Newest entry in the manifest:'
+          jq '.[0].versions[0]' "${RUNNER_TEMP}/manifest.json"
+
+      - name: Publish the manifest branch
+        shell: bash
+        run: |
+          set -eu
+
+          # One file, one commit per publication, and never a checkout of it. The manifest branch
+          # is infrastructure, so its history is the sequence of published documents and never a
+          # copy of the product tree - which is also why the first publication is an orphan commit
+          # rather than a fork of the default branch. Built with git plumbing so that the commit
+          # is exactly this file sitting on the branch's own tip.
+          export GIT_AUTHOR_NAME='github-actions[bot]'
+          export GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com'
+          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+
+          blob=$(git hash-object -w "${RUNNER_TEMP}/manifest.json")
+          tree=$(printf '100644 blob %s\t%s\n' "$blob" "$MANIFEST_FILE" | git mktree)
+
+          tip=$(git ls-remote --exit-code --heads origin "refs/heads/${MANIFEST_BRANCH}" | cut -f1 || true)
+          if [ -n "$tip" ]; then
+            commit=$(git commit-tree "$tree" -p "$tip" -m "Publish ${MANIFEST_FILE} for ${TAG}")
+          else
+            commit=$(git commit-tree "$tree" -m "Publish ${MANIFEST_FILE} for ${TAG}")
+          fi
+
+          # The only ref this workflow writes, and it is a branch. Explicitly no tags: the release
+          # tags are created by hand and the `cp*` checkpoints were never pushed in the first
+          # place. The lease is not a force-push - the commit above has the tip it read as its
+          # parent, so this is a fast-forward unless somebody published to the branch in between,
+          # in which case losing their manifest is the thing being prevented.
+          git push --no-tags \
+            --force-with-lease="refs/heads/${MANIFEST_BRANCH}:${tip}" \
+            origin "${commit}:refs/heads/${MANIFEST_BRANCH}"
+
+          echo "Published ${commit} to '${MANIFEST_BRANCH}'."
+          echo "Repository URL for Jellyfin administrators:"
+          echo "  https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${MANIFEST_BRANCH}/${MANIFEST_FILE}"
+          echo 'raw.githubusercontent.com holds the previous copy for a few minutes after a push.'
+
+      - name: Say what was published
+        shell: bash
+        env:
+          RELEASE_URL: ${{ steps.publish.outputs.url }}
+          SOURCE_URL: ${{ steps.manifest.outputs.source_url }}
+        run: |
+          echo "Anaglyfin ${VERSION}"
+          echo "  release      ${RELEASE_URL}"
+          echo "  plugin zip   ${SOURCE_URL}  (the only archive Jellyfin downloads)"
+          echo "  wrapper      $(dirname "${SOURCE_URL}")/anaglyfin-ffmpeg"
+          echo "  digests      $(dirname "${SOURCE_URL}")/SHA256SUMS.txt"
+          echo "  repositories https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${MANIFEST_BRANCH}/${MANIFEST_FILE}"
+          echo ''
+          echo 'The repository URL does not change between releases, so a server that has it added'
+          echo 'finds this version on its own. The wrapper is not part of the plugin installation:'
+          echo 'it is deployed beside an FFmpeg-mvc build by hand, as docs/install.md describes.'
