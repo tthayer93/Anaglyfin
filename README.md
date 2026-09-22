@@ -20,9 +20,9 @@ plugin repository**, install **Anaglyfin** from the catalogue, and restart Jelly
 
 That installs the plugin only. The FFmpeg entry point - `anaglyfin-ffmpeg`, plus a Jellyfin-compatible
 `ffmpeg-mvc` and its matching `ffprobe` - is installed separately on both server shapes and is never
-bundled in or installed by the plugin: on Docker by `docs/docker-install-runtime.sh`, run inside the
-running container with `docker compose exec`, and on bare metal by hand. The one-page quickstart
-(Docker and bare-metal) is in `docs/install.md`.
+bundled in or installed by the plugin: on Docker by the documented `docker compose exec` commands,
+which build both halves directly inside the running container, and on bare metal by hand. The
+one-page quickstart (Docker and bare-metal) is in `docs/install.md`.
 
 ## Current state
 
@@ -214,8 +214,7 @@ record whose checksum or size does not match the file, or a wrapper that is not 
 ELF binary all fail the job rather than being noted in the log.
 
 `docs/install.md` covers where those three files go on a bare-metal server, and the
-`docs/docker-install-runtime.sh` installer that compiles them into a running Jellyfin container
-instead.
+`docker compose exec` commands that build them directly inside a running Jellyfin container instead.
 
 ## Releasing a version
 
