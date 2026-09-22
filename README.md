@@ -20,7 +20,7 @@ plugin repository**, install **Anaglyfin** from the catalogue, and restart Jelly
 
 That installs the plugin only. The FFmpeg entry point - `anaglyfin-ffmpeg`, plus a Jellyfin-compatible
 `ffmpeg-mvc` and its matching `ffprobe` - is installed separately on both server shapes and is never
-bundled in or installed by the plugin. The full step-by-step quickstart (Docker and bare-metal) is in
+bundled in or installed by the plugin. The one-page quickstart (Docker and bare-metal) is in
 `docs/install.md`.
 
 ## Current state
