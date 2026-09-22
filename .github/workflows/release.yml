@@ -133,17 +133,27 @@ jobs:
 
       # The product gate below is .ci/test.yml's command list, run here instead of in the CI
       # container because a release is published from the tag, not from a worktree someone happens
-      # to have checked out. Same commands, same order, so a green branch and a green release
-      # mean the same thing. The runner's own .NET SDK, git, jq, gh, and the checksum tools are
-      # the only tools used; there is nothing else to install, and nothing is installed.
-      - name: Confirm the runner's .NET satisfies global.json
+      # to have checked out. Same commands in the same order, so a green branch and a green
+      # release mean the same thing. Everything it needs is either a GitHub-official action or
+      # something the runner already ships: setup-dotnet brings the SDK that global.json pins,
+      # and git, jq, gh and the checksum tools are the runner's own. Nothing else is installed.
+      - name: Install the .NET SDK global.json pins
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Confirm the .NET SDK satisfies global.json
         shell: bash
         run: |
           set -eu
           dotnet --list-sdks
-          # `dotnet --version` resolves through global.json, so running it IS the pin being
-          # checked: it exits non-zero when no installed SDK satisfies `rollForward: latestMinor`
-          # for .NET 10, which is better learned here than in the middle of a restore.
+          # Run bare. `dotnet --version` is resolved through global.json, so this is the pin being
+          # checked and it exits non-zero when no installed SDK satisfies `rollForward: latestMinor`
+          # for .NET 10 - better learned here than in the middle of a restore. It has to be a line
+          # of its own: in `echo "... $(dotnet --version)"` the failure is invisible to `set -e`,
+          # because the status that command reports is echo's. The line below therefore only echoes
+          # a version this step has already proved it could obtain.
+          dotnet --version
           echo "SDK this build resolves to: $(dotnet --version)"
 
       - name: Restore
@@ -164,7 +174,13 @@ jobs:
 
       - name: Publish the self-contained linux-x64 wrapper
         shell: bash
-        run: dotnet publish src/Anaglyfin.FFmpegWrapper/Anaglyfin.FFmpegWrapper.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishSingleFile=true
+        run: |
+          set -eu
+          dotnet publish src/Anaglyfin.FFmpegWrapper/Anaglyfin.FFmpegWrapper.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishSingleFile=true
+          # The same assertion .ci/test.yml makes between publishing and packing: a publish that
+          # reported success without leaving the single-file binary where the packager is about to
+          # read it is caught here, by name, rather than as a missing-input error two steps later.
+          test -f src/Anaglyfin.FFmpegWrapper/bin/Release/net10.0/linux-x64/publish/Anaglyfin.FFmpegWrapper
 
       - name: Pack the plugin zip, meta.json, and the staged wrapper
         shell: bash
