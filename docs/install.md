@@ -8,8 +8,8 @@ A Debian/Ubuntu package install and the official container install the plugin th
 
 - Jellyfin **12.0.0** — a Debian/Ubuntu package under systemd, or the official
   `jellyfin/jellyfin:latest` container with `./jellyfin/config` persisted at `/config`.
-- The three runtime binaries in step 2, downloaded from GitHub.
-  **The plugin does not install them**, on either shape.
+- The three runtime binaries in step 2: the Anaglyfin wrapper from this project's release, and
+  `ffmpeg-mvc` plus matching `ffprobe` from your chosen FFmpeg-mvc release.
 
 ## 1. Add the plugin repository
 
@@ -32,7 +32,7 @@ Download these before the final restart in step 3 or 4:
 
 | File | Where it comes from |
 | --- | --- |
-| `anaglyfin-ffmpeg` | The Anaglyfin GitHub release, as a release asset (never in the plugin archive) |
+| `anaglyfin-ffmpeg` | The [Anaglyfin GitHub release](https://github.com/tthayer93/Anaglyfin/releases), as a release asset (never in the plugin archive) |
 | `ffmpeg-mvc` | Your Jellyfin-compatible FFmpeg-mvc build |
 | `ffprobe` | The `ffprobe` from that **same** FFmpeg-mvc build |
 
@@ -112,6 +112,10 @@ sudo install -d -m 0755 -o jellyfin -g jellyfin /var/lib/jellyfin/anaglyfin/wrap
 
 Pass the environment to the service in a systemd drop-in:
 
+```sh
+sudo install -d /etc/systemd/system/jellyfin.service.d
+```
+
 ```ini
 # /etc/systemd/system/jellyfin.service.d/anaglyfin.conf
 [Service]
@@ -131,8 +135,8 @@ sudo systemctl restart jellyfin
 ## Manual plugin install (offline only)
 
 Use this only when the server cannot reach the plugin repository URL. Download
-`Anaglyfin_0.1.0.zip` from the Anaglyfin GitHub release, unpack it into the plugin directory, and
-restart Jellyfin.
+`Anaglyfin_0.1.0.zip` from the [Anaglyfin GitHub release](https://github.com/tthayer93/Anaglyfin/releases),
+unpack it into the plugin directory, and restart Jellyfin.
 
 Debian/Ubuntu package (data directory `/var/lib/jellyfin`):
 
