@@ -18,7 +18,8 @@ That installs the plugin only — no runtime binaries. Place those before the fi
 
 **No catalog?** Unpack `Anaglyfin_<version>.zip` from the
 [GitHub release](https://github.com/tthayer93/Anaglyfin/releases) into
-`/var/lib/jellyfin/plugins/Anaglyfin` or `./jellyfin/config/plugins/Anaglyfin`, then restart.
+`/var/lib/jellyfin/plugins/Anaglyfin` or `./jellyfin/config/plugins/Anaglyfin`; on a package
+install, run `sudo chown -R jellyfin:jellyfin /var/lib/jellyfin/plugins/Anaglyfin`, then restart.
 
 ## 2. Runtime files
 
@@ -75,7 +76,11 @@ sudo install -m 0755 -o jellyfin -g jellyfin /path/to/ffprobe    /opt/anaglyfin/
 sudo install -d -m 0755 -o jellyfin -g jellyfin /var/lib/jellyfin/anaglyfin/lock /var/lib/jellyfin/anaglyfin/wrapper
 ```
 
-Pass the same environment in a systemd drop-in:
+Pass the same environment in a systemd drop-in. Create the drop-in directory first:
+
+```sh
+sudo install -d /etc/systemd/system/jellyfin.service.d
+```
 
 ```ini
 # /etc/systemd/system/jellyfin.service.d/anaglyfin.conf
@@ -103,7 +108,11 @@ sudo systemctl restart jellyfin
   MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
   ```
 
-An `ANAGLYFIN_REAL_FFMPEG` that names a missing file stops the server; full checks: `docs/validation.md`.
+- The wrapper answers `-version` straight through to the real encoder:
+  `docker compose exec jellyfin /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg -version` (Docker),
+  `sudo -u jellyfin /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg -version` (bare metal).
+
+A server whose `ANAGLYFIN_REAL_FFMPEG` names a missing file does not start; full checks: `docs/validation.md`.
 
 Update the plugin from the catalog and restart Jellyfin. `anaglyfin-ffmpeg`, `ffmpeg-mvc` and `ffprobe`
 are replaced by hand: swap the file under `.../ffmpeg/` and restart — the plugin tracks none of them.
