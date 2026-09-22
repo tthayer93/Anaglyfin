@@ -212,8 +212,8 @@ assembly, a manifest the build does not carry, an archive with the DLL nested in
 record whose checksum or size does not match the file, or a wrapper that is not a Linux x86-64
 ELF binary all fail the job rather than being noted in the log.
 
-`docs/install.md` covers where those three files go on a bare-metal server and in a container
-that gets `./jellyfin/config` mounted at `/config`.
+`docs/install.md` covers where those three files go on a bare-metal server, and the sample
+`docs/Dockerfile.jellyfin` image that downloads and builds them into a container instead.
 
 ## Releasing a version
 
