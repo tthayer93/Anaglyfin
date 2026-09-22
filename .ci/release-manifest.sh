@@ -49,6 +49,14 @@ previous='/dev/null'
 timestamp=''
 out=''
 
+# A literal newline, for the single-line guards below. `grep` matches a pattern per line, so the
+# anchored patterns further down are satisfied by a value whose *first* line happens to fit them
+# and which carries whatever it likes on the lines below. Anything that is not one line is refused
+# before a pattern is consulted at all, which is what makes `^` and `$` mean the ends of the field
+# rather than the ends of its first line.
+newline='
+'
+
 fail() {
     printf 'release-manifest: %s\n' "$*" >&2
     exit 1
@@ -60,6 +68,19 @@ usage() {
     printf '%s\n' '        --out FILE [--previous FILE] [--timestamp TIMESTAMP]'
     printf '%s\n' '       --previous   the manifest already published; /dev/null for a first release'
     printf '%s\n' '       --timestamp  ISO-8601 UTC; defaults to the current time'
+}
+
+# Refuses a field that is not one line, naming the option that carried it. The changelog is the
+# one value in this interface that is free text and may span lines; everything the server reads as
+# a single token - the version, the ABI, the digest, the timestamp, the download URL - is not, and
+# a stray newline inside one of them would otherwise survive into the published document as a
+# string that merely *starts* with something valid.
+single_line() {
+    case "$1" in
+        *"$newline"*)
+            fail "$2 is more than one line; it is one value, not free text"
+            ;;
+    esac
 }
 
 # Every value the server will act on arrives as a named option, so a caller cannot half-supply
@@ -128,21 +149,22 @@ done
 [ -r "$changelog_file" ] || fail "there is no changelog text to read at '$changelog_file'"
 [ -r "$previous" ] || fail "'$previous' is not readable; pass --previous /dev/null for a first release"
 
-command -v jq > /dev/null 2>&1 || fail "jq is required to build and validate the manifest"
-
 # Rejected here rather than at the server: a `version` the server cannot parse as a
 # System.Version is the one malformed field that does not merely skip its own entry. The 12
 # catalogue load lets that FormatException escape, so a bad version in one entry takes the whole
 # repository - and every other package in the document - down with it.
+single_line "$version" '--version'
 printf '%s' "$version" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}$' \
     || fail "--version '$version' is not one to four dot-separated numbers; the server parses it as a System.Version"
 
 # The install URL has to end in `.zip` because that is the test the server applies to the URL
 # string before it downloads anything, and it has to be a release-asset URL because that address
 # outlives the workflow run that wrote the bytes. A workflow-artifact URL would rot.
+single_line "$source_url" '--source-url'
 printf '%s' "$source_url" | grep -Eq '^https://[^[:space:]]+\.zip$' \
     || fail "--source-url '$source_url' is not an https URL whose path ends in .zip"
 
+single_line "$checksum" '--checksum'
 printf '%s' "$checksum" | grep -Eq '^[0-9a-f]{32}$' \
     || fail "--checksum '$checksum' is not a lowercase 32-character MD5 hex digest; Jellyfin 12 verifies this field with MD5"
 
@@ -150,8 +172,15 @@ if [ -z "$timestamp" ]; then
     timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || fail "the clock could not be read; pass --timestamp"
 fi
 
+single_line "$timestamp" '--timestamp'
 printf '%s' "$timestamp" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
     || fail "--timestamp '$timestamp' is not an ISO-8601 UTC time ending in Z"
+
+# The four fields above arrive as options and are now known to be one line each, so the anchors in
+# their patterns above and in the document check below both bind to the whole field. `targetAbi`
+# and every version carried over from the previously published document do not arrive as options -
+# they are read out of JSON - so the check on the finished document anchors those with `\A` and
+# `\z` instead, which are the ends of the string and not the ends of its first line.
 
 # The identity the server lists, and the ABI the entry is gated on, are copied out of the
 # install record the packaging job wrote next to the zip. That is the same record whose `guid`
@@ -213,6 +242,10 @@ def newest_first:
 # because whoever reads a red release run cannot inspect the manifest a server choked on.
 check='
 def filled($x): (($x | type) == "string") and ($x | test("\\S"));
+# Every shape below is anchored with \A and \z rather than ^ and $. This regex engine treats ^
+# and $ as line boundaries, so "^...$" is satisfied by a string whose first line fits it no matter
+# what follows on the rest - and targetAbi and the carried-over versions come out of JSON, where
+# nothing upstream has promised they are one line. \A and \z are the ends of the string.
 def shaped($x; $re): (($x | type) == "string") and ($x | test($re));
 . as $doc
 | (if ($doc | type) == "array" then $doc else [] end) as $packages
@@ -227,7 +260,7 @@ def shaped($x; $re): (($x | type) == "string") and ($x | test($re));
       else [ ( "name", "description", "overview", "owner", "category" ) as $field
              | select(filled($p[$field]) | not)
              | "\($who): \($field) must be a non-empty string" ]
-           + [ ( if shaped($p.guid; "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+           + [ ( if shaped($p.guid; "\\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\z")
                  then empty
                  else "\($who): guid \($p.guid) is not the GUID the server matches the installed plugin on" end ),
                ( if ($p.versions | type) == "array"
@@ -245,19 +278,19 @@ def shaped($x; $re): (($x | type) == "string") and ($x | test($re));
                          end) as $at
                       | if ($v | type) != "object"
                         then ["\($who) \($at): a version entry is a \($v | type), not an object"]
-                        else [ ( if shaped($v.version; "^[0-9]+(\\.[0-9]+){1,3}$")
+                        else [ ( if shaped($v.version; "\\A[0-9]+(\\.[0-9]+){1,3}\\z")
                                  then empty
                                  else "\($who) \($at): version must be one to four dot-separated numbers; the server parses it as a System.Version, and one it cannot parse fails the whole catalogue load" end ),
-                               ( if shaped($v.targetAbi; "^[0-9]+(\\.[0-9]+){1,3}$")
+                               ( if shaped($v.targetAbi; "\\A[0-9]+(\\.[0-9]+){1,3}\\z")
                                  then empty
                                  else "\($who) \($at): targetAbi must be a version number such as 12.0.0" end ),
-                               ( if shaped($v.sourceUrl; "^https://[^[:space:]]+\\.zip$")
+                               ( if shaped($v.sourceUrl; "\\Ahttps://[^[:space:]]+\\.zip\\z")
                                  then empty
                                  else "\($who) \($at): sourceUrl must be an anonymously downloadable https URL whose path ends in .zip" end ),
-                               ( if shaped($v.checksum; "^[0-9a-f]{32}$")
+                               ( if shaped($v.checksum; "\\A[0-9a-f]{32}\\z")
                                  then empty
                                  else "\($who) \($at): checksum must be the zip digest as lowercase 32-character hex; Jellyfin 12 verifies it with MD5" end ),
-                               ( if shaped($v.timestamp; "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+                               ( if shaped($v.timestamp; "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\\z")
                                  then empty
                                  else "\($who) \($at): timestamp must be an ISO-8601 UTC time ending in Z; the server writes it into the installed plugin manifest" end ),
                                ( if filled($v.changelog)
@@ -293,6 +326,10 @@ def shaped($x; $re): (($x | type) == "string") and ($x | test($re));
 '
 
 mkdir -p "$(dirname "$out")" || fail "the directory for '$out' cannot be created"
+
+# Probed here rather than with the arguments above: a caller who passed a malformed version wants
+# to hear about the version first, whether or not this machine happens to have jq on its PATH.
+command -v jq > /dev/null 2>&1 || fail "jq is required to build and validate the manifest"
 
 # `--previous` and `--changelog-file` are read as files rather than passed as arguments. Release
 # text is multi-line and free-form, and an empty previous document has to arrive as "no
