@@ -19,22 +19,22 @@ Install **Anaglyfin** from the catalog, then **restart Jellyfin**: a plugin is l
 That installs the plugin only — no runtime binaries. The server wants those in place before it next
 starts, and §2 says where each shape gets them.
 
-**No catalog?** Unpack `Anaglyfin_<version>.zip` from the
+**No catalog?** If that repository URL cannot be added — the server has no route to
+`raw.githubusercontent.com`, say — unpack `Anaglyfin_<version>.zip` from the
 [GitHub release](https://github.com/tthayer93/Anaglyfin/releases) into
 `/var/lib/jellyfin/plugins/Anaglyfin` or `./jellyfin/config/plugins/Anaglyfin`; on a package
 install, run `sudo chown -R jellyfin:jellyfin /var/lib/jellyfin/plugins/Anaglyfin`, then restart.
-
-**Pre-publication note:** Until the first version tag is published, neither the catalog behind
-that URL nor the GitHub release assets exist; installing the plugin manually by placing the
-built archive in Jellyfin's plugin directory, as just above, is the path that works.
+The catalog installs that same archive, so the plugin is identical either way.
 
 ## 2. Runtime files
 
 All three live in **one** directory — `/config/anaglyfin/ffmpeg` on Docker, `/opt/anaglyfin/ffmpeg`
 on bare metal — named exactly:
 
-- `anaglyfin-ffmpeg` — the Anaglyfin wrapper: published from the Anaglyfin source by the Docker
-  commands below, a [release asset](https://github.com/tthayer93/Anaglyfin/releases) on bare metal.
+- `anaglyfin-ffmpeg` — the Anaglyfin wrapper, published as a self-contained linux-x64
+  [release asset](https://github.com/tthayer93/Anaglyfin/releases). The Docker commands below
+  currently publish it from the tagged source instead of downloading that asset; bare metal takes
+  the asset itself (§4).
 - `ffmpeg-mvc` — a Jellyfin-compatible [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build; target `n8.1.2-mvc7-jf4`.
 - `ffprobe` — the `ffprobe` from that **same** build.
 

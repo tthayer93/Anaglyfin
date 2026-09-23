@@ -91,9 +91,10 @@ so that a `FAIL` on the real server is a finding about Anaglyfin and not about t
 Notes:
 
 - The CI job packages the plugin archive, the install record, and the linux-x64 wrapper binary
-  into `artifacts/`, and verifies all three. Where they go on a server is `docs/install.md`; its
-  repository-URL install is the administrator's path once the first release is published, and
-  until that tag exists, placing these artifacts by hand is the install that works.
+  into `artifacts/`, and verifies all three. Where they go on a server is `docs/install.md`: the
+  release workflow publishes the packaged archive and the wrapper as GitHub release assets, the
+  project's own plugin catalog installs from them, and placing a file by hand is the troubleshooting
+  route for a server that cannot add the repository.
 - The wrapper is a normal .NET executable, not a Jellyfin plugin. It must be runnable by
   the Jellyfin server user.
 
@@ -102,8 +103,9 @@ Notes:
 Install the plugin from the Anaglyfin repository URL `docs/install.md` gives, or, where adding
 a repository is not the shape you want, by placing the built `Anaglyfin.dll` in the server's
 configured plugin directory. `docs/install.md` gives the paths for a bare-metal server and for
-a container that mounts `./jellyfin/config` at `/config`. Until the first version tag is
-published the repository URL serves no manifest, so a run on this tree installs by placement.
+a container that mounts `./jellyfin/config` at `/config`. That URL now serves the published
+catalog - `v0.1.0` is tagged and its assets are on the release - so a run can install from the
+catalog, and placement is the troubleshooting route for a server that cannot add a repository.
 Restart or reload Jellyfin after installation.
 
 - [x] Jellyfin lists the plugin with name `Anaglyfin`.
@@ -1427,13 +1429,14 @@ Current state:
   its own repository instead: `.github/workflows/release.yml` turns an already-existing `vX.Y.Z`
   tag into a GitHub release carrying the packaged artifacts and republishes the manifest at
   `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json`, the URL
-  `docs/install.md` tells administrators to add. `v0.1.0` has not been tagged, so that manifest
-  and the release assets behind it do not exist yet.
+  `docs/install.md` tells administrators to add. `v0.1.0` is published, so that manifest and the
+  release assets behind it are live: the catalog lists Anaglyfin `0.1.0` and the release carries
+  the plugin archive, the wrapper, and `SHA256SUMS.txt`.
 
 Validation expectation:
 
-- [x] Manual installation from the packaged artifacts is recorded as the current install path,
-  following `docs/install.md`.
+- [x] Manual installation from the packaged artifacts is recorded as the troubleshooting install
+  path, following `docs/install.md`.
 - [x] The extracted plugin directory holds `Anaglyfin.dll` and nothing the archive should not ship.
 
 ## V11. Wrapper refusal behavior

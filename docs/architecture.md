@@ -415,9 +415,9 @@ escaped the same way it was found.
   but no concurrency limit.
 - The concurrency limit is resolved per wrapper invocation in this order: valid
   `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES`, then the settings document, then the shipped default.
-- The plugin reaches administrators through the plugin repository URL recorded in
-  `docs/install.md`; until the first version tag is published, placing the packaged
-  archive by hand is the install that works.
+- The plugin reaches administrators through the published plugin repository URL recorded in
+  `docs/install.md`, whose catalog lists the released version; placing the packaged archive by
+  hand is the fallback for a server that cannot add that repository.
 
 ## Current follow-up areas
 
