@@ -35,7 +35,7 @@ on bare metal — named exactly:
 
 - `anaglyfin-ffmpeg` — the Anaglyfin wrapper: published from the Anaglyfin source by the Docker
   commands below, a [release asset](https://github.com/tthayer93/Anaglyfin/releases) on bare metal.
-- `ffmpeg-mvc` — a Jellyfin-compatible FFmpeg-mvc build; target `n8.1.2-mvc7-jf4`.
+- `ffmpeg-mvc` — a Jellyfin-compatible [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build; target `n8.1.2-mvc7-jf4`.
 - `ffprobe` — the `ffprobe` from that **same** build.
 
 Jellyfin finds `ffprobe` **beside the FFmpeg path it was given** — beside the wrapper — never on `PATH`.
