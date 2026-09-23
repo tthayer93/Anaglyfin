@@ -135,12 +135,13 @@ jobs:
       # container because a release is published from the tag, not from a worktree someone happens
       # to have checked out. Same commands in the same order, so a green branch and a green
       # release mean the same thing. Everything it needs is either a GitHub-official action or
-      # something the runner already ships: setup-dotnet brings the SDK that global.json pins,
-      # and git, jq, gh and the checksum tools are the runner's own. Nothing else is installed.
-      - name: Install the .NET SDK global.json pins
+      # something the runner already ships: setup-dotnet installs the .NET 10 feature band and the
+      # next step confirms the resolved SDK satisfies global.json, and git, jq, gh and the checksum
+      # tools are the runner's own. Nothing else is installed.
+      - name: Install the .NET 10 SDK
         uses: actions/setup-dotnet@v4
         with:
-          global-json-file: global.json
+          dotnet-version: '10.0.x'
 
       - name: Confirm the .NET SDK satisfies global.json
         shell: bash
