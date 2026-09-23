@@ -1435,8 +1435,8 @@ Current state:
 
 Validation expectation:
 
-- [x] Manual installation from the packaged artifacts is recorded as the current install path,
-  following `docs/install.md`.
+- [x] Manual installation from the packaged artifacts is recorded as the troubleshooting install
+  path, following `docs/install.md`.
 - [x] The extracted plugin directory holds `Anaglyfin.dll` and nothing the archive should not ship.
 
 ## V11. Wrapper refusal behavior

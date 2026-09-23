@@ -24,7 +24,7 @@ starts, and §2 says where each shape gets them.
 [GitHub release](https://github.com/tthayer93/Anaglyfin/releases) into
 `/var/lib/jellyfin/plugins/Anaglyfin` or `./jellyfin/config/plugins/Anaglyfin`; on a package
 install, run `sudo chown -R jellyfin:jellyfin /var/lib/jellyfin/plugins/Anaglyfin`, then restart.
-The catalog installs that same archive, so the plugin is the same for coming by another route.
+The catalog installs that same archive, so the plugin is identical either way.
 
 ## 2. Runtime files
 
