@@ -24,6 +24,10 @@ starts, and §2 says where each shape gets them.
 `/var/lib/jellyfin/plugins/Anaglyfin` or `./jellyfin/config/plugins/Anaglyfin`; on a package
 install, run `sudo chown -R jellyfin:jellyfin /var/lib/jellyfin/plugins/Anaglyfin`, then restart.
 
+**Pre-publication note:** Until the first version tag is published, neither the catalog behind
+that URL nor the GitHub release assets exist; installing the plugin manually by placing the
+built archive in Jellyfin's plugin directory, as just above, is the path that works.
+
 ## 2. Runtime files
 
 All three live in **one** directory — `/config/anaglyfin/ffmpeg` on Docker, `/opt/anaglyfin/ffmpeg`

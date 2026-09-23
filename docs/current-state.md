@@ -33,10 +33,13 @@ The source tree contains the working code path, not just the bootstrap scaffold:
 Real Jellyfin runtime validation is tracked separately in
 [validation.md](validation.md). Before a real server is visited, `dev/jellyfin-validation/`
 runs the packaged plugin and wrapper against a disposable `jellyfin/jellyfin:latest`
-mounted the way the target server is. In the recorded V0-V11 pass, everything the
-headless validation host could decide passed; the rows that need a physical 3D
-client or a remote target are deliberately PARTIAL and stay open until someone
-with one records them.
+mounted the way the target server is. In the recorded V0-V11 pass every check that ran
+against that headless host passed, but the pass does not close the checklist: some rows
+stay unticked - reserved for a physical 3D client or a remote target this host does not
+have, which is what the summary entries record as PARTIAL, carried by CI and unit tests
+because no browser or ordinary request can reach them, or simply not exercised by the
+run. Nothing here promotes any of them; the record in [validation.md](validation.md)
+stands as written.
 
 ## The default profile is global and only global
 
