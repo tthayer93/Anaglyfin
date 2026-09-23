@@ -122,7 +122,9 @@ PlaybackInfo asks it for the playback sources, which are those same static sourc
 providers add.
 
 **Where the switch sits, and how it got there.** The admin page's `Offer original 3D MVC version`
-checkbox is answered by a stateless decorator around that one service, appended during registration:
+checkbox - checked on a fresh install, because offering the raw file is what every build before the
+setting did and what a settings file that predates it says nothing about - is answered by a stateless
+decorator around that one service, appended during registration:
 
 ```text
 ApplicationHost.RegisterServices(collection)     AddSingleton<IMediaSourceManager, MediaSourceManager>()

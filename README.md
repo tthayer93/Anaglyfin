@@ -114,9 +114,8 @@ Values and the procedure for both server shapes are in
 
 - [docs/install.md](docs/install.md) - installing and updating the plugin and the
   FFmpeg runtime, on Docker and bare metal
-- [docs/current-state.md](docs/current-state.md) - what is implemented, how the
-  shipped behavior reads today, and the known limits
-- [docs/architecture.md](docs/architecture.md) - plugin and wrapper design
+- [docs/architecture.md](docs/architecture.md) - plugin and wrapper design, and the
+  known follow-ups
 - [docs/validation.md](docs/validation.md) - runtime validation checklist and the
   recorded results
 

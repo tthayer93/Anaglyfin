@@ -1272,7 +1272,7 @@ Slot behavior notes:
 
 ## V10. Current limitations to record, not fix
 
-These are known current-state limitations unless the checked-out branch has since merged the
+These are known current limitations unless the checked-out branch has since merged the
 relevant follow-up work.
 
 ### Signal forwarding
