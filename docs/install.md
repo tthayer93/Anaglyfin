@@ -64,6 +64,20 @@ Three things are involved, in three different places, and the sequence turns on 
   image already carries. Step 4 links `ffmpeg-mvc` and `ffprobe` onto that first directory, so a
   recreated container runs the runtime files with no packages installed.
 
+**GPU access.** The three things above cover the install itself; the host GPU is a separate concern.
+The official image ships the Intel driver components — the `iHD`/`i965` VA-API drivers and
+`libva`/`libvpl` under `/usr/lib/jellyfin-ffmpeg/lib` — but Docker does not hand the container the
+host GPU unless you map it, so add this to the service:
+
+```yaml
+devices:
+  - /dev/dri
+```
+
+It is required for Intel VA-API (`h264_vaapi`) and QSV (`h264_qsv`) **hardware encoding**: without the
+mapping the runtime still installs and software encoding still works, but a hardware profile cannot
+run. Ordinary (software) playback needs nothing extra here.
+
 ### 3.1 Initial install
 
 **1. Dependencies** — the compiler, `curl`, `make`, and the `-dev` packages both builds read, plus
