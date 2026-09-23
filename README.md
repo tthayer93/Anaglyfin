@@ -67,7 +67,7 @@ switched on from the admin settings page.
 | Item | Need |
 | --- | --- |
 | Jellyfin | 12 (`12.0.0`) |
-| FFmpeg runtime | `anaglyfin-ffmpeg`, an FFmpeg-mvc build, and its matching `ffprobe`, placed by [docs/install.md](docs/install.md) - the plugin never bundles or installs them |
+| FFmpeg runtime | `anaglyfin-ffmpeg`, an [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build, and its matching `ffprobe`, placed by [docs/install.md](docs/install.md) - the plugin never bundles or installs them |
 | Docker + Intel QSV/VA-API hardware encode | the host GPU mapped into the container (`/dev/dri`); software encoding needs no device mapping |
 
 ## Install
