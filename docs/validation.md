@@ -23,7 +23,7 @@ In scope:
 - rewritten FFmpeg command lines for the main Anaglyfin profiles
 - wrapper pass-through behavior for ordinary Jellyfin playback
 - concurrency limit behavior and wrapper refusal exit codes
-- known MVP limitations: subtitles, signal forwarding, and the device-category gap V10 records
+- known MVP limitations: subtitles and the device-category gap V10 records
 
 Out of scope:
 
@@ -33,7 +33,6 @@ Out of scope:
   12 cannot answer and this build does not attempt; defaults are global - the exact-device matching
   a pre-release build had was removed before release - and what real clients see about the one
   default is V5.2's to record
-- signal forwarding, which is being handled separately in `task/T8-wrapper-signal-forwarding`
 
 ## How to record results
 
@@ -92,16 +91,19 @@ so that a `FAIL` on the real server is a finding about Anaglyfin and not about t
 Notes:
 
 - The CI job packages the plugin archive, the install record, and the linux-x64 wrapper binary
-  into `artifacts/`, and verifies all three. Where they go on a server is `docs/install.md`;
-  manual installation from those artifacts is still the expected install path.
+  into `artifacts/`, and verifies all three. Where they go on a server is `docs/install.md`; its
+  repository-URL install is the administrator's path once the first release is published, and
+  until that tag exists, placing these artifacts by hand is the install that works.
 - The wrapper is a normal .NET executable, not a Jellyfin plugin. It must be runnable by
   the Jellyfin server user.
 
 ## V1. Plugin installation and discovery
 
-Install the plugin by placing the built `Anaglyfin.dll` in the server's configured plugin
-directory, or by using your local plugin repository workflow. `docs/install.md` gives the paths
-for a bare-metal server and for a container that mounts `./jellyfin/config` at `/config`.
+Install the plugin from the Anaglyfin repository URL `docs/install.md` gives, or, where adding
+a repository is not the shape you want, by placing the built `Anaglyfin.dll` in the server's
+configured plugin directory. `docs/install.md` gives the paths for a bare-metal server and for
+a container that mounts `./jellyfin/config` at `/config`. Until the first version tag is
+published the repository URL serves no manifest, so a run on this tree installs by placement.
 Restart or reload Jellyfin after installation.
 
 - [x] Jellyfin lists the plugin with name `Anaglyfin`.
@@ -1277,15 +1279,17 @@ relevant follow-up work.
 
 Current state:
 
-- Wrapper signal forwarding is being implemented in a separate branch:
-  `task/T8-wrapper-signal-forwarding`.
-- It is not merged into `task/T7-validation-docs` at the time this document is written.
+- Forwarding is implemented in the shipped wrapper: `SIGTERM`, `SIGINT` and `SIGHUP`
+  that reach the wrapper reach the encoder child (the branch that first carried it,
+  `task/T8-wrapper-signal-forwarding`, merged long ago), and unit tests pin the three.
 
 Validation expectation:
 
-- [x] Record observed behavior when a transcode is stopped or cancelled.
-- [ ] Do not treat missing explicit signal forwarding as a T7 code defect.
-- [ ] Re-validate after T8 is merged.
+- [x] Record observed behavior when a transcode is stopped or cancelled. The cp30 pass
+  recorded a direct `SIGTERM`: the wrapper terminated and the encoder stopped at a
+  partial file.
+- [ ] Do not record the partial file left by a deliberately stopped encode as a defect:
+  stopping the encoder where it stands is what forwarding the signal is for.
 
 ### Device defaults (removed before release)
 
@@ -1419,8 +1423,12 @@ Current state:
 - The CI job packs the plugin archive, generates `meta.json` from `Plugin.manifest.xml`, stages
   the self-contained linux-x64 wrapper, and verifies the layout, every metadata field, the
   recorded size and SHA-256, and the wrapper's ELF header.
-- Publishing as an official Jellyfin plugin repository package is still out of scope: there is no
-  release feed, and `meta.json` carries no download URL or timestamp.
+- Publishing to the **official** Jellyfin plugin catalog remains out of scope. The project serves
+  its own repository instead: `.github/workflows/release.yml` turns an already-existing `vX.Y.Z`
+  tag into a GitHub release carrying the packaged artifacts and republishes the manifest at
+  `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json`, the URL
+  `docs/install.md` tells administrators to add. `v0.1.0` has not been tagged, so that manifest
+  and the release assets behind it do not exist yet.
 
 Validation expectation:
 
@@ -1540,3 +1548,44 @@ tests, and the CI run at the head of this log covers them.
 This disposable host was left as the run found it - the validation containers and the generated
 test media remain for a later pass to clean up, and no client-side or remote validation was
 attempted here.
+
+## Result log entry - 2026-09-22/23, Docker runtime install and Intel hardware encode (cp35-cp36)
+
+**Artifact:** the direct-`exec` install flow of `docs/install.md` as it now stands, with
+`ffmpeg-mvc`, `ffprobe` and the wrapper installed inside a running `jellyfin/jellyfin:latest`
+(container work on `task/T45-runtime-install-in-jellyfin-container` and
+`task/T46-document-gpu-device`).
+**Environment:** the same headless local host and Intel Arc iGPU, now with the host GPU mapped
+into the service (`devices: - /dev/dri`). There is still no physical 3D client and no remote
+target on this host, and nothing below changes any client-facing or remote-target row above.
+
+What was exercised is the install and runtime shape the Docker page documents, not end-to-end
+product playback:
+
+- **RUNPATH against the image's own libraries.** `ffmpeg-mvc` and `ffprobe` were compiled inside
+  the container with `-Wl,-rpath,/usr/lib/jellyfin-ffmpeg/lib` (both `--extra-ldflags` and
+  `--extra-ldexeflags`); the RUNPATH was verified present in both binaries and `ldd` reported
+  no `not found`.
+- **apt is build-time only.** After a full `docker compose down && docker compose up -d`, the
+  recreated container had no build packages installed, yet the three runtime files survived
+  under `/config`, every runtime dependency resolved against the library set the official image
+  ships in `/usr/lib/jellyfin-ffmpeg/lib`, `ffmpeg-mvc` and `ffprobe` ran, Jellyfin reported
+  `/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` as its FFmpeg, and the container stayed healthy.
+- **The Intel driver comes from the image; the GPU comes from Docker.** The image carries the
+  `iHD`/`i965` VA-API drivers and the `libva`/`libvpl` runtime, but the GPU appeared only once
+  the compose service mapped `/dev/dri` - the mapping `docs/install.md` now documents as the
+  requirement for hardware encoding.
+- **Hardware encodes through the installed wrapper.** After that `down`/`up` with zero apt
+  packages: `h264_qsv` initialised a real MFX session (implementation version `2.17`) and
+  produced a real H.264 file; `h264_vaapi` reported `va_openDriver() returns 0` against the
+  iHD driver (`Intel iHD driver for Intel(R) Gen Graphics - 26.2.4`) and encoded 60 frames
+  with the input frames context in `vaapi` format.
+- **A VA-API caveat, recorded:** a manually issued plain `h264_vaapi` command needs
+  `hwupload=extra_hw_frames=64` on this build. Jellyfin's own VA-API transcode path already
+  emits that flag, so the documented product flow is unaffected; the plain-flag case that
+  failed was the hand-written command, not the product.
+
+These are synthetic single-encode runs against the installed runtime files: no Jellyfin
+playback drove them and no rendered picture was inspected. Subtitle depth on hardware stays
+unvalidated (V10), every V5.2 row stays open, and the PARTIAL statuses recorded above are
+unchanged by this entry.

@@ -256,13 +256,14 @@ naming no type and refuses one naming a disc.
 
 What settles which encoder a version actually gets is the FFmpeg the server runs, because the gate
 asks `SupportsEncoder` and that is answered by probing the binary. A marker input can only be decoded
-by the FFmpeg-mvc build, so that build's encoder list is the ceiling: the shipped `linux-x64`
-`n8.1.2-mvc4-jf4` is configured `--disable-doc --enable-gpl --enable-libx264 --enable-libass` and
-reports `libx264, libx264rgb, h264_v4l2m2m` for H.264 - no QSV, no VA-API, no NVENC. Pointing a
-Quick Sync server at that FFmpeg is what made every cp16 run come out `libx264`; the fix is a build
-with the hardware encoders compiled in, not a field on the media source. Anaglyfin names no encoder,
-never forces `libx264`, and takes whatever the server's settings select out of whatever binary the
-server was handed.
+by the FFmpeg-mvc build, so that build's encoder list is the ceiling: the interim `linux-x64`
+`n8.1.2-mvc4-jf4` build was configured `--disable-doc --enable-gpl --enable-libx264 --enable-libass`
+and reported `libx264, libx264rgb, h264_v4l2m2m` for H.264 - no QSV, no VA-API, no NVENC. Pointing a
+Quick Sync server at that FFmpeg is what made every cp16 run come out `libx264`; the fix was a build
+with the hardware encoders compiled in, not a field on the media source, and the `n8.1.2-mvc7-jf4`
+build `docs/install.md` compiles adds `--enable-vaapi` and `--enable-libvpl` for exactly that.
+Anaglyfin names no encoder, never forces `libx264`, and takes whatever the server's settings select
+out of whatever binary the server was handed.
 
 Nothing at all is taken off a command for a **decode**. The server attaches an accelerator to an input
 per reported codec, writing that choice in front of the input's `-i` (`-hwaccel`,
@@ -399,7 +400,8 @@ escaped the same way it was found.
 
 ## Current deployment assumptions
 
-- The server's FFmpeg path points at the Anaglyfin FFmpeg entry point supplied with this plugin.
+- The server's FFmpeg path points at the Anaglyfin FFmpeg entry point, which the deployment
+  installs separately - it is never bundled in or installed by the plugin (`docs/install.md`).
 - The deployment installs a Jellyfin-compatible FFmpeg-mvc build and names it to the entry point
   through `ANAGLYFIN_REAL_FFMPEG` or `FFMPEG_MVC_PATH`, with plain `ffmpeg` on `PATH` only as a
   fallback.
@@ -411,7 +413,9 @@ escaped the same way it was found.
   but no concurrency limit.
 - The concurrency limit is resolved per wrapper invocation in this order: valid
   `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES`, then the settings document, then the shipped default.
-- Manual plugin installation is currently expected because no packaging job is present.
+- The plugin reaches administrators through the plugin repository URL recorded in
+  `docs/install.md`; until the first version tag is published, placing the packaged
+  archive by hand is the install that works.
 
 ## Current follow-up areas
 
@@ -420,5 +424,3 @@ escaped the same way it was found.
   self-reported clients to a category can be built honest enough to be labelled the heuristic it
   is; Jellyfin 12 has no native device type to key one on, so this is future research layered over
   the one global default this build ships, not a wiring gap in something already applied.
-- Merge wrapper signal forwarding from `task/T8-wrapper-signal-forwarding`.
-- Add packaging metadata if a plugin repository workflow is desired.

@@ -24,6 +24,10 @@ starts, and §2 says where each shape gets them.
 `/var/lib/jellyfin/plugins/Anaglyfin` or `./jellyfin/config/plugins/Anaglyfin`; on a package
 install, run `sudo chown -R jellyfin:jellyfin /var/lib/jellyfin/plugins/Anaglyfin`, then restart.
 
+**Pre-publication note:** Until the first version tag is published, neither the catalog behind
+that URL nor the GitHub release assets exist; installing the plugin manually by placing the
+built archive in Jellyfin's plugin directory, as just above, is the path that works.
+
 ## 2. Runtime files
 
 All three live in **one** directory — `/config/anaglyfin/ffmpeg` on Docker, `/opt/anaglyfin/ffmpeg`
@@ -140,7 +144,7 @@ is the slow part of this sequence.
 The last two `configure` lines are what makes the result outlive the container that built it. The
 official image ships its own FFmpeg runtime libraries — `libass`, `libva`, `libva-drm`, `libvpl`,
 the font stack, and the VA-API drivers under `dri/` — in `/usr/lib/jellyfin-ffmpeg/lib`; baking that
-directory into the two binaries as their run path means the encoder loads them from there at run
+directory into the two binaries as their RUNPATH means the encoder loads them from there at run
 time, instead of from anything apt put in the container.
 
 ```sh
