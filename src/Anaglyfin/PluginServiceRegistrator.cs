@@ -77,6 +77,12 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         // the document.
         serviceCollection.Add(new ServiceDescriptor(typeof(IHostedService), typeof(WrapperSettingsPublicationService), ServiceLifetime.Singleton));
 
+        // The slot sweep. Also a startup hosted service, and for the same reason the publication is
+        // one: the moment the server starts is the moment no Anaglyfin encode of its own can be
+        // running, which is the only moment a leftover slot can be told apart from a running job
+        // without waiting for a playback to find out the hard way.
+        serviceCollection.Add(new ServiceDescriptor(typeof(IHostedService), typeof(TranscodeSlotCleanupService), ServiceLifetime.Singleton));
+
         // ---- the version picker's view of the original MVC file ------------------------------
         //
         // The raw MVC file reaches a client as a static media source of the item the scanner filed

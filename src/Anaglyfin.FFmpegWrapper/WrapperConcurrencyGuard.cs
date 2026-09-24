@@ -1,8 +1,7 @@
 using System;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
-using System.Text;
+using System.Threading;
 
 namespace Anaglyfin.FFmpegWrapper;
 
@@ -29,15 +28,38 @@ namespace Anaglyfin.FFmpegWrapper;
 /// kernel's job and not the wrapper's.
 /// </para>
 /// <para>
-/// <b>Why leftover files are treated as busy.</b> A slot file that is still young is
-/// assumed to belong to a running job, and only a file that is both older than
-/// <see cref="DefaultAbandonedAfter"/> and provably ownerless - not held by any handle,
-/// and recording a process that no longer exists - is cleared. The asymmetry is
-/// deliberate: refusing one job because a directory was never cleaned is an
-/// administrator's afternoon, while a limit that silently allows two MVC encodes is the
-/// machine thrashing during playback. The takeover path exists for the case the kernel
-/// cannot handle, namely a slot directory on storage that outlives the machine which
-/// wrote to it.
+/// <b>Which leftovers are taken over, and how soon.</b> What survives a killed wrapper is a
+/// file on storage that outlived the process - which is the ordinary outcome of a slot
+/// directory on a mounted volume and a container that was recreated. Such a file is
+/// evidence, and this class reads it as soon as it is asked: nobody can open the file
+/// exclusively, so no wrapper holds it, and the owner its mark records is gone, either
+/// because that process id no longer exists or because the mark belongs to a boot or
+/// container that is not this one. Those two facts together are the whole of the takeover
+/// test and they are answerable in milliseconds, so a slot whose owner is provably dead is
+/// taken over at any age. Age is not the second opinion it used to be: it is now the only
+/// evidence left for the case where the mark itself cannot be read, and a file that says
+/// nothing is kept for <see cref="DefaultAbandonedAfter"/> before it is removed.
+/// </para>
+/// <para>
+/// <b>Why a live owner is never second-guessed.</b> A slot that can be opened exclusively
+/// and still names a process that exists is a slot the wrapper leaves alone, and so is one
+/// whose mark cannot be read at all, until age says so. Taking over a slot that is in use
+/// is the one thing this class must not do: a refusal that costs an administrator an
+/// afternoon is a smaller failure than two MVC encodes on one machine. That is also why a
+/// foreign mark is never read as this machine's process table - a process id out of another
+/// instance answers no question here, and pretending otherwise is what refused a slot for a
+/// day over a recycled number.
+/// </para>
+/// <para>
+/// <b>Why a refusal waits a little first.</b> The limit is a capacity answer and refusing is
+/// right, but the seconds around a stop-and-start are not a capacity question: Jellyfin stops
+/// an encoder, the browser re-requests the same playlist within about a second and a wrapper
+/// that refused immediately would report a full machine while the slot came free before the
+/// request was over. So the claim is re-tried for a bounded while - <see cref="SlotWait"/>,
+/// polled at <see cref="SlotPollInterval"/> - before it is answered with a refusal. The wait
+/// borrows nothing: it does not queue an FFmpeg, it does not raise the limit, and it does not
+/// let two encodes share a slot; it only declines to treat a two-second handover as a
+/// full-time decision.
 /// </para>
 /// <para>
 /// Only Anaglyfin jobs take a slot. A command the rewriter passed through is ordinary
@@ -49,22 +71,35 @@ namespace Anaglyfin.FFmpegWrapper;
 public sealed class WrapperConcurrencyGuard : IDisposable
 {
     /// <summary>Extension of a slot file, so an administrator can spot them in the directory.</summary>
-    public const string SlotFileExtension = ".lock";
+    public const string SlotFileExtension = TranscodeSlotStore.SlotFileExtension;
 
     /// <summary>Prefix of a slot file name; the slot number follows it.</summary>
-    public const string SlotFileNamePrefix = "anaglyfin-transcode-";
+    public const string SlotFileNamePrefix = TranscodeSlotStore.SlotFileNamePrefix;
 
     /// <summary>
-    /// How long an untouched slot file has to sit before it may be treated as the leavings
-    /// of a dead wrapper rather than of a running job.
+    /// How long an untouched slot file whose mark proves nothing has to sit before it may be
+    /// treated as the leavings of a dead wrapper rather than of a running job.
     /// </summary>
     /// <remarks>
-    /// Long on purpose: it has to be longer than the longest transcode it will ever see,
-    /// because taking over a slot that is in use is the one thing this class must not do.
-    /// An MVC encode of a feature film with software decoding runs for hours; a day is
-    /// beyond that.
+    /// Long on purpose: it has to be longer than the longest transcode it will ever see, because
+    /// taking over a slot that is in use is the one thing this class must not do, and a file that
+    /// states no readable owner is a file whose owner is unknown. A file that does state one and
+    /// proves it gone is taken over without waiting for this at all.
     /// </remarks>
     public static readonly TimeSpan DefaultAbandonedAfter = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// How often a wrapper that is waiting for a slot looks again.
+    /// </summary>
+    /// <remarks>
+    /// Not configurable: it is the resolution of the wait rather than its length, and a value short
+    /// enough to matter would be a loop over a directory shared with the other transcodes on the
+    /// server.
+    /// </remarks>
+    public static readonly TimeSpan SlotPollInterval = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>No wait at all, which is what a caller that wants an immediate answer asks for.</summary>
+    public static readonly TimeSpan NoSlotWait = TimeSpan.Zero;
 
     /// <summary>
     /// Claim rounds per acquisition: one over the slots as they are, and one more only
@@ -75,16 +110,17 @@ public sealed class WrapperConcurrencyGuard : IDisposable
     private readonly string _lockDirectory;
     private readonly int _maxConcurrentTranscodes;
     private readonly TimeSpan _abandonedAfter;
+    private readonly TimeSpan _slotWait;
 
     private FileStream? _slot;
 
     /// <summary>
-    /// Creates a guard over the directories and limit of a wrapper configuration.
+    /// Creates a guard over the directories, limit and wait of a wrapper configuration.
     /// </summary>
     /// <param name="options">The options of this wrapper invocation.</param>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
     public WrapperConcurrencyGuard(FFmpegWrapperOptions options)
-        : this(LockDirectoryOf(options), LimitOf(options), DefaultAbandonedAfter)
+        : this(LockDirectoryOf(options), LimitOf(options), DefaultAbandonedAfter, SlotWaitOf(options))
     {
     }
 
@@ -101,12 +137,21 @@ public sealed class WrapperConcurrencyGuard : IDisposable
     /// Overrides <see cref="DefaultAbandonedAfter"/>. Present for tests and for unusual
     /// storage; production does not pass it.
     /// </param>
+    /// <param name="slotWait">
+    /// How long a failed acquisition keeps trying before it answers "no slot". The deployment's
+    /// wait arrives through the options constructor; a caller naming its own directory is a caller
+    /// that wants the answer it asked for, so nothing is waited unless it is stated here.
+    /// </param>
     /// <exception cref="ArgumentException"><paramref name="lockDirectory"/> is blank.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// <paramref name="maxConcurrentTranscodes"/> is below one, or <paramref name="abandonedAfter"/>
-    /// is not positive.
+    /// <paramref name="maxConcurrentTranscodes"/> is below one, <paramref name="abandonedAfter"/>
+    /// is not positive, or <paramref name="slotWait"/> is negative.
     /// </exception>
-    public WrapperConcurrencyGuard(string lockDirectory, int maxConcurrentTranscodes, TimeSpan? abandonedAfter = null)
+    public WrapperConcurrencyGuard(
+        string lockDirectory,
+        int maxConcurrentTranscodes,
+        TimeSpan? abandonedAfter = null,
+        TimeSpan? slotWait = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(lockDirectory);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrentTranscodes, 1);
@@ -114,9 +159,13 @@ public sealed class WrapperConcurrencyGuard : IDisposable
         var takeOverAfter = abandonedAfter ?? DefaultAbandonedAfter;
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(takeOverAfter, TimeSpan.Zero);
 
+        var wait = slotWait ?? NoSlotWait;
+        ArgumentOutOfRangeException.ThrowIfLessThan(wait, TimeSpan.Zero);
+
         _lockDirectory = lockDirectory;
         _maxConcurrentTranscodes = maxConcurrentTranscodes;
         _abandonedAfter = takeOverAfter;
+        _slotWait = wait;
     }
 
     /// <summary>Gets the limit this guard enforces.</summary>
@@ -124,6 +173,11 @@ public sealed class WrapperConcurrencyGuard : IDisposable
 
     /// <summary>Gets the directory this guard creates slot files in.</summary>
     public string LockDirectory => _lockDirectory;
+
+    /// <summary>
+    /// Gets how long an acquisition that found every slot taken keeps trying before it refuses.
+    /// </summary>
+    public TimeSpan SlotWait => _slotWait;
 
     /// <summary>Gets the number of the slot this instance holds, or -1 while it holds none.</summary>
     public int HeldSlot { get; private set; } = -1;
@@ -136,14 +190,16 @@ public sealed class WrapperConcurrencyGuard : IDisposable
     /// </summary>
     /// <returns>
     /// <c>true</c> when a slot is now held and the job may start; <c>false</c> when every
-    /// slot is taken, in which case nothing was created and the caller must not start
-    /// FFmpeg.
+    /// slot stayed taken for the whole of <see cref="SlotWait"/>, in which case nothing was
+    /// created and the caller must not start FFmpeg.
     /// </returns>
     /// <remarks>
-    /// Nothing about a failed acquisition is temporary in the way a retry loop would fix:
-    /// the limit is the administrator's answer to "how much of this machine may 3D
-    /// encoding use", so the correct response is to refuse this playback and let the
-    /// server report it, not to queue an FFmpeg that would only add to the load.
+    /// Nothing about a failed acquisition is temporary in the way a queue would fix: the limit is
+    /// the administrator's answer to "how much of this machine may 3D encoding use", so the correct
+    /// response is to refuse this playback and let the server report it, not to hold an FFmpeg that
+    /// would only add to the load. What the bounded wait answers is narrower and more common: the
+    /// moment between one job releasing a slot and the next one asking for it, which a refusal
+    /// delivered inside it reports as a full machine that is not one.
     /// </remarks>
     /// <exception cref="InvalidOperationException">This instance already holds a slot.</exception>
     /// <exception cref="IOException">The slot directory could not be created.</exception>
@@ -163,25 +219,36 @@ public sealed class WrapperConcurrencyGuard : IDisposable
 
         Directory.CreateDirectory(_lockDirectory);
 
-        for (var round = 0; round < MaximumClaimRounds; round++)
+        var since = Stopwatch.StartNew();
+
+        while (true)
         {
-            for (var slot = 0; slot < _maxConcurrentTranscodes; slot++)
+            for (var round = 0; round < MaximumClaimRounds; round++)
             {
-                if (TryClaim(slot))
+                for (var slot = 0; slot < _maxConcurrentTranscodes; slot++)
                 {
-                    return true;
+                    if (TryClaim(slot))
+                    {
+                        return true;
+                    }
+                }
+
+                // Every slot looked taken. Only if something actually looked abandoned is
+                // there anything to gain from looking again.
+                if (!TryClearAbandonedSlots())
+                {
+                    break;
                 }
             }
 
-            // Every slot looked taken. Only if something actually looked abandoned is
-            // there anything to gain from looking again.
-            if (!TryClearAbandonedSlots())
+            var remaining = _slotWait - since.Elapsed;
+            if (remaining <= TimeSpan.Zero)
             {
-                break;
+                return false;
             }
-        }
 
-        return false;
+            Thread.Sleep(TimeSpan.FromMilliseconds(Math.Min(SlotPollInterval.TotalMilliseconds, remaining.TotalMilliseconds)));
+        }
     }
 
     /// <summary>
@@ -238,7 +305,7 @@ public sealed class WrapperConcurrencyGuard : IDisposable
                 bufferSize: 4096,
                 options: FileOptions.DeleteOnClose);
 
-            WriteOwnerMark(claimed);
+            TranscodeSlotStore.WriteOwnerMark(claimed);
 
             _slot = claimed;
             HeldSlot = slot;
@@ -265,53 +332,29 @@ public sealed class WrapperConcurrencyGuard : IDisposable
     }
 
     /// <summary>
-    /// Writes who owns the slot, for whoever ends up reading the directory.
-    /// </summary>
-    /// <param name="slot">The freshly claimed slot handle.</param>
-    private static void WriteOwnerMark(FileStream slot)
-    {
-        try
-        {
-            var mark = string.Format(
-                CultureInfo.InvariantCulture,
-                "pid={0}\nclaimed={1:O}\n",
-                Environment.ProcessId,
-                DateTimeOffset.UtcNow);
-
-            var bytes = Encoding.UTF8.GetBytes(mark);
-            slot.Write(bytes, 0, bytes.Length);
-            slot.Flush();
-        }
-        catch (IOException)
-        {
-            // The mark is diagnostics. The handle is the lock, and it is held.
-        }
-    }
-
-    /// <summary>
-    /// Removes slot files that are old, unheld and ownerless.
+    /// Removes slot files that their own evidence says are ownerless, plus the ones age has
+    /// decided for.
     /// </summary>
     /// <returns><c>true</c> when at least one file went away.</returns>
     private bool TryClearAbandonedSlots()
     {
-        string[] files;
-        try
-        {
-            files = Directory.GetFiles(_lockDirectory, "*" + SlotFileExtension);
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
-        }
-
         var cleared = false;
-        foreach (var file in files)
+
+        foreach (var file in TranscodeSlotStore.EnumerateSlotFiles(_lockDirectory))
         {
-            if (IsAbandoned(file) && TryRemove(file))
+            // The timestamp is taken before the question is asked, so that the removal can compare
+            // what it is about to delete against the file the answer was about.
+            DateTime observed;
+            try
+            {
+                observed = File.GetLastWriteTimeUtc(file);
+            }
+            catch (Exception exception) when (TranscodeSlotStore.IsFileFailure(exception))
+            {
+                continue;
+            }
+
+            if (IsAbandoned(file) && TryRemove(file, observed))
             {
                 cleared = true;
             }
@@ -325,137 +368,71 @@ public sealed class WrapperConcurrencyGuard : IDisposable
     /// </summary>
     /// <param name="path">The slot file to read.</param>
     /// <returns>
-    /// <c>true</c> only when the file is old, opens without contest, and names no live
-    /// process. Anything short of that counts as a running job.
+    /// <c>true</c> when the file's owner is provably gone, whatever the file's age, or when the file
+    /// states nothing about its owner and has been sitting for <see cref="_abandonedAfter"/>.
     /// </returns>
+    /// <remarks>
+    /// The two answers are separated because they are different kinds of statement. What the file can
+    /// prove on its own - nobody holds it, and the process or instance that claimed it is not coming
+    /// back - is enough at any age, and waiting for a day would only extend the outage the leftover
+    /// caused. What it cannot prove is not made up for by waiting: an unreadable mark stays somebody
+    /// else's file until the abandon window says otherwise, which is the conservative half of the
+    /// rule and the reason the window is a day.
+    /// </remarks>
     private bool IsAbandoned(string path)
     {
-        // Evidence one: a wrapper holding the slot keeps a handle open on it, so an
-        // exclusive open here fails while that handle lives.
+        var evidence = TranscodeSlotStore.ReadEvidence(path);
+
+        if (evidence == TranscodeSlotEvidence.DeadOwner)
+        {
+            return true;
+        }
+
+        if (evidence == TranscodeSlotEvidence.Held)
+        {
+            return false;
+        }
+
         DateTime lastWriteUtc;
         try
         {
             lastWriteUtc = File.GetLastWriteTimeUtc(path);
-            using var probe = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
         }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
+        catch (Exception exception) when (TranscodeSlotStore.IsFileFailure(exception))
         {
             return false;
         }
 
-        // Evidence two: age. A slot claimed moments ago is a running transcode whatever
-        // the filesystem's locking opinions are, and this is the check that makes that
-        // true on a filesystem where the probe above is not.
-        if (DateTime.UtcNow - lastWriteUtc < _abandonedAfter)
-        {
-            return false;
-        }
-
-        // Evidence three: the recorded owner. An unreadable mark cannot prove anybody is
-        // alive, so it is abandoned once it is old; a mark naming a live process is not.
-        return !IsRecordedOwnerLive(path);
-    }
-
-    /// <summary>
-    /// Reads the mark of a slot file and asks the operating system about that process.
-    /// </summary>
-    private bool IsRecordedOwnerLive(string path)
-    {
-        string text;
-        try
-        {
-            text = File.ReadAllText(path);
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Cannot read it, cannot prove it dead, and cannot delete it either.
-            return true;
-        }
-
-        foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var pair = line.Split('=', 2);
-            if (pair.Length != 2 || !string.Equals(pair[0].Trim(), "pid", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (!int.TryParse(pair[1].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid))
-            {
-                return false;
-            }
-
-            return IsProcessLive(pid);
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Asks whether a recorded process still exists.
-    /// </summary>
-    /// <param name="pid">The process id a slot file recorded.</param>
-    /// <returns><c>true</c> when it exists or the question cannot be answered.</returns>
-    /// <remarks>
-    /// Unknown answers count as alive. The wrapper cannot inspect other containers, so a
-    /// pid it cannot resolve may simply be somebody else's namespace; erring towards "busy"
-    /// keeps the guarantee that matters, which is never two Anaglyfin encodes over one
-    /// slot.
-    /// </remarks>
-    private static bool IsProcessLive(int pid)
-    {
-        if (pid <= 0)
-        {
-            return true;
-        }
-
-        if (pid == Environment.ProcessId)
-        {
-            // A slot that names this very process belongs to a sibling guard in it, which
-            // is the situation the tests exercise; it is never abandoned.
-            return true;
-        }
-
-        try
-        {
-            using var process = Process.GetProcessById(pid);
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (InvalidOperationException)
-        {
-            return true;
-        }
+        return DateTime.UtcNow - lastWriteUtc >= _abandonedAfter;
     }
 
     /// <summary>
     /// Deletes an abandoned slot file, checking that it is still the one that was abandoned.
     /// </summary>
     /// <param name="path">The file to remove.</param>
+    /// <param name="observedLastWriteUtc">
+    /// The timestamp the abandonment was decided against, as it stood before this call.
+    /// </param>
     /// <returns><c>true</c> when it is gone.</returns>
     /// <remarks>
-    /// The timestamp is compared again immediately before the delete: if another wrapper
-    /// claimed this slot number in the meantime then the file at this path is new, and
-    /// deleting it would take a running job's slot away from it.
+    /// Two things are re-asked immediately before the unlink, and both are the same question in
+    /// different clothes. The timestamp is compared against the one the decision was taken against:
+    /// if another wrapper claimed this slot number in the meantime then the file at this path is
+    /// new, and deleting it would take a running job's slot away from it. The judgement is then made
+    /// again, because the takeover no longer waits for age, so the age comparison this method used to
+    /// make is no longer the guard against that race - and a file that stopped being provably dead
+    /// two hundred microseconds ago stopped being deletable with it.
     /// </remarks>
-    private bool TryRemove(string path)
+    private bool TryRemove(string path, DateTime observedLastWriteUtc)
     {
-        DateTime observed;
         try
         {
-            observed = File.GetLastWriteTimeUtc(path);
-            if (DateTime.UtcNow - observed < _abandonedAfter)
+            if (File.GetLastWriteTimeUtc(path) != observedLastWriteUtc)
+            {
+                return false;
+            }
+
+            if (!IsAbandoned(path))
             {
                 return false;
             }
@@ -474,9 +451,7 @@ public sealed class WrapperConcurrencyGuard : IDisposable
     }
 
     private string SlotPath(int slot)
-        => Path.Combine(
-            _lockDirectory,
-            SlotFileNamePrefix + slot.ToString(CultureInfo.InvariantCulture) + SlotFileExtension);
+        => TranscodeSlotStore.SlotPath(_lockDirectory, slot);
 
     private static string LockDirectoryOf(FFmpegWrapperOptions options)
     {
@@ -492,5 +467,15 @@ public sealed class WrapperConcurrencyGuard : IDisposable
         // The options type already clamps, but the limit is the one thing this class is
         // not allowed to get wrong, so it clamps again rather than trusting its input.
         return Math.Max(FFmpegWrapperOptions.DefaultMaxConcurrentTranscodes, options.MaxConcurrentTranscodes);
+    }
+
+    private static TimeSpan SlotWaitOf(FFmpegWrapperOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        // The wait is the one knob a refusal is made of, so it is read as the options type read it:
+        // an unusable value is the shipped default, and the shipped default is what a wrapper that
+        // was configured with nothing waits.
+        return options.SlotWait;
     }
 }

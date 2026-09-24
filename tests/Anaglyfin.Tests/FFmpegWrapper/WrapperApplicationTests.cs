@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Anaglyfin.Configuration;
 using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.Markers;
@@ -269,6 +271,125 @@ public sealed class WrapperApplicationTests : IDisposable
 
         Assert.Equal(WrapperApplication.ExitCodeSuccess, retryApplication.Run(JellyfinLikeCommand(Marker(ProfileIds.AnaglyphRedCyanDubois))));
         Assert.Single(retryLauncher.Launches);
+    }
+
+    [Fact]
+    public async Task AMarkerJobStartsWhenTheSlotComesFreeInsideTheWait()
+    {
+        // The churn the wait exists for: the server stopped one encoder and the player asked again
+        // about a second later, so the slot is busy at the moment of the question and free moments
+        // after it. A refusal here is a playback lost over a handover, and the wrapper's exit code
+        // tells the server the machine is out of capacity when it is not.
+        var finishing = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+        Assert.True(finishing.TryAcquire());
+
+        var releasing = ReleaseAfter(finishing, TimeSpan.FromMilliseconds(100));
+
+        var (application, launcher) = CreateApplication(slotWait: TimeSpan.FromSeconds(5));
+
+        try
+        {
+            Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(JellyfinLikeCommand(Marker(ProfileIds.AnaglyphRedCyanDubois))));
+
+            Assert.Single(launcher.Launches);
+            Assert.Empty(_diagnostics.ToString());
+        }
+        finally
+        {
+            await releasing;
+        }
+    }
+
+    [Fact]
+    public void AMarkerJobIsRefusedWithItsExitCodeAfterTheWaitRunsOut()
+    {
+        var running = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+        Assert.True(running.TryAcquire());
+
+        try
+        {
+            var (application, launcher) = CreateApplication(slotWait: TimeSpan.FromMilliseconds(300));
+
+            var since = Stopwatch.StartNew();
+            var exitCode = application.Run(JellyfinLikeCommand(Marker(ProfileIds.AnaglyphRedCyanDubois)));
+            var waited = since.Elapsed;
+
+            Assert.Equal(WrapperApplication.ExitCodeConcurrencyLimitReached, exitCode);
+            Assert.Empty(launcher.Launches);
+
+            // The patience did not become a queue: at the end of it the wrapper answers exactly what
+            // it answered before there was a wait, and the server's own retry stays the thing that
+            // decides whether this playback happens later.
+            Assert.True(
+                waited >= TimeSpan.FromMilliseconds(300),
+                $"The wrapper gave up its {waited.TotalMilliseconds} ms wait before the 300 ms it was configured with.");
+
+            var output = _diagnostics.ToString();
+            Assert.Contains("300 ms", output, StringComparison.Ordinal);
+            Assert.Contains("taken over", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            running.Release();
+        }
+    }
+
+    [Fact]
+    public void AConcurrencyRefusalNoLongerAsksAnyoneToDeleteSlotFiles()
+    {
+        var running = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+        Assert.True(running.TryAcquire());
+
+        try
+        {
+            var (application, _) = CreateApplication();
+
+            Assert.Equal(
+                WrapperApplication.ExitCodeConcurrencyLimitReached,
+                application.Run(JellyfinLikeCommand(Marker(ProfileIds.AnaglyphRedCyanDubois))));
+
+            var output = _diagnostics.ToString();
+
+            // What the line used to tell an administrator to do was delete the files in the lock
+            // directory, which is advice to delete the claims of the jobs that are running. Both the
+            // takeover and the wait are automatic now, so what the line owes instead is the two
+            // numbers a reader needs in order to tell a full machine from a briefly busy one, and the
+            // two places the limit is set.
+            Assert.DoesNotContain("remove slot files", output, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("ANAGLYFIN_LOCK_DIR", output, StringComparison.Ordinal);
+            Assert.Contains("taken over on its own", output, StringComparison.Ordinal);
+            Assert.Contains("0 ms", output, StringComparison.Ordinal);
+            Assert.Contains("maximum", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            running.Release();
+        }
+    }
+
+    [Fact]
+    public void TheWaitARefusalQuotesIsTheWaitTheDeploymentConfigured()
+    {
+        var running = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+        Assert.True(running.TryAcquire());
+
+        try
+        {
+            // Stated as the variable a deployment would state it in, because the number in the log is
+            // the number somebody is going to look for in their compose file.
+            var (application, _) = CreateApplicationFromEnvironment(
+                (FFmpegWrapperOptions.SlotWaitEnvironmentVariable, "1500"));
+
+            Assert.Equal(
+                WrapperApplication.ExitCodeConcurrencyLimitReached,
+                application.Run(JellyfinLikeCommand(Marker(ProfileIds.AnaglyphRedCyanDubois))));
+
+            Assert.Contains("1500 ms", _diagnostics.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            running.Release();
+        }
     }
 
     [Fact]
@@ -890,15 +1011,24 @@ public sealed class WrapperApplicationTests : IDisposable
     /// The second binary this deployment named, or null for the single-binary deployment every
     /// test here ran against before there was a second one.
     /// </param>
+    /// <param name="slotWait">
+    /// How long this invocation is willing to wait for a slot. Nothing by default: a test that is not
+    /// about the wait wants the answer it asked for, and a suite of them would otherwise spend seconds
+    /// sitting in refusals they are not asserting. The wait that arrives from the environment - the
+    /// one a deployment runs with - is exercised through
+    /// <see cref="CreateApplicationFromEnvironment"/>, where a test states the variable.
+    /// </param>
     private (WrapperApplication Application, FakeFFmpegProcessLauncher Launcher) CreateApplication(
         int maxConcurrentTranscodes = FFmpegWrapperOptions.DefaultMaxConcurrentTranscodes,
         string? realFFmpegPath = null,
-        string? serverFFmpegPath = null)
+        string? serverFFmpegPath = null,
+        TimeSpan? slotWait = null)
     {
         var options = new FFmpegWrapperOptions
         {
             MaxConcurrentTranscodes = maxConcurrentTranscodes,
             LockDirectory = _slots.Location,
+            SlotWait = slotWait ?? TimeSpan.Zero,
             RealFFmpegPath = realFFmpegPath ?? _realFFmpeg,
             RealFFmpegPathSource = FFmpegWrapperOptions.RealFFmpegEnvironmentVariable,
             ServerFFmpegPath = serverFFmpegPath,
@@ -981,6 +1111,17 @@ public sealed class WrapperApplicationTests : IDisposable
         return (
             new WrapperApplication(options, launcher, new WrapperConcurrencyGuard(options), diagnostics: _diagnostics),
             launcher);
+    }
+
+    /// <summary>
+    /// Gives a slot back a moment after it was asked for, off the thread asking: a release that ran on
+    /// the waiting thread would be the wait answering its own question, and the handover this is
+    /// modelling belongs to a wrapper that is finishing somewhere else.
+    /// </summary>
+    private static async Task ReleaseAfter(WrapperConcurrencyGuard slot, TimeSpan delay)
+    {
+        await Task.Delay(delay).ConfigureAwait(false);
+        slot.Dispose();
     }
 
     private static void TryDelete(string path)

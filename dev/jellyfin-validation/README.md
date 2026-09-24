@@ -567,6 +567,10 @@ anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running, which 
 exit=75
 ```
 
+Captured as the build then running behaved. A later build waits briefly before refusing and no
+longer tells anybody to delete slot files, since a leftover whose owner is gone is taken over on
+its own; the current wording and how to check it are in `docs/validation.md` V9.
+
 ### Stock FFmpeg on a converted profile
 
 A converted profile reaches the image's stock FFmpeg with multiview decoding requested:

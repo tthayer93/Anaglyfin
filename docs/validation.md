@@ -1237,6 +1237,9 @@ environment override on the server environment that starts wrappers:
 # Optional only: leave unset to exercise the admin-page setting through the settings document.
 ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1
 ANAGLYFIN_LOCK_DIR=<shared writable directory>
+# Optional only: how long a wrapper keeps trying for a free slot before it refuses with 75.
+# Leave unset for the shipped 2000 ms; 0 refuses at once.
+ANAGLYFIN_SLOT_WAIT_MS=
 ```
 
 Start one Anaglyfin profile version.
@@ -1248,29 +1251,42 @@ Start one Anaglyfin profile version.
   anaglyfin-transcode-0.lock
   ```
 
-- [ ] The slot file content records a pid and claim timestamp, if the platform permits
-  reading it while held.
+- [ ] The slot file content records a pid, a claim timestamp, and a boot identifier where the
+  platform states one, if the platform permits reading it while held.
 - [x] Starting a second Anaglyfin version while the first is running is refused by the
   wrapper before FFmpeg is started.
 - [x] The wrapper exits with code `75` for the concurrency refusal.
-- [x] The wrapper diagnostic starts with:
+- [ ] The wrapper waited before refusing, and said so: with the shipped wait left in place, the
+  refusal arrives about 2 s after the wrapper started and the line names the milliseconds it waited.
+- [ ] The wrapper diagnostic starts with:
 
   ```text
-  anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running, which is the configured maximum, so FFmpeg was not started. Raise the maximum concurrent Anaglyfin transcodes on the Anaglyfin settings page, or ANAGLYFIN_MAX_CONCURRENT_TRANSCODES to override it from the deployment, or remove slot files left in the directory ANAGLYFIN_LOCK_DIR names if a wrapper was killed without exiting.
+  anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running, which is the configured maximum, so FFmpeg was not started. The slot stayed taken for the whole 2000 ms the wrapper waited for it to come free; a slot left behind by a wrapper that died is taken over on its own as soon as the process that claimed it is gone, so slot files do not have to be removed by hand. Raise the maximum concurrent Anaglyfin transcodes on the Anaglyfin settings page, or ANAGLYFIN_MAX_CONCURRENT_TRANSCODES to override it from the deployment.
   ```
 
 - [ ] After the first job finishes, the slot file disappears.
 - [ ] Raising the admin-page limit, or raising a valid optional
   `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES` override, raises the number of slots and the second
   Anaglyfin job starts.
+- [ ] A slot file left by a container that no longer exists does not have to be deleted by hand:
+  restarting the server with the leftover in place clears it (plugin startup), or the next
+  Anaglyfin playback takes it over and starts.
 
 Slot behavior notes:
 
 - The wrapper uses file existence as the claim.
 - Slot files are opened with delete-on-close semantics, so normal process exit and most
   killed-process cases release the slot automatically.
-- Young leftover files are treated as busy. Only files older than 24 hours and provably
-  ownerless are considered abandoned.
+- A leftover is taken over as soon as it is provably one: the file can be opened exclusively, so
+  no wrapper is holding it, and the owner it recorded is gone - either that process no longer
+  exists, or the mark names a boot or container that is not this one. Age plays no part in that.
+- Only a slot whose mark cannot be read is kept for the abandon window (24 hours), because nothing
+  it says can be checked: the window is the fallback for an unreadable mark and not a general
+  waiting period.
+- A slot whose owner is still a live process on this machine is never taken over, and a mark from
+  another boot is never judged against this machine's process ids.
+- The refusal itself is the capacity answer, and the wait in front of it is only long enough to
+  outlast one encoder handing over to the next.
 
 ## V10. Current limitations to record, not fix
 

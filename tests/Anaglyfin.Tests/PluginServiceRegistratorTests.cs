@@ -68,14 +68,15 @@ public class PluginServiceRegistratorTests
         // The deliberate set of registrations: the catalog, the detector the media source provider
         // runs on, the settings seam, the seven members of the version-item subsystem (its store,
         // its event source, its reconciler, the queue, the narrow request interface over it, and the
-        // hosted service that drains it), and the hosted service that publishes the wrapper settings
-        // document at startup. A new service must be added here on purpose - this count is the review
+        // hosted service that drains it), the hosted service that publishes the wrapper settings
+        // document at startup, and the hosted service that sweeps the transcode slots the previous
+        // run left behind. A new service must be added here on purpose - this count is the review
         // gate against silent registrations.
         var services = new FakeServiceCollection();
 
         new PluginServiceRegistrator().RegisterServices(services, null!);
 
-        Assert.Equal(10, services.Count);
+        Assert.Equal(11, services.Count);
     }
 
     [Fact]
@@ -254,6 +255,25 @@ public class PluginServiceRegistratorTests
         var descriptor = Assert.Single(
             services,
             d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(WrapperSettingsPublicationService));
+
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void RegisterServicesRegistersTheSlotCleanupAsAHostedService()
+    {
+        // A slot left on storage that outlived the container which wrote it refuses every Anaglyfin
+        // playback until somebody clears it, and a wrapper only ever looks at the directory when a
+        // job asks for a slot. Sweeping it is therefore startup work, and startup work in a plugin is
+        // a hosted service: doing it in the plugin constructor would touch the filesystem - and a
+        // directory the deployment, not the plugin, chose - while the server is still loading.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        var descriptor = Assert.Single(
+            services,
+            d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(TranscodeSlotCleanupService));
 
         Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
     }
