@@ -197,12 +197,12 @@ docker compose exec -u root jellyfin bash /tmp/dotnet-install.sh \
   --install-dir /tmp/dotnet
 ```
 
-**6. The wrapper: fetch and unpack.** `v0.1.0` is a tag, not a branch — the source arrives as a tag
+**6. The wrapper: fetch and unpack.** `v0.2.0` is a tag, not a branch — the source arrives as a tag
 archive.
 
 ```sh
 docker compose exec -u root jellyfin curl -fsSL \
-  https://github.com/tthayer93/Anaglyfin/archive/refs/tags/v0.1.0.tar.gz \
+  https://github.com/tthayer93/Anaglyfin/archive/refs/tags/v0.2.0.tar.gz \
   -o /tmp/anaglyfin.tar.gz
 
 docker compose exec -u root jellyfin sh -c '
