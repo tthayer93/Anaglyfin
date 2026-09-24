@@ -218,12 +218,14 @@ if [ -x "$cbin/srv-ffmpeg" ] && [ -x "$cbin/mvc-ffmpeg" ]; then
             bad "a marker command did not reach the FFmpeg-mvc binary (exit ${rc}): $(printf '%s' "$out" | head -n 1)" ;;
     esac
 
-    # Unset server binary => ordinary command falls back to the real binary (single-binary).
-    out=$(ANAGLYFIN_REAL_FFMPEG="$cbin/mvc-ffmpeg" ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin-check \
-        "$WRAPPER" $ORDINARY 2>&1)
+    # No server binary named => ordinary command falls back to the real binary (single-binary).
+    # Blank it explicitly so an ANAGLYFIN_SERVER_FFMPEG leaking in from the ambient environment
+    # cannot decide this leg; the wrapper treats a blank value as unset.
+    out=$(ANAGLYFIN_SERVER_FFMPEG= ANAGLYFIN_REAL_FFMPEG="$cbin/mvc-ffmpeg" \
+        ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin-check "$WRAPPER" $ORDINARY 2>&1)
     case "$out" in
         MVC-ROUTE\ *)
-            ok 'with ANAGLYFIN_SERVER_FFMPEG unset, an ordinary command falls back to ANAGLYFIN_REAL_FFMPEG' ;;
+            ok 'with ANAGLYFIN_SERVER_FFMPEG blank/unset, an ordinary command falls back to ANAGLYFIN_REAL_FFMPEG' ;;
         *)
             bad "single-binary fallback lost: $(printf '%s' "$out" | head -n 1)" ;;
     esac

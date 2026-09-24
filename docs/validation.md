@@ -1248,8 +1248,12 @@ The wrapper sits on the server's FFmpeg path, so it must be invisible for ordina
 
 Play a non-MVC item that will be transcoded, or force transcoding.
 
-- [x] The wrapper starts the **ordinary** FFmpeg - `ANAGLYFIN_SERVER_FFMPEG` when set, otherwise
-  `ANAGLYFIN_REAL_FFMPEG` - with the received arguments unchanged.
+- [x] The wrapper starts the real FFmpeg `ANAGLYFIN_REAL_FFMPEG` - the ordinary route when no
+  `ANAGLYFIN_SERVER_FFMPEG` is set, which is the single-binary shape this run used - with the
+  received arguments unchanged.
+- [ ] With `ANAGLYFIN_SERVER_FFMPEG` set, an ordinary command is dispatched to that binary and not to
+  `ANAGLYFIN_REAL_FFMPEG`, with the arguments unchanged. CI-pinned (`WrapperApplicationTests`,
+  `wrapper-check.sh` two-binary case); not re-run against a real server, so left open.
 - [x] Jellyfin hardware decode options from the server remain present if configured: no marker is in
       this command, so nothing about its decode is Anaglyfin's to change. V7.10 asks for the same
       patience on the commands that do carry a marker, where those arguments pass through as well.

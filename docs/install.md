@@ -399,27 +399,32 @@ sudo systemctl restart jellyfin
   MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg
   ```
 
-- The wrapper answers `-version` straight through to a real encoder. These two snippets set only
-`ANAGLYFIN_REAL_FFMPEG` (and not `ANAGLYFIN_SERVER_FFMPEG`), so an ordinary command such as `-version`
-falls back to it and the banner is the FFmpeg-mvc build's — the check that that binary is reachable.
-Docker:
+- The wrapper answers `-version` straight through to a real encoder. `-version` is an ordinary
+command, so it is dispatched to `ANAGLYFIN_SERVER_FFMPEG` when that variable is set. To check that
+the **FFmpeg-mvc** binary is reachable, the two snippets explicitly blank `ANAGLYFIN_SERVER_FFMPEG`
+(a blank value counts as unset), which sends the ordinary command down the real/marker route so the
+banner is the FFmpeg-mvc build's. Docker:
 
   ```sh
   docker compose exec -u root jellyfin \
-    env ANAGLYFIN_REAL_FFMPEG=/config/anaglyfin/ffmpeg/ffmpeg-mvc \
+    env ANAGLYFIN_SERVER_FFMPEG= ANAGLYFIN_REAL_FFMPEG=/config/anaglyfin/ffmpeg/ffmpeg-mvc \
     /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg -version
   ```
 
   Bare metal:
 
   ```sh
-  sudo -u jellyfin env ANAGLYFIN_REAL_FFMPEG=/opt/anaglyfin/ffmpeg/ffmpeg-mvc \
+  sudo -u jellyfin env ANAGLYFIN_SERVER_FFMPEG= ANAGLYFIN_REAL_FFMPEG=/opt/anaglyfin/ffmpeg/ffmpeg-mvc \
     /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg -version
   ```
 
-A server whose `ANAGLYFIN_REAL_FFMPEG` names a missing file does not start; and once
-`ANAGLYFIN_SERVER_FFMPEG` is set, an ordinary command pointed at a missing file there is refused with
-a line naming that variable, so Jellyfin's FFmpeg validation fails the same way. Full checks:
+Which binary a missing file stops depends on the deployment shape. In a **two-binary** deployment
+(`ANAGLYFIN_SERVER_FFMPEG` set), the server's own startup probe and ordinary playback reach the stock
+FFmpeg, so the server starts and ordinary playback succeeds even when the FFmpeg-mvc binary named by
+`ANAGLYFIN_REAL_FFMPEG` is missing — only marker/profile jobs then fail, with a refusal naming
+`ANAGLYFIN_REAL_FFMPEG`. In a **single-binary** deployment (`ANAGLYFIN_SERVER_FFMPEG` unset), every
+command including that startup probe falls back to `ANAGLYFIN_REAL_FFMPEG`, so it is a missing
+`ANAGLYFIN_REAL_FFMPEG` that keeps the server from passing its FFmpeg validation. Full checks:
 `docs/validation.md`.
 
 Update the plugin from the catalog and restart Jellyfin. The three runtime files are the server's

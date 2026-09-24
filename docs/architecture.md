@@ -473,9 +473,11 @@ escaped the same way it was found.
 - A slot whose owner is provably gone is taken over at any age - the file opens exclusively (nobody
   holds it) and its recorded owner is dead, either by process id or by a boot identifier (`boot=`)
   that names a different instance - so a leftover from a crash or a container restart does not have
-  to be cleared by hand. A mark that proves nothing is kept only for the 24-hour abandon window, and
-  a slot whose owner is still a live process (or from a foreign boot, never judged against this
-  machine's ids) is never taken over.
+  to be cleared by hand. A mark that proves nothing is kept only for the 24-hour abandon window. A
+  slot whose owner is still a live process on this machine is never taken over; a mark from a foreign
+  boot is never judged against this machine's process ids, and is treated as its owner being gone - so
+  it is takeover-eligible the moment the file is not held, which is what a recreated container's
+  leftover always is.
 - Before refusing over a full limit the wrapper waits a bounded, short while (default `2000` ms,
   polled at 250 ms, configurable through `ANAGLYFIN_SLOT_WAIT_MS` in the range `0`-`30000`, `0`
   refusing at once) to absorb one encoder handing over to the next; the wait never queues an FFmpeg
