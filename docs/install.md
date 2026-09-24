@@ -51,9 +51,11 @@ The two server shapes differ only in who fills that directory:
 
 Every command below runs **inside the running container**. Nothing is installed on the Docker host
 and nothing extra is mounted for the runtime. Assumes the service is named `jellyfin`, the image is
-`jellyfin/jellyfin:latest`, and `./jellyfin/config` is mounted at `/config`. On the official image
-`docker compose exec` hands you root, which is what the package install needs. This flow targets
-`linux-x64`, because the wrapper publish targets that RID.
+`jellyfin/jellyfin:latest`, and `./jellyfin/config` is mounted at `/config`. Every command below
+execs as **root** with `-u root` — that is what the package install and the writes under `/config`
+need — rather than trusting the user the container happens to run its own process as, which the
+image can be configured to change. This flow targets `linux-x64`, because the wrapper publish
+targets that RID.
 
 Three things are involved, in three different places, and the sequence turns on which is which:
 
@@ -90,7 +92,7 @@ binaries it produces run on the libraries inside the image (step 4), not on thes
 whenever §3.2 rebuilds something in a container that has since been recreated.
 
 ```sh
-docker compose exec jellyfin sh -c '
+docker compose exec -u root jellyfin sh -c '
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     build-essential \
@@ -116,7 +118,7 @@ docker compose exec jellyfin sh -c '
 **2. Directories** — one for the three files, two for what the wrapper writes into.
 
 ```sh
-docker compose exec jellyfin install -d \
+docker compose exec -u root jellyfin install -d \
   /config/anaglyfin/ffmpeg \
   /config/anaglyfin/lock \
   /config/anaglyfin/wrapper
@@ -126,11 +128,11 @@ docker compose exec jellyfin install -d \
 needed once the three files are in place, and none of it survives a recreate.
 
 ```sh
-docker compose exec jellyfin curl -fsSL \
+docker compose exec -u root jellyfin curl -fsSL \
   https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.2-mvc7-jf4.tar.gz \
   -o /tmp/ffmpeg-mvc.tar.gz
 
-docker compose exec jellyfin sh -c '
+docker compose exec -u root jellyfin sh -c '
   rm -rf /tmp/ffmpeg-mvc-src
   mkdir -p /tmp/ffmpeg-mvc-src
   tar -xzf /tmp/ffmpeg-mvc.tar.gz -C /tmp/ffmpeg-mvc-src --strip-components=1
@@ -148,7 +150,7 @@ directory into the two binaries as their RUNPATH means the encoder loads them fr
 time, instead of from anything apt put in the container.
 
 ```sh
-docker compose exec jellyfin sh -c '
+docker compose exec -u root jellyfin sh -c '
   cd /tmp/ffmpeg-mvc-src
   ./configure \
     --disable-doc \
@@ -161,12 +163,12 @@ docker compose exec jellyfin sh -c '
     --extra-ldexeflags=-Wl,-rpath,/usr/lib/jellyfin-ffmpeg/lib
 '
 
-docker compose exec jellyfin sh -c '
+docker compose exec -u root jellyfin sh -c '
   cd /tmp/ffmpeg-mvc-src
   make -j"$(nproc)"
 '
 
-docker compose exec jellyfin sh -c '
+docker compose exec -u root jellyfin sh -c '
   install -m 0755 /tmp/ffmpeg-mvc-src/ffmpeg  /config/anaglyfin/ffmpeg/ffmpeg-mvc
   install -m 0755 /tmp/ffmpeg-mvc-src/ffprobe /config/anaglyfin/ffmpeg/ffprobe
 '
@@ -176,10 +178,10 @@ docker compose exec jellyfin sh -c '
 server itself never needs a .NET runtime.
 
 ```sh
-docker compose exec jellyfin curl -fsSL https://dot.net/v1/dotnet-install.sh \
+docker compose exec -u root jellyfin curl -fsSL https://dot.net/v1/dotnet-install.sh \
   -o /tmp/dotnet-install.sh
 
-docker compose exec jellyfin bash /tmp/dotnet-install.sh \
+docker compose exec -u root jellyfin bash /tmp/dotnet-install.sh \
   --channel 10.0 \
   --install-dir /tmp/dotnet
 ```
@@ -188,11 +190,11 @@ docker compose exec jellyfin bash /tmp/dotnet-install.sh \
 archive.
 
 ```sh
-docker compose exec jellyfin curl -fsSL \
+docker compose exec -u root jellyfin curl -fsSL \
   https://github.com/tthayer93/Anaglyfin/archive/refs/tags/v0.1.0.tar.gz \
   -o /tmp/anaglyfin.tar.gz
 
-docker compose exec jellyfin sh -c '
+docker compose exec -u root jellyfin sh -c '
   rm -rf /tmp/anaglyfin-src
   mkdir -p /tmp/anaglyfin-src
   tar -xzf /tmp/anaglyfin.tar.gz -C /tmp/anaglyfin-src --strip-components=1
@@ -203,7 +205,7 @@ docker compose exec jellyfin sh -c '
 one `sh -c`, because neither survives into a separate `exec`.
 
 ```sh
-docker compose exec jellyfin sh -c '
+docker compose exec -u root jellyfin sh -c '
   cd /tmp/anaglyfin-src
   export PATH=/tmp/dotnet:"$PATH"
   export DOTNET_CLI_HOME=/tmp
@@ -216,7 +218,7 @@ docker compose exec jellyfin sh -c '
     --output /tmp/anaglyfin-wrapper
 '
 
-docker compose exec jellyfin install -m 0755 \
+docker compose exec -u root jellyfin install -m 0755 \
   /tmp/anaglyfin-wrapper/Anaglyfin.FFmpegWrapper \
   /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 ```
@@ -228,7 +230,7 @@ this is a no-op, and on a `./jellyfin/config` owned by a host user it is what le
 its locks.
 
 ```sh
-docker compose exec jellyfin sh -c \
+docker compose exec -u root jellyfin sh -c \
   'chown -R "$(stat -c "%u:%g" /config)" /config/anaglyfin'
 ```
 
@@ -265,7 +267,7 @@ the image. A recreate is `up -d --force-recreate`, an image pull, or `down` and 
 
 The one thing that can genuinely move under this arrangement is the image itself: a new
 `jellyfin/jellyfin` release carries its own copy of those libraries, so if a pull ever changes what
-`ffmpeg-mvc` resolves against — `docker compose exec jellyfin ldd
+`ffmpeg-mvc` resolves against — `docker compose exec -u root jellyfin ldd
 /config/anaglyfin/ffmpeg/ffmpeg-mvc` will say `not found` — that is the moment to redo steps 3–4.
 
 ### 3.2 Upgrade
@@ -295,7 +297,7 @@ docker compose restart jellyfin
 ### 3.3 Uninstall
 
 ```sh
-docker compose exec jellyfin rm -rf /config/anaglyfin
+docker compose exec -u root jellyfin rm -rf /config/anaglyfin
 ```
 
 Remove the four environment variables from the compose file and recreate with
@@ -366,7 +368,7 @@ sudo systemctl restart jellyfin
 - The wrapper answers `-version` straight through to the real encoder. Docker:
 
   ```sh
-  docker compose exec jellyfin \
+  docker compose exec -u root jellyfin \
     env ANAGLYFIN_REAL_FFMPEG=/config/anaglyfin/ffmpeg/ffmpeg-mvc \
     /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg -version
   ```
