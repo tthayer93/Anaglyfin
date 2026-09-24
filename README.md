@@ -106,6 +106,9 @@ Optional:
 
 - `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES` - overrides the admin page's concurrency
   limit for wrapper processes that receive it
+- `ANAGLYFIN_SLOT_WAIT_MS` - how long a wrapper keeps trying to take a concurrency
+  slot before it refuses the playback with exit code `75`; `0` refuses as soon as
+  every slot looks taken
 
 Values and the procedure for both server shapes are in
 [docs/install.md](docs/install.md).

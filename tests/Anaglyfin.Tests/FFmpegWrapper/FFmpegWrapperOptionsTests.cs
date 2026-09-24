@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using Anaglyfin.Configuration;
 using Anaglyfin.FFmpegWrapper;
@@ -201,6 +202,82 @@ public sealed class FFmpegWrapperOptionsTests
         Assert.Equal(
             Path.Combine(FFmpegWrapperOptions.DefaultLockDirectory, "per-worker"),
             options.LockDirectory);
+    }
+
+    // ----- how long a refusal waits ------------------------------------------------------
+
+    [Fact]
+    public void ARefusalWaitsForTheShippedMomentWhenTheDeploymentSaidNothing()
+    {
+        var options = OptionsFrom();
+
+        // Short enough that nobody reads it as a queue and long enough to outlast the handover it is
+        // waiting for. Pinned as a number because a wait nobody remembers is a wait somebody will
+        // "optimise" to zero without noticing what it was for.
+        Assert.Equal(TimeSpan.FromMilliseconds(FFmpegWrapperOptions.DefaultSlotWaitMilliseconds), options.SlotWait);
+        Assert.Equal(FFmpegWrapperOptions.DefaultSlotWait, options.SlotWait);
+    }
+
+    [Fact]
+    public void ADeploymentNamesThePatienceOfARefusalInTheVariableForIt()
+    {
+        var options = OptionsFrom((FFmpegWrapperOptions.SlotWaitEnvironmentVariable, "750"));
+
+        Assert.Equal(TimeSpan.FromMilliseconds(750), options.SlotWait);
+
+        // Zero is a request and not a mistake: a deployment that would rather hear "no" at once gets it.
+        Assert.Equal(
+            TimeSpan.Zero,
+            OptionsFrom((FFmpegWrapperOptions.SlotWaitEnvironmentVariable, "0")).SlotWait);
+    }
+
+    [Theory]
+    [InlineData("   ")]
+    [InlineData("soon")]
+    [InlineData("1.5")]
+    public void AnUnusableWaitIsReadAsTheShippedOne(string? value)
+    {
+        // The same rule every other knob on this type follows: a mistyped number on a wrapper that is
+        // on the path of every transcode costs the knob, not the playback.
+        Assert.Equal(
+            FFmpegWrapperOptions.DefaultSlotWait,
+            OptionsFrom((FFmpegWrapperOptions.SlotWaitEnvironmentVariable, value)).SlotWait);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(-100000)]
+    public void ANegativeWaitIsReadAsWaitingNotAtAll(int value)
+    {
+        // A negative wait is not a duration anybody means; the nearest answer the wrapper will honour
+        // is the refusal that asks for none of it, which is also the answer of a wrapper that was
+        // configured before there was a wait at all.
+        Assert.Equal(
+            TimeSpan.Zero,
+            OptionsFrom((FFmpegWrapperOptions.SlotWaitEnvironmentVariable, value.ToString(CultureInfo.InvariantCulture))).SlotWait);
+    }
+
+    [Fact]
+    public void AWaitLongerThanAWrapperIsWillingToHoldIsClampedAndNotDiscarded()
+    {
+        // A wrapper that waits on a typo is a playback that never starts and never says why, so the
+        // longest hold this one accepts is the answer. Clamped rather than replaced, because the
+        // someone who typed an hour plainly did not mean the shipped two seconds.
+        var options = OptionsFrom((FFmpegWrapperOptions.SlotWaitEnvironmentVariable, "3600000"));
+
+        Assert.Equal(FFmpegWrapperOptions.MaximumSlotWait, options.SlotWait);
+        Assert.Equal(TimeSpan.FromMilliseconds(FFmpegWrapperOptions.MaximumSlotWaitMilliseconds), options.SlotWait);
+    }
+
+    [Fact]
+    public void TheWaitOfAnInvocationIsReadFromTheEnvironmentLikeTheRestOfIt()
+    {
+        var options = FFmpegWrapperOptions.FromEnvironment();
+
+        // The entry point the executable calls, on whatever machine this runs on: a wait it produced
+        // out of nothing is still a wait, and never a negative one.
+        Assert.True(options.SlotWait >= TimeSpan.Zero);
+        Assert.True(options.SlotWait <= FFmpegWrapperOptions.MaximumSlotWait);
     }
 
     [Fact]
@@ -562,12 +639,13 @@ public sealed class FFmpegWrapperOptionsTests
     }
 
     [Fact]
-    public void ASettingsDocumentDoesNotGetToNameTheBinaryOrTheSlotDirectory()
+    public void ASettingsDocumentDoesNotGetToNameTheBinaryTheSlotDirectoryOrTheWait()
     {
         // The document is the plugin's channel and the environment is the deployment's. The one
         // setting they both may state is the limit, and the environment wins even there; the binary
-        // the commands go to and the directory running jobs are counted in stay the deployment's
-        // alone, because a file a plugin writes cannot know where a server chose to put them.
+        // the commands go to, the directory running jobs are counted in and the patience of a refusal
+        // stay the deployment's alone, because a file a plugin writes can know none of them: not where
+        // a server chose to put its slots, and not how long its players take to retry.
         var directory = TemporaryDirectory();
 
         try
@@ -581,6 +659,7 @@ public sealed class FFmpegWrapperOptionsTests
                   "schemaVersion": 2,
                   "subtitleDepth": { "enabled": true, "mode": "automatic", "shiftPixels": 0, "plane": 0 },
                   "lockDirectory": "/somewhere/else",
+                  "slotWaitMs": 900000,
                   "realFFmpeg": "/bin/false",
                   "serverFFmpeg": "/bin/echo"
                 }
@@ -603,6 +682,12 @@ public sealed class FFmpegWrapperOptionsTests
             Assert.Null(unconfigured.ServerFFmpegPath);
             Assert.Equal(FFmpegWrapperOptions.FFmpegExecutableName, unconfigured.OrdinaryFFmpegPath);
             Assert.Equal(FFmpegWrapperOptions.DefaultMaxConcurrentTranscodes, unconfigured.MaxConcurrentTranscodes);
+
+            // The wait a refusal is made of is the newest of these and the one most tempting to move:
+            // it is a duration a player's retry decides, and the plugin has never met this server's
+            // players. It stays where the rest of the machine's numbers are.
+            Assert.Equal(FFmpegWrapperOptions.DefaultSlotWait, unconfigured.SlotWait);
+
             Assert.True(unconfigured.SubtitleDepth.Enabled);
         }
         finally

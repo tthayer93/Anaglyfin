@@ -72,7 +72,26 @@ public sealed record FFmpegWrapperOptions
     /// <summary>
     /// Name of the variable holding the directory the concurrency slots are created in.
     /// </summary>
-    public const string LockDirectoryEnvironmentVariable = "ANAGLYFIN_LOCK_DIR";
+    /// <remarks>
+    /// The definition is the shared one, because this variable is not a wrapper setting so much as
+    /// the address two processes have to agree on: the plugin's startup cleanup pass resolves the
+    /// same directory out of the same name, and a directory each process read its own copy of would
+    /// be two limits that add up to none.
+    /// </remarks>
+    public const string LockDirectoryEnvironmentVariable = TranscodeSlotStore.LockDirectoryEnvironmentVariable;
+
+    /// <summary>
+    /// Name of the variable holding how long a wrapper keeps trying to take a slot before it refuses
+    /// the playback with <see cref="WrapperApplication.ExitCodeConcurrencyLimitReached"/>.
+    /// </summary>
+    /// <remarks>
+    /// The wait is not a queue and not a second limit: it is the length of the moment a wrapper is
+    /// willing to spend finding out whether "all slots taken" was a capacity answer or the half-second
+    /// between one job releasing its slot and the next one asking for it. A deployment that would
+    /// rather refuse immediately states <c>0</c> here; one whose slots are handed over slowly states
+    /// more, up to <see cref="MaximumSlotWaitMilliseconds"/>.
+    /// </remarks>
+    public const string SlotWaitEnvironmentVariable = "ANAGLYFIN_SLOT_WAIT_MS";
 
     /// <summary>
     /// Name of the variable naming the real FFmpeg-mvc binary the Anaglyfin commands are
@@ -136,6 +155,38 @@ public sealed record FFmpegWrapperOptions
     /// <summary>How many Anaglyfin transcodes may run at once when nothing is configured.</summary>
     public const int DefaultMaxConcurrentTranscodes = 1;
 
+    /// <summary>
+    /// How long a wrapper keeps trying to take a slot when nothing is configured, in milliseconds.
+    /// </summary>
+    /// <remarks>
+    /// Short because it is a handover and not a queue: it has to outlast the moment between one
+    /// encoder releasing a slot and the next request asking for it - which in a browser that retried
+    /// a refused playback is about a second - without becoming a wait a viewer would notice as a
+    /// stalled start.
+    /// </remarks>
+    public const int DefaultSlotWaitMilliseconds = 2000;
+
+    /// <summary>
+    /// The shortest wait a wrapper accepts: <c>0</c> refuses as soon as every slot looks taken.
+    /// </summary>
+    public const int MinimumSlotWaitMilliseconds = 0;
+
+    /// <summary>
+    /// The longest wait a wrapper accepts, in milliseconds.
+    /// </summary>
+    /// <remarks>
+    /// Bounded because the value arrives from a variable somebody typed, and a wrapper that waits on
+    /// a typo is a playback that never starts and never reports why. A longer hold than this is the
+    /// server's business, not the wrapper's.
+    /// </remarks>
+    public const int MaximumSlotWaitMilliseconds = 30000;
+
+    /// <summary>Gets <see cref="DefaultSlotWaitMilliseconds"/> as a duration.</summary>
+    public static readonly TimeSpan DefaultSlotWait = TimeSpan.FromMilliseconds(DefaultSlotWaitMilliseconds);
+
+    /// <summary>Gets <see cref="MaximumSlotWaitMilliseconds"/> as a duration.</summary>
+    public static readonly TimeSpan MaximumSlotWait = TimeSpan.FromMilliseconds(MaximumSlotWaitMilliseconds);
+
     /// <summary>Label used when the binary came from a <c>PATH</c> lookup rather than a variable.</summary>
     public const string PathLookupSource = "PATH lookup";
 
@@ -154,6 +205,25 @@ public sealed record FFmpegWrapperOptions
     /// </para>
     /// </remarks>
     public int MaxConcurrentTranscodes { get; init; } = DefaultMaxConcurrentTranscodes;
+
+    /// <summary>
+    /// Gets how long a wrapper keeps asking for a slot before it refuses the playback.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The wait belongs beside the limit rather than somewhere else in the options because it is the
+    /// other half of the same answer: the limit says how many Anaglyfin encodes this machine allows,
+    /// and the wait says how patient a refusal over that number is allowed to be. It changes neither
+    /// the count nor the accounting - a slot is still one encode and an ordinary command still takes
+    /// none.
+    /// </para>
+    /// <para>
+    /// One channel only, and it is the deployment's. The settings document carries what the admin
+    /// page owns, and a page that set the patience of a refusal would be asking an administrator a
+    /// question whose answer belongs to the machine and to the way its players retry.
+    /// </para>
+    /// </remarks>
+    public TimeSpan SlotWait { get; init; } = DefaultSlotWait;
 
     /// <summary>
     /// Gets the directory the concurrency slot files are created in.
@@ -258,13 +328,11 @@ public sealed record FFmpegWrapperOptions
     /// Gets the directory used when <see cref="LockDirectoryEnvironmentVariable"/> is unset.
     /// </summary>
     /// <remarks>
-    /// Under the temp path, because a slot is a runtime artefact and not state worth
-    /// keeping: the operating system removes it with the process that created it, so a
-    /// default location on a rebooted or cleaned machine can only ever be empty.
-    /// An absolute, shared location is what a multi-container deployment configures.
+    /// The shared one, so that the wrapper and the plugin's startup cleanup pass cannot resolve the
+    /// slot directory of an unconfigured server differently: see
+    /// <see cref="TranscodeSlotStore.DefaultLockDirectory"/> for why it sits under the temp path.
     /// </remarks>
-    public static string DefaultLockDirectory { get; } =
-        Path.Combine(Path.GetTempPath(), "anaglyfin", "ffmpeg-wrapper");
+    public static string DefaultLockDirectory => TranscodeSlotStore.DefaultLockDirectory;
 
     /// <summary>
     /// Reads the options of the current process environment.
@@ -281,12 +349,13 @@ public sealed record FFmpegWrapperOptions
     /// </param>
     /// <returns>The options those variables describe.</returns>
     /// <remarks>
-    /// The environment is read first and completely: the two binaries and the slot directory
-    /// are settled before anything is opened, and the concurrency limit is read from the
-    /// variable before the document is opened, so the order of precedence in
+    /// The environment is read first and completely: the two binaries, the slot directory and the
+    /// patience of a refusal are settled before anything is opened, and the concurrency limit is read
+    /// from the variable before the document is opened, so the order of precedence in
     /// <see cref="ReadMaximum"/> is the order this method reads them in. The settings
     /// document is addressed only by <see cref="WrapperSettingsFile.EnvironmentVariable"/> and is
-    /// given the two values the admin page owns.
+    /// given the two values the admin page owns; the slot directory and the wait are not among them,
+    /// because both describe the machine the deployment started rather than anything the page offers.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="readVariable"/> is null.</exception>
     public static FFmpegWrapperOptions FromEnvironment(Func<string, string?> readVariable)
@@ -303,6 +372,7 @@ public sealed record FFmpegWrapperOptions
                 readVariable(MaxConcurrentTranscodesEnvironmentVariable),
                 published.MaxConcurrentTranscodes),
             LockDirectory = ReadLockDirectory(readVariable(LockDirectoryEnvironmentVariable)),
+            SlotWait = ReadSlotWait(readVariable(SlotWaitEnvironmentVariable)),
             RealFFmpegPath = path,
             RealFFmpegPathSource = source,
             ServerFFmpegPath = serverPath,
@@ -506,21 +576,53 @@ public sealed record FFmpegWrapperOptions
     /// <param name="value">The raw variable value, if any.</param>
     /// <returns>An absolute directory path.</returns>
     /// <remarks>
-    /// A relative value is anchored at the temp location instead of being used as
-    /// written: the wrapper inherits its working directory from whatever started it, and
-    /// Jellyfin starts transcode helpers in its transcode temp. A concurrency limit that
-    /// silently lives in a directory nobody chose is a limit nobody can find.
+    /// Read by the shared resolver rather than spelled out again here, because the process that
+    /// cleans the directory at plugin startup is not this one and has to arrive at the same answer
+    /// from the same variable - including for a relative value, which neither of them may resolve
+    /// against its own working directory. See
+    /// <see cref="TranscodeSlotStore.ResolveLockDirectory(string)"/> for the anchoring.
     /// </remarks>
     private static string ReadLockDirectory(string? value)
+        => TranscodeSlotStore.ResolveLockDirectory(value);
+
+    /// <summary>
+    /// Reads how long a wrapper keeps trying for a slot before it refuses.
+    /// </summary>
+    /// <param name="value">The raw variable value, if any.</param>
+    /// <returns>
+    /// Between <see cref="MinimumSlotWaitMilliseconds"/> and <see cref="MaximumSlotWaitMilliseconds"/>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Unset, blank and unparseable are the shipped wait, in line with every other knob on this
+    /// type: the wrapper is on the path of every transcode on the server and a mistyped number costs
+    /// it a tuning value, not a playback.
+    /// </para>
+    /// <para>
+    /// A number that parses but stands outside the bounds is clamped rather than replaced. Zero is a
+    /// statement an administrator means - "refuse at once" - and so is a very large one, so the
+    /// nearest answer the wrapper is willing to honour is closer to the intent than the default
+    /// would be. Out of range is still reported by the refusal line, which states the wait it waited.
+    /// </para>
+    /// </remarks>
+    private static TimeSpan ReadSlotWait(string? value)
     {
         var text = ReadNonBlank(value);
 
-        if (text is null)
+        if (text is null
+            || !int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var milliseconds))
         {
-            return DefaultLockDirectory;
+            return DefaultSlotWait;
         }
 
-        return Path.IsPathRooted(text) ? text : Path.Combine(DefaultLockDirectory, text);
+        if (milliseconds < MinimumSlotWaitMilliseconds)
+        {
+            return TimeSpan.FromMilliseconds(MinimumSlotWaitMilliseconds);
+        }
+
+        return milliseconds > MaximumSlotWaitMilliseconds
+            ? MaximumSlotWait
+            : TimeSpan.FromMilliseconds(milliseconds);
     }
 
     private static string? ReadNonBlank(string? value)

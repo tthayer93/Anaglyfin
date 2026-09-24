@@ -1,6 +1,8 @@
 using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Threading.Tasks;
 using Anaglyfin.FFmpegWrapper;
 using Xunit;
 
@@ -228,14 +230,97 @@ public sealed class WrapperConcurrencyGuardTests : IDisposable
     // ----- a slot file that outlived its wrapper ---------------------------------------
 
     [Fact]
-    public void AFileThatWasClaimedMomentsAgoIsTreatedAsARunningJob()
+    public void AFileWhoseRecordedOwnerIsDeadIsTakenOverWhateverItsAge()
     {
-        var path = _slots.WriteForeignSlotFile(0, DeadPid, TimeSpan.FromMinutes(1));
+        var path = _slots.WriteForeignSlotFile(0, DeadPid, TimeSpan.FromSeconds(10));
 
         using var guard = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
 
-        // A fresh file is somebody's encode: an MVC transcode runs for hours, and guessing
-        // otherwise is how two encodes end up on one machine.
+        // Nobody can open this file exclusively - the test wrote it and no wrapper holds it - and the
+        // process it names does not exist, which is the whole of the takeover test. The day this file
+        // used to have to sit out first was not evidence of anything: it was a wait standing in for
+        // the question nobody was asking, and while it ran every 3D playback on the server refused.
+        Assert.True(guard.TryAcquire());
+        Assert.Equal(0, guard.HeldSlot);
+
+        // The takeover is visible in the directory afterwards, as a fresh claim naming this process
+        // and not as the leftover that was there.
+        Assert.Equal(path, Assert.Single(_slots.SlotFiles()));
+        Assert.Contains(
+            Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
+            File.ReadAllText(path),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AFileSomebodyIsHoldingIsNotTakenOverEvenWhenItsMarkNamesADeadOwner()
+    {
+        // The other evidence, outranking the first: a handle is open on this file, so a job is using
+        // the slot whatever its mark says and however old the file is. The takeover rule is "unheld
+        // and ownerless", not "ownerless", and a sweep that asked only the second question would
+        // delete the claim from under a running encode.
+        var path = _slots.WriteForeignSlotFile(0, DeadPid, TimeSpan.FromDays(3));
+
+        using var holder = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var guard = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+
+        Assert.False(guard.TryAcquire());
+        Assert.True(File.Exists(path));
+    }
+
+    [Fact]
+    public void AFileWhoseOwnerIsALiveProcessIsOccupiedWhateverItsAge()
+    {
+        var path = _slots.WriteForeignSlotFile(
+            0,
+            Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
+            TimeSpan.FromSeconds(10));
+
+        using var guard = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+
+        // The claim this file states is a process that exists, so the file is somebody's encode and
+        // the wait buys nothing: a takeover here is two MVC encodes on one machine.
+        Assert.False(guard.TryAcquire());
+        Assert.True(File.Exists(path));
+    }
+
+    [RequiresHostBootIdFact]
+    public void AFileWrittenByAnotherBootIsNotJudgedAgainstThisMachinesProcesses()
+    {
+        // The mark names this very process, which on the machine that wrote it was a live wrapper.
+        // Read against this boot that is a misreading - the container that recorded the number is
+        // gone, and the process holding it here has nothing to do with the slot - which is exactly
+        // how a leftover refused every 3D playback for a day after a restart.
+        //
+        // The guard judges a mark against the boot identifier the host states, which is this host's
+        // own file to state; TranscodeSlotStoreTests states the same rule against a boot the test
+        // names, for a host that states none.
+        var path = _slots.WriteForeignSlotFile(
+            0,
+            Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
+            TimeSpan.FromSeconds(10),
+            bootId: TemporarySlotDirectory.AnotherBootId());
+
+        using var guard = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+
+        Assert.True(guard.TryAcquire());
+        Assert.Equal(0, guard.HeldSlot);
+        Assert.Contains(
+            Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
+            File.ReadAllText(path),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AFileWhoseMarkStatesNoOwnerIsHeldToTheAbandonWindow()
+    {
+        // A mark a wrapper never finished writing states nothing, and nothing is not proof that
+        // somebody is gone. Age is the only evidence left for a file like this, and this is the case
+        // the window exists for.
+        var path = _slots.WriteSlotFileWithMark(0, "claimed=unreadable-by-this-test\n", TimeSpan.FromSeconds(10));
+
+        using var guard = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+
         Assert.False(guard.TryAcquire());
         Assert.True(File.Exists(path));
     }
@@ -263,7 +348,8 @@ public sealed class WrapperConcurrencyGuardTests : IDisposable
         using var guard = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
 
         // Old, unheld and ownerless is the leavings of a wrapper that died on storage which
-        // outlived it - the one case the kernel cannot clean up by itself.
+        // outlived it - the one case the kernel cannot clean up by itself, and now the easy half of
+        // it: the owner being gone is what decides, and the age only agrees.
         Assert.True(guard.TryAcquire());
         Assert.Equal(0, guard.HeldSlot);
 
@@ -299,10 +385,129 @@ public sealed class WrapperConcurrencyGuardTests : IDisposable
             () => new WrapperConcurrencyGuard("/tmp/anaglyfin-never-created", 1, TimeSpan.Zero));
     }
 
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(-1000)]
+    public void ANegativeWaitIsRejectedAtConstruction(int milliseconds)
+    {
+        // A wait is not a tuning value that may be wrong in the negative: it is the time a playback
+        // is held, and a guard would rather say the configuration is wrong than hold nothing.
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new WrapperConcurrencyGuard(
+                "/tmp/anaglyfin-never-created",
+                1,
+                slotWait: TimeSpan.FromMilliseconds(milliseconds)));
+    }
+
+    // ----- the bounded wait before a refusal -------------------------------------------
+
+    [Fact]
+    public async Task ASlotThatComesFreeInsideTheWaitIsTaken()
+    {
+        // The case the wait exists for, and it is not a queue: one job is finishing, the next has
+        // already asked, and the honest answer is "yours in a moment" rather than "the machine is
+        // full". The release is another guard's, which is the shape the real handover has - the
+        // wrapper that is finishing is a different process from the one waiting.
+        var finishing = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+        Assert.True(finishing.TryAcquire());
+
+        var releasing = ReleaseAfter(finishing, TimeSpan.FromMilliseconds(100));
+
+        using var waiting = new WrapperConcurrencyGuard(
+            _slots.Location,
+            maxConcurrentTranscodes: 1,
+            slotWait: TimeSpan.FromSeconds(5));
+
+        try
+        {
+            Assert.True(waiting.TryAcquire());
+            Assert.Equal(0, waiting.HeldSlot);
+        }
+        finally
+        {
+            await releasing;
+            waiting.Release();
+        }
+    }
+
+    [Fact]
+    public void AWaitThatRunsOutIsStillARefusal()
+    {
+        var running = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+        Assert.True(running.TryAcquire());
+
+        using var waiting = new WrapperConcurrencyGuard(
+            _slots.Location,
+            maxConcurrentTranscodes: 1,
+            slotWait: TimeSpan.FromMilliseconds(300));
+
+        var since = Stopwatch.StartNew();
+        var acquired = waiting.TryAcquire();
+        var waited = since.Elapsed;
+
+        Assert.False(acquired);
+        Assert.False(waiting.IsHolding);
+
+        // The wait was spent, and then the answer the limit always gave was given: the patience is
+        // not a queue and not a second opinion about the limit, and a slot that stayed busy is a
+        // refusal at the end of it.
+        Assert.True(
+            waited >= TimeSpan.FromMilliseconds(300),
+            $"The wrapper refused after {waited.TotalMilliseconds} ms of a 300 ms wait, which is a wait that did not happen.");
+
+        running.Release();
+    }
+
+    [Fact]
+    public void AGuardThatWasNotGivenAWaitRefusesAtOnce()
+    {
+        var running = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+        Assert.True(running.TryAcquire());
+
+        using var waiting = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+
+        // A caller naming its own slot directory is a caller that wants the answer it asked for; the
+        // deployment's wait arrives through the options, and nothing waits here. The wait value is the
+        // contract - asserting that the call fit inside one poll interval would make the test depend
+        // on scheduler noise rather than on the guard's configured behavior.
+        Assert.Equal(WrapperConcurrencyGuard.NoSlotWait, waiting.SlotWait);
+        Assert.False(waiting.TryAcquire());
+        Assert.False(waiting.IsHolding);
+
+        running.Release();
+    }
+
+    [Fact]
+    public void TheWaitOfAnInvocationIsTheWaitItsGuardKeeps()
+    {
+        var options = new FFmpegWrapperOptions
+        {
+            LockDirectory = _slots.Location,
+            SlotWait = TimeSpan.FromMilliseconds(750)
+        };
+
+        using var guard = new WrapperConcurrencyGuard(options);
+
+        // The refusal line quotes this number back at the administrator, so the number the guard
+        // kept has to be the number the options stated.
+        Assert.Equal(TimeSpan.FromMilliseconds(750), guard.SlotWait);
+    }
+
     private string SlotFile(int slot)
         => Path.Combine(
             _slots.Location,
             WrapperConcurrencyGuard.SlotFileNamePrefix
             + slot.ToString(CultureInfo.InvariantCulture)
             + WrapperConcurrencyGuard.SlotFileExtension);
+
+    /// <summary>
+    /// Gives a slot back a moment after it was asked for, from a timer rather than from the thread
+    /// asking: that is the shape a handover has, one wrapper finishing while another is waiting, and
+    /// a release that ran on the waiting thread would be the wait answering its own question.
+    /// </summary>
+    private static async Task ReleaseAfter(WrapperConcurrencyGuard slot, TimeSpan delay)
+    {
+        await Task.Delay(delay).ConfigureAwait(false);
+        slot.Dispose();
+    }
 }

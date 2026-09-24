@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 
@@ -413,17 +414,36 @@ public sealed class WrapperApplication
 
     /// <summary>The refusal line for a job the concurrency limit turned away.</summary>
     /// <remarks>
+    /// <para>
     /// Both places the limit can be raised are named, because the wrapper cannot tell which of them
     /// stated the number it is refusing over: the admin page is the setting and
     /// <see cref="FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable"/> is the override
     /// that beat it, and an administrator reading this line has to be able to find the one that
     /// applies to this server.
+    /// </para>
+    /// <para>
+    /// What it no longer says is "remove the slot files". That sentence used to be the only answer a
+    /// wrapper could offer for a leftover, and it was advice to delete the files of jobs that were
+    /// running; the guard takes a slot over on its own as soon as the process that claimed it is
+    /// provably gone, so nothing here asks anybody to read a directory or guess at a file in it. The
+    /// wait the wrapper just spent is stated in milliseconds, because the two readings an
+    /// administrator has to tell apart are "the machine is full" and "the slot was busy for slightly
+    /// longer than this wrapper was willing to look".
+    /// </para>
     /// </remarks>
     private string ConcurrencyRefusal()
         => $"refused: {_guard.MaxConcurrentTranscodes} Anaglyfin transcode(s) are already running, which is the configured maximum, so FFmpeg was not started."
+           + $" The slot stayed taken for the whole {SlotWaitMilliseconds()} ms the wrapper waited for it to come free;"
+           + " a slot left behind by a wrapper that died is taken over on its own as soon as the process that claimed it is gone, so slot files do not have to be removed by hand."
            + " Raise the maximum concurrent Anaglyfin transcodes on the Anaglyfin settings page,"
-           + $" or {FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable} to override it from the deployment,"
-           + $" or remove slot files left in the directory {FFmpegWrapperOptions.LockDirectoryEnvironmentVariable} names if a wrapper was killed without exiting.";
+           + $" or {FFmpegWrapperOptions.MaxConcurrentTranscodesEnvironmentVariable} to override it from the deployment.";
+
+    /// <summary>
+    /// Gets the wait this invocation refused after, in the unit the environment variable is stated
+    /// in, so the number in the line is the one an administrator can set.
+    /// </summary>
+    private string SlotWaitMilliseconds()
+        => _guard.SlotWait.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Turns a start failure into a refusal.
