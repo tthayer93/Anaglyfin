@@ -104,7 +104,7 @@ Install the plugin from the Anaglyfin repository URL `docs/install.md` gives, or
 a repository is not the shape you want, by placing the built `Anaglyfin.dll` in the server's
 configured plugin directory. `docs/install.md` gives the paths for a bare-metal server and for
 a container that mounts `./jellyfin/config` at `/config`. That URL now serves the published
-catalog - `v0.1.0` is tagged and its assets are on the release - so a run can install from the
+catalog - `v0.2.0` is tagged and its assets are on the release - so a run can install from the
 catalog, and placement is the troubleshooting route for a server that cannot add a repository.
 Restart or reload Jellyfin after installation.
 
@@ -1486,9 +1486,10 @@ Current state:
   its own repository instead: `.github/workflows/release.yml` turns an already-existing `vX.Y.Z`
   tag into a GitHub release carrying the packaged artifacts and republishes the manifest at
   `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json`, the URL
-  `docs/install.md` tells administrators to add. `v0.1.0` is published, so that manifest and the
-  release assets behind it are live: the catalog lists Anaglyfin `0.1.0` and the release carries
-  the plugin archive, the wrapper, and `SHA256SUMS.txt`.
+  `docs/install.md` tells administrators to add. `v0.2.0` is published, so that manifest and the
+  release assets behind it are live: the catalog lists Anaglyfin `0.2.0` as the current
+  version (`0.1.0` remains as release history) and the release carries the plugin archive,
+  the wrapper, and `SHA256SUMS.txt`.
 
 Validation expectation:
 
@@ -1542,6 +1543,9 @@ versions. The provider only emits valid markers. These paths are mostly unit-tes
 checks are optional unless a failure shows a provider-created marker being refused.
 
 ## Result log
+
+The rows below are the dated 2026-09-21 formal pass recorded against the `v0.1.0` build; a version
+string in a row - V1's `0.1.0.0`, for example - is that dated evidence, not a `v0.2.0` runtime result.
 
 | Item | Area | Expected | Result | Notes |
 | --- | --- | --- | --- | --- |
