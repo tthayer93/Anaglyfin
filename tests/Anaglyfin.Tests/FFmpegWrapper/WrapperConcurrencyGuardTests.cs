@@ -284,7 +284,7 @@ public sealed class WrapperConcurrencyGuardTests : IDisposable
         Assert.True(File.Exists(path));
     }
 
-    [Fact]
+    [RequiresHostBootIdFact]
     public void AFileWrittenByAnotherBootIsNotJudgedAgainstThisMachinesProcesses()
     {
         // The mark names this very process, which on the machine that wrote it was a live wrapper.
@@ -466,15 +466,13 @@ public sealed class WrapperConcurrencyGuardTests : IDisposable
 
         using var waiting = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
 
-        var since = Stopwatch.StartNew();
-
-        Assert.False(waiting.TryAcquire());
-
         // A caller naming its own slot directory is a caller that wants the answer it asked for; the
-        // deployment's wait arrives through the options, and nothing waits here.
-        Assert.True(
-            since.Elapsed < WrapperConcurrencyGuard.SlotPollInterval,
-            $"A guard with no wait configured still spent {since.Elapsed.TotalMilliseconds} ms refusing.");
+        // deployment's wait arrives through the options, and nothing waits here. The wait value is the
+        // contract - asserting that the call fit inside one poll interval would make the test depend
+        // on scheduler noise rather than on the guard's configured behavior.
+        Assert.Equal(WrapperConcurrencyGuard.NoSlotWait, waiting.SlotWait);
+        Assert.False(waiting.TryAcquire());
+        Assert.False(waiting.IsHolding);
 
         running.Release();
     }

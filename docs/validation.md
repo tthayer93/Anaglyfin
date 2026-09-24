@@ -1285,6 +1285,7 @@ Slot behavior notes:
   waiting period.
 - A slot whose owner is still a live process on this machine is never taken over, and a mark from
   another boot is never judged against this machine's process ids.
+- A shared `ANAGLYFIN_LOCK_DIR` must be mounted on the same host in every container that uses it, because the exclusive slot probe does not span hosts.
 - The refusal itself is the capacity answer, and the wait in front of it is only long enough to
   outlast one encoder handing over to the next.
 

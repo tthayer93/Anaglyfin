@@ -24,9 +24,10 @@ namespace Anaglyfin.Tests.FFmpegWrapper;
 /// <para>
 /// The pass is tested through <see cref="TranscodeSlotCleanupService.Clean"/> rather than only through
 /// <see cref="IHostedService.StartAsync"/>, because the directory a test owns is how a test says
-/// "sweep this one", and the environment variable a deployment uses to name the directory is process
-/// state a test does not own. <see cref="IHostedService.StartAsync"/> is asserted separately, for the
-/// one thing only it can show: that the server starts either way.
+/// "sweep this one". <see cref="IHostedService.StartAsync"/> is asserted separately, for the one thing
+/// only it can show: that the server starts either way. The startup test temporarily names its own
+/// unusable directory through the deployment's variable and restores the variable afterwards, so it
+/// exercises that path without sweeping the slot directory of the machine running the tests.
 /// </para>
 /// </remarks>
 public sealed class TranscodeSlotCleanupServiceTests : IDisposable
@@ -119,7 +120,7 @@ public sealed class TranscodeSlotCleanupServiceTests : IDisposable
         Assert.True(File.Exists(path));
     }
 
-    [Fact]
+    [RequiresHostBootIdFact]
     public void ASlotWrittenByAnotherContainerIsClearedEvenThoughItsNumberIsAliveHere()
     {
         // The mark names this very process. On the container that wrote it that was a live wrapper;
@@ -186,10 +187,29 @@ public sealed class TranscodeSlotCleanupServiceTests : IDisposable
         // The whole point of the shape this service has: it is on the server's startup path, and the
         // thing it reads is a directory on a volume the deployment - not the plugin - mounted. A
         // cleanup that cannot run costs an administrator a stale file and nothing else.
+        Directory.CreateDirectory(_slots.Location);
+
+        var blocker = Path.Combine(_slots.Location, "blocked");
+        File.WriteAllText(blocker, "a file standing where the deployment put its slot directory");
+
+        var location = Path.Combine(blocker, "slots");
+
+        // Startup resolves the deployment's variable, so naming this test's own unusable directory is
+        // the only way to exercise that path without sweeping the slot directory of the machine that
+        // happens to be running the tests.
+        using var environment = new TemporaryProcessEnvironmentVariable(
+            TranscodeSlotStore.LockDirectoryEnvironmentVariable,
+            location);
+
         var service = Service();
 
         await service.StartAsync(CancellationToken.None);
         await service.StopAsync(CancellationToken.None);
+
+        var line = Assert.Single(_log.Messages);
+
+        Assert.Contains(location, line, StringComparison.Ordinal);
+        Assert.Contains("no stale", line, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

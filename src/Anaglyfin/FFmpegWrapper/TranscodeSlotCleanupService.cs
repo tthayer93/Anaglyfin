@@ -146,6 +146,15 @@ public sealed class TranscodeSlotCleanupService : IHostedService
                     continue;
                 }
 
+                // The whole judgement, asked again immediately before the unlink: the timestamp says
+                // whether this is the same file, but only the evidence says whether it is still the
+                // same kind of file. A wrapper that opened the slot in between this pass's first look
+                // and this line is holding it now, and a held slot is nobody's cleanup.
+                if (TranscodeSlotStore.ReadEvidence(file) != TranscodeSlotEvidence.DeadOwner)
+                {
+                    continue;
+                }
+
                 File.Delete(file);
                 removed++;
             }
