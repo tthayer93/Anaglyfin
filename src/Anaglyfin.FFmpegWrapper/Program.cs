@@ -14,10 +14,13 @@ namespace Anaglyfin.FFmpegWrapper;
 /// </para>
 /// <para>
 /// The wiring is the whole deployment contract: the server's FFmpeg path points at this
-/// executable, the real binary comes from the environment
-/// (<see cref="FFmpegWrapperOptions.RealFFmpegEnvironmentVariable"/>), and one process is
-/// one playback - which is why <see cref="WrapperApplication.Run"/> waits for FFmpeg and
-/// leaves its exit code behind.
+/// executable, the binary an Anaglyfin command is handed to comes from the environment
+/// (<see cref="FFmpegWrapperOptions.RealFFmpegEnvironmentVariable"/>) and the one an ordinary
+/// command is handed to from
+/// (<see cref="FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable"/>) - or from the same
+/// place as the first when the deployment named no second build - and one process is one
+/// playback, which is why <see cref="WrapperApplication.Run"/> waits for FFmpeg and leaves its
+/// exit code behind.
 /// </para>
 /// </remarks>
 internal static class Program

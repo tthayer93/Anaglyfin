@@ -36,8 +36,10 @@ public interface IFFmpegProcessLauncher
     /// Starts one real FFmpeg process and waits for it to exit.
     /// </summary>
     /// <param name="realFFmpegPath">
-    /// The configured FFmpeg binary, as resolved by
-    /// <see cref="FFmpegWrapperOptions.RealFFmpegPath"/>.
+    /// The FFmpeg binary this command is handed to, as decided by
+    /// <see cref="WrapperApplication"/> from <see cref="FFmpegWrapperOptions"/>: the real
+    /// FFmpeg-mvc build for an Anaglyfin command, and the server's own FFmpeg for an ordinary
+    /// one when the deployment named a second binary.
     /// </param>
     /// <param name="arguments">
     /// The argument vector to start it with, without the executable token - the vector

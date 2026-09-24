@@ -16,8 +16,10 @@ namespace Anaglyfin.Tests.FFmpegWrapper;
 /// resolution order in these tests is the deployment contract: <c>ANAGLYFIN_REAL_FFMPEG</c>
 /// for a wrapper-specific target, <c>FFMPEG_MVC_PATH</c> for an installation that already
 /// names its FFmpeg-mvc build, and the host's own <c>PATH</c> search for a binary installed
-/// where hosts look. Nothing else is a source of a path, which is why no test here has to
-/// know where it is running.
+/// where hosts look. The second binary - the one ordinary commands are handed to - is read
+/// from <c>ANAGLYFIN_SERVER_FFMPEG</c> or its alias and from nowhere else, and an environment
+/// that names neither leaves the wrapper with the single binary it had before. Nothing else is
+/// a source of a path, which is why no test here has to know where it is running.
 /// </para>
 /// <para>
 /// <see cref="FFmpegWrapperOptions.FromEnvironment(Func{string,string?})"/> takes the
@@ -219,11 +221,137 @@ public sealed class FFmpegWrapperOptionsTests
         Assert.NotNull(options.SubtitleDepth);
     }
 
+    // ----- the second binary: the FFmpeg the server would have run -----------------------
+
+    [Fact]
+    public void TheServerVariableNamesTheOrdinaryBinarySeparatelyFromTheMvcOne()
+    {
+        // Two variables, two binaries, and neither one read out of the other: the deployment
+        // that has a stock FFmpeg beside the FFmpeg-mvc build is the deployment this exists for.
+        var options = OptionsFrom(
+            (FFmpegWrapperOptions.RealFFmpegEnvironmentVariable, "/config/anaglyfin/ffmpeg/ffmpeg-mvc"),
+            (FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable, "/usr/lib/jellyfin-ffmpeg/ffmpeg"));
+
+        Assert.Equal("/config/anaglyfin/ffmpeg/ffmpeg-mvc", options.RealFFmpegPath);
+        Assert.Equal("/usr/lib/jellyfin-ffmpeg/ffmpeg", options.ServerFFmpegPath);
+        Assert.Equal(FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable, options.ServerFFmpegPathSource);
+        Assert.True(options.HasServerFFmpegPath);
+        Assert.Equal("/usr/lib/jellyfin-ffmpeg/ffmpeg", options.OrdinaryFFmpegPath);
+        Assert.Equal(FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable, options.OrdinaryFFmpegPathSource);
+    }
+
+    [Fact]
+    public void TheAliasNamesTheOrdinaryBinaryAndSaysWhichNameItUsed()
+    {
+        // The alias exists so an administrator who wrote the other spelling is not wrong, and the
+        // source exists so a refusal can name the spelling this server actually wrote.
+        var options = OptionsFrom(
+            (FFmpegWrapperOptions.ServerFFmpegAlternateEnvironmentVariable, "/usr/bin/ffmpeg"));
+
+        Assert.Equal("/usr/bin/ffmpeg", options.ServerFFmpegPath);
+        Assert.Equal(FFmpegWrapperOptions.ServerFFmpegAlternateEnvironmentVariable, options.ServerFFmpegPathSource);
+        Assert.Equal("/usr/bin/ffmpeg", options.OrdinaryFFmpegPath);
+        Assert.Equal(
+            FFmpegWrapperOptions.ServerFFmpegAlternateEnvironmentVariable,
+            options.OrdinaryFFmpegPathSource);
+    }
+
+    [Fact]
+    public void ThePrimaryServerVariableDecidesWhenTheAliasIsSetToo()
+    {
+        var options = OptionsFrom(
+            (FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable, "/usr/lib/jellyfin-ffmpeg/ffmpeg"),
+            (FFmpegWrapperOptions.ServerFFmpegAlternateEnvironmentVariable, "/elsewhere/ffmpeg"));
+
+        Assert.Equal("/usr/lib/jellyfin-ffmpeg/ffmpeg", options.OrdinaryFFmpegPath);
+        Assert.Equal(FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable, options.OrdinaryFFmpegPathSource);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void AnUnsetOrBlankServerVariableKeepsOrdinaryCommandsOnTheMvcBinary(string? serverValue)
+    {
+        // The old deployment, the leftover empty export, and the half-written systemd line: all
+        // three keep behaving exactly as they did before the second variable existed, wording
+        // included, which is why the fallback states the first binary's source as well.
+        var options = OptionsFrom(
+            (FFmpegWrapperOptions.RealFFmpegEnvironmentVariable, "/config/anaglyfin/ffmpeg/ffmpeg-mvc"),
+            (FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable, serverValue));
+
+        Assert.Null(options.ServerFFmpegPath);
+        Assert.Null(options.ServerFFmpegPathSource);
+        Assert.False(options.HasServerFFmpegPath);
+        Assert.Equal("/config/anaglyfin/ffmpeg/ffmpeg-mvc", options.OrdinaryFFmpegPath);
+        Assert.Equal(FFmpegWrapperOptions.RealFFmpegEnvironmentVariable, options.OrdinaryFFmpegPathSource);
+    }
+
+    [Fact]
+    public void NothingConfiguredLeavesBothRoutesOnTheSameHostResolvedName()
+    {
+        // With no variables at all, the ordinary route is not given a lookup of its own: one
+        // answer, one search, one binary.
+        var options = OptionsFrom();
+
+        Assert.Null(options.ServerFFmpegPath);
+        Assert.Equal(FFmpegWrapperOptions.FFmpegExecutableName, options.RealFFmpegPath);
+        Assert.Equal(FFmpegWrapperOptions.FFmpegExecutableName, options.OrdinaryFFmpegPath);
+        Assert.Equal(FFmpegWrapperOptions.PathLookupSource, options.OrdinaryFFmpegPathSource);
+    }
+
+    [Fact]
+    public void TheSearchPathNamesOneBinaryAndIsNotAskedTwice()
+    {
+        // The PATH search exists because a host may have installed its one binary in a standard
+        // place, and it is asked once, for the binary that has nothing else to name it. A second
+        // binary a search invented would be a routing decision nobody made: an ordinary command
+        // quietly sent somewhere the marker command is not.
+        var directory = TemporaryDirectory();
+
+        try
+        {
+            var binary = Path.Combine(directory, FFmpegWrapperOptions.FFmpegExecutableName);
+            File.WriteAllText(binary, "#!/bin/sh\nexit 0\n");
+
+            var options = OptionsFrom((FFmpegWrapperOptions.PathEnvironmentVariable, directory));
+
+            Assert.True(File.Exists(binary), "The stand-in FFmpeg the search is meant to find.");
+            Assert.Equal(binary, options.RealFFmpegPath);
+            Assert.Equal(FFmpegWrapperOptions.PathLookupSource, options.RealFFmpegPathSource);
+            Assert.Null(options.ServerFFmpegPath);
+            Assert.False(options.HasServerFFmpegPath);
+            Assert.Equal(binary, options.OrdinaryFFmpegPath);
+            Assert.Equal(FFmpegWrapperOptions.PathLookupSource, options.OrdinaryFFmpegPathSource);
+        }
+        finally
+        {
+            TryDelete(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData("JELLYFIN_FFMPEG")]
+    [InlineData("FFMPEG_PATH")]
+    public void AVariableThatDoesNotBelongToTheWrapperNeverNamesTheSecondBinary(string variable)
+    {
+        // JELLYFIN_FFMPEG is the wrapper's own path in every documented deployment, so reading it
+        // would point the ordinary route back at this executable; FFMPEG_PATH belongs to
+        // whatever else runs on this host. Neither is a value this wrapper was given.
+        var options = OptionsFrom(
+            (FFmpegWrapperOptions.RealFFmpegEnvironmentVariable, "/config/anaglyfin/ffmpeg/ffmpeg-mvc"),
+            (variable, "/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg"));
+
+        Assert.Null(options.ServerFFmpegPath);
+        Assert.Equal("/config/anaglyfin/ffmpeg/ffmpeg-mvc", options.OrdinaryFFmpegPath);
+    }
+
     [Fact]
     public void ReadingANullEnvironmentIsAProgrammingError()
     {
         Assert.Throws<ArgumentNullException>(() => FFmpegWrapperOptions.FromEnvironment(null!));
         Assert.Throws<ArgumentNullException>(() => FFmpegWrapperOptions.ResolveRealFFmpegPath(null!));
+        Assert.Throws<ArgumentNullException>(() => FFmpegWrapperOptions.ResolveServerFFmpegPath(null!));
     }
 
     [Theory]
@@ -453,7 +581,8 @@ public sealed class FFmpegWrapperOptionsTests
                   "schemaVersion": 2,
                   "subtitleDepth": { "enabled": true, "mode": "automatic", "shiftPixels": 0, "plane": 0 },
                   "lockDirectory": "/somewhere/else",
-                  "realFFmpeg": "/bin/false"
+                  "realFFmpeg": "/bin/false",
+                  "serverFFmpeg": "/bin/echo"
                 }
                 """);
 
@@ -463,6 +592,7 @@ public sealed class FFmpegWrapperOptionsTests
 
             Assert.Equal(new SubtitleDepthSettings(true, SubtitleDepthMode.Automatic, 0, 0), configured.SubtitleDepth);
             Assert.Equal("/var/lib/anaglyfin/slots", configured.LockDirectory);
+            Assert.Null(configured.ServerFFmpegPath);
 
             // And the document does not get to set them by being the only source either: with no
             // variables, the shipped defaults stand whatever it claims.
@@ -470,6 +600,8 @@ public sealed class FFmpegWrapperOptionsTests
 
             Assert.Equal(FFmpegWrapperOptions.DefaultLockDirectory, unconfigured.LockDirectory);
             Assert.Equal(FFmpegWrapperOptions.FFmpegExecutableName, unconfigured.RealFFmpegPath);
+            Assert.Null(unconfigured.ServerFFmpegPath);
+            Assert.Equal(FFmpegWrapperOptions.FFmpegExecutableName, unconfigured.OrdinaryFFmpegPath);
             Assert.Equal(FFmpegWrapperOptions.DefaultMaxConcurrentTranscodes, unconfigured.MaxConcurrentTranscodes);
             Assert.True(unconfigured.SubtitleDepth.Enabled);
         }

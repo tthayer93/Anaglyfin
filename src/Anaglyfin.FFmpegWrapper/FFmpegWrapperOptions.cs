@@ -13,31 +13,43 @@ namespace Anaglyfin.FFmpegWrapper;
 /// <para>
 /// The wrapper is a separate process started by Jellyfin once per playback, so it has
 /// no access to the plugin's configuration, its container, or its logging. The
-/// environment is the only channel that reaches it directly, and these are the three
-/// things it needs: which real binary to hand the command to, how many Anaglyfin
-/// transcodes may run at once, and where those jobs announce themselves.
+/// environment is the only channel that reaches it directly, and these are the things it
+/// needs: which binary to hand this command to, how many Anaglyfin transcodes may run at
+/// once, and where those jobs announce themselves.
 /// </para>
 /// <para>
-/// <b>Nothing here is a path the code invents.</b> The real FFmpeg binary is always a
-/// value an administrator set, or the plain name <c>ffmpeg</c> resolved through
-/// <c>PATH</c> by the operating system; no project directory, install directory or
-/// host path is ever assumed. That is also what makes the wrapper testable: every
-/// value is a parameter, and <see cref="FromEnvironment(Func{string,string?})"/> takes
-/// the environment itself as a delegate, so a test can describe a machine without
-/// mutating the one it runs on.
+/// <b>Two binaries, and one variable for each.</b> A command that carries an Anaglyfin
+/// marker is written in features only the FFmpeg-mvc build has, so it goes to
+/// <see cref="RealFFmpegPath"/>. A command without one is the server's own, composed around
+/// the capabilities of the FFmpeg the server would have run, so it goes to
+/// <see cref="ServerFFmpegPath"/> - and when the deployment named no second binary, it goes
+/// to the first one, which is what every deployment did before that variable existed. One
+/// variable per binary, both optional in the sense that the wrapper invents nothing when
+/// either is missing.
+/// </para>
+/// <para>
+/// <b>Nothing here is a path the code invents.</b> Either binary is always a value an
+/// administrator set, or the plain name <c>ffmpeg</c> resolved through <c>PATH</c> by the
+/// operating system; no project directory, install directory or host path is ever assumed,
+/// and no variable that belongs to somebody else's configuration is read as if it had been
+/// set for this wrapper. That is also what makes the wrapper testable: every value is a
+/// parameter, and <see cref="FromEnvironment(Func{string,string?})"/> takes the environment
+/// itself as a delegate, so a test can describe a machine without mutating the one it runs
+/// on.
 /// </para>
 /// <para>
 /// <b>Bad configuration degrades to the safe default rather than to a crash.</b> The
 /// wrapper is on the path of every transcode on the server, including the ordinary
 /// ones it must not touch; a typo in <see cref="MaxConcurrentTranscodesEnvironmentVariable"/>
 /// may fail the concurrency knob, but it must not stop playback. An unusable
-/// <see cref="RealFFmpegEnvironmentVariable"/> is the exception: it is not a tuning
-/// value but the binary itself, so it is reported by
-/// <see cref="WrapperApplication"/> instead of being quietly replaced.
+/// <see cref="RealFFmpegEnvironmentVariable"/> or <see cref="ServerFFmpegEnvironmentVariable"/>
+/// is the exception: neither is a tuning value but a binary, so whichever one a command was
+/// sent to is reported by <see cref="WrapperApplication"/> instead of being quietly
+/// replaced.
 /// </para>
 /// <para>
 /// <b>Two channels, one order of precedence.</b> The environment is the deployment's channel: it
-/// names the binary and the slot directory, and - when it names one at all - the concurrency limit.
+/// names the binaries and the slot directory, and - when it names one at all - the concurrency limit.
 /// <see cref="WrapperSettingsFile"/> is the plugin's channel: it carries what the admin page owns,
 /// the subtitle depth request and the concurrency limit, and the wrapper never writes it. The two
 /// meet on the limit and nowhere else, and the environment wins there: a number written into the
@@ -63,8 +75,14 @@ public sealed record FFmpegWrapperOptions
     public const string LockDirectoryEnvironmentVariable = "ANAGLYFIN_LOCK_DIR";
 
     /// <summary>
-    /// Name of the variable naming the real FFmpeg-mvc binary the wrapper hands commands to.
+    /// Name of the variable naming the real FFmpeg-mvc binary the Anaglyfin commands are
+    /// handed to.
     /// </summary>
+    /// <remarks>
+    /// A deployment that installed only the FFmpeg-mvc build - no separate stock FFmpeg - is
+    /// the deployment where this one variable answers for every command, because an unset
+    /// <see cref="ServerFFmpegEnvironmentVariable"/> leaves ordinary commands on this binary.
+    /// </remarks>
     public const string RealFFmpegEnvironmentVariable = "ANAGLYFIN_REAL_FFMPEG";
 
     /// <summary>
@@ -74,6 +92,40 @@ public sealed record FFmpegWrapperOptions
     /// FFmpeg-mvc build is the one that already names it.
     /// </summary>
     public const string RealFFmpegAlternateEnvironmentVariable = "FFMPEG_MVC_PATH";
+
+    /// <summary>
+    /// Name of the variable naming the FFmpeg the server would have run, for the commands
+    /// Anaglyfin has no part in.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the second binary of a two-binary deployment. A command carrying an Anaglyfin
+    /// marker is written in features only the FFmpeg-mvc build has, so it needs
+    /// <see cref="RealFFmpegEnvironmentVariable"/>; a command without one is the server's own,
+    /// composed around the decoders, encoders and filters the server believes it is talking to,
+    /// so it needs the build those beliefs were read out of.
+    /// </para>
+    /// <para>
+    /// The name says whose binary it is rather than calling it <i>real</i>:
+    /// <see cref="RealFFmpegEnvironmentVariable"/> already owns that word for the FFmpeg-mvc
+    /// build, and two variables each claiming to be the real one is how a deployment ends up
+    /// handing MVC jobs to the stock build. Nor is it the server's own <c>JELLYFIN_FFMPEG</c> -
+    /// in every documented deployment that names the wrapper, so reading it here would point
+    /// the wrapper at itself.
+    /// </para>
+    /// </remarks>
+    public const string ServerFFmpegEnvironmentVariable = "ANAGLYFIN_SERVER_FFMPEG";
+
+    /// <summary>
+    /// Name accepted for the same binary as <see cref="ServerFFmpegEnvironmentVariable"/>,
+    /// for a deployment that wrote the other spelling.
+    /// </summary>
+    /// <remarks>
+    /// An alias, not a second opinion: when both are set
+    /// <see cref="ServerFFmpegEnvironmentVariable"/> decides, so the alias can only ever name
+    /// the binary, never override it.
+    /// </remarks>
+    public const string ServerFFmpegAlternateEnvironmentVariable = "ANAGLYFIN_OFFICIAL_FFMPEG";
 
     /// <summary>The bare name looked up on <c>PATH</c> when no variable names the binary.</summary>
     public const string FFmpegExecutableName = "ffmpeg";
@@ -109,7 +161,7 @@ public sealed record FFmpegWrapperOptions
     public string LockDirectory { get; init; } = DefaultLockDirectory;
 
     /// <summary>
-    /// Gets the real FFmpeg binary every command is handed to.
+    /// Gets the real FFmpeg binary an Anaglyfin command is handed to.
     /// </summary>
     /// <remarks>
     /// Either an absolute path an administrator configured, or the bare name
@@ -127,6 +179,62 @@ public sealed record FFmpegWrapperOptions
     /// an administrator has to go and fix.
     /// </remarks>
     public string RealFFmpegPathSource { get; init; } = PathLookupSource;
+
+    /// <summary>
+    /// Gets the binary a command without an Anaglyfin marker is handed to, or <c>null</c>
+    /// when the deployment named no second binary.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Unset is the compatible answer and the ordinary one: with no second binary the
+    /// wrapper does not choose one, and an ordinary command goes to
+    /// <see cref="RealFFmpegPath"/> exactly as it did before this variable existed. Use
+    /// <see cref="OrdinaryFFmpegPath"/> rather than this property, because that is where the
+    /// fallback is stated.
+    /// </para>
+    /// <para>
+    /// Read only from <see cref="ServerFFmpegEnvironmentVariable"/> and its alias - never from
+    /// the server's own <c>JELLYFIN_FFMPEG</c>, which names the wrapper, and never from another
+    /// project's <c>FFMPEG_PATH</c>. A path read out of a variable nobody set for this wrapper
+    /// is a path nobody configured.
+    /// </para>
+    /// </remarks>
+    public string? ServerFFmpegPath { get; init; }
+
+    /// <summary>
+    /// Gets where <see cref="ServerFFmpegPath"/> came from, for the wording of a refusal, or
+    /// <c>null</c> when it named nothing.
+    /// </summary>
+    public string? ServerFFmpegPathSource { get; init; }
+
+    /// <summary>
+    /// Gets whether this invocation was given a second binary at all.
+    /// </summary>
+    /// <remarks>
+    /// Blank counts as unset: a variable exported empty is a variable that names nothing, and
+    /// it would be a poor upgrade if a deployment's leftover blank setting cost it the
+    /// ordinary playbacks that worked before the variable existed.
+    /// </remarks>
+    public bool HasServerFFmpegPath => !string.IsNullOrWhiteSpace(ServerFFmpegPath);
+
+    /// <summary>
+    /// Gets the binary an ordinary command - one the rewriter passed through - is handed to.
+    /// </summary>
+    /// <remarks>
+    /// The second binary when the deployment named one, and the first one otherwise. The
+    /// fallback is deliberate: an ordinary playback of a server that installed nothing but the
+    /// FFmpeg-mvc build must not lose its playback because of a variable nobody set.
+    /// </remarks>
+    public string OrdinaryFFmpegPath => HasServerFFmpegPath ? ServerFFmpegPath! : RealFFmpegPath;
+
+    /// <summary>
+    /// Gets the source to name in a refusal about <see cref="OrdinaryFFmpegPath"/>: the second
+    /// binary's variable when there is one - the alias too, when the alias is what named it -
+    /// and the first binary's source when an ordinary command is running on it.
+    /// </summary>
+    public string OrdinaryFFmpegPathSource => HasServerFFmpegPath
+        ? ServerFFmpegPathSource ?? ServerFFmpegEnvironmentVariable
+        : RealFFmpegPathSource;
 
     /// <summary>
     /// Gets the subtitle depth this invocation was told to offer.
@@ -173,9 +281,9 @@ public sealed record FFmpegWrapperOptions
     /// </param>
     /// <returns>The options those variables describe.</returns>
     /// <remarks>
-    /// The environment is read first and completely: the binary and the slot directory are settled
-    /// before anything is opened, and the concurrency limit is read from the variable before the
-    /// document is opened, so the order of precedence in
+    /// The environment is read first and completely: the two binaries and the slot directory
+    /// are settled before anything is opened, and the concurrency limit is read from the
+    /// variable before the document is opened, so the order of precedence in
     /// <see cref="ReadMaximum"/> is the order this method reads them in. The settings
     /// document is addressed only by <see cref="WrapperSettingsFile.EnvironmentVariable"/> and is
     /// given the two values the admin page owns.
@@ -186,6 +294,7 @@ public sealed record FFmpegWrapperOptions
         ArgumentNullException.ThrowIfNull(readVariable);
 
         var (path, source) = ResolveRealFFmpeg(readVariable);
+        var (serverPath, serverSource) = ResolveServerFFmpeg(readVariable);
         var published = WrapperSettingsFile.Read(WrapperSettingsFile.ReadConfiguredPath(readVariable));
 
         return new FFmpegWrapperOptions
@@ -196,6 +305,8 @@ public sealed record FFmpegWrapperOptions
             LockDirectory = ReadLockDirectory(readVariable(LockDirectoryEnvironmentVariable)),
             RealFFmpegPath = path,
             RealFFmpegPathSource = source,
+            ServerFFmpegPath = serverPath,
+            ServerFFmpegPathSource = serverSource,
             SubtitleDepth = published.SubtitleDepth
         };
     }
@@ -242,6 +353,57 @@ public sealed record FFmpegWrapperOptions
         // failure the operating system's - "no such file or directory" - rather than a
         // guess about where FFmpeg might have been installed.
         return (FindOnPath(readVariable) ?? FFmpegExecutableName, PathLookupSource);
+    }
+
+    /// <summary>
+    /// Resolves the second FFmpeg binary - the one ordinary commands are handed to - from an
+    /// environment view, together with the name of the variable that stated it.
+    /// </summary>
+    /// <param name="readVariable">Reads one environment variable; null when it is not set.</param>
+    /// <returns>
+    /// The configured path and its source, or <c>(null, null)</c> when no variable named a
+    /// second binary.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The order is <see cref="ServerFFmpegEnvironmentVariable"/> then its alias
+    /// <see cref="ServerFFmpegAlternateEnvironmentVariable"/>, and nothing after that. Unlike
+    /// <see cref="ResolveRealFFmpeg"/>, an environment that names nothing is answered with
+    /// nothing rather than with a lookup: there is no second binary to guess at, and the caller
+    /// that has to say which variable was wrong needs the source back unchanged.
+    /// </para>
+    /// <para>
+    /// Two variables are deliberately not consulted. The server's <c>JELLYFIN_FFMPEG</c> is the
+    /// one a deployment sets to the wrapper itself, so reading it here would make every ordinary
+    /// playback a wrapper starting a wrapper; another project's <c>FFMPEG_PATH</c> is a value this
+    /// wrapper was never given. A deployment that wants ordinary commands on a particular binary
+    /// states it in the variable that exists for that.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="readVariable"/> is null.</exception>
+    public static (string? Path, string? Source) ResolveServerFFmpegPath(Func<string, string?> readVariable)
+        => ResolveServerFFmpeg(readVariable);
+
+    /// <summary>
+    /// Resolves the second FFmpeg binary together with the name of its source.
+    /// </summary>
+    private static (string? Path, string? Source) ResolveServerFFmpeg(Func<string, string?> readVariable)
+    {
+        ArgumentNullException.ThrowIfNull(readVariable);
+
+        var configured = ReadNonBlank(readVariable(ServerFFmpegEnvironmentVariable));
+        if (configured is not null)
+        {
+            return (configured, ServerFFmpegEnvironmentVariable);
+        }
+
+        var alias = ReadNonBlank(readVariable(ServerFFmpegAlternateEnvironmentVariable));
+        if (alias is not null)
+        {
+            return (alias, ServerFFmpegAlternateEnvironmentVariable);
+        }
+
+        return (null, null);
     }
 
     /// <summary>

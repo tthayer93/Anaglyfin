@@ -31,6 +31,16 @@ namespace Anaglyfin.FFmpegWrapper;
 /// prevent, and it would do it while reporting success.
 /// </para>
 /// <para>
+/// <b>Two binaries, and the rewrite already says which one.</b> A rewritten command is written
+/// in features only the FFmpeg-mvc build has - view selection, the depth filter - so it is
+/// handed to the build the deployment named as the real one. A passed-through command is the
+/// server's own, composed around the decoders, encoders and filters the server believes it is
+/// talking to, so it is handed to the FFmpeg the server would have run. The discriminator is
+/// the same one the slot uses, and a deployment that named no second binary keeps the single
+/// answer it always had: both routes are the same path. Whichever one is chosen gets the same
+/// check before it is started, and a refusal about it names the variable that chose it.
+/// </para>
+/// <para>
 /// <b>What reaches the log.</b> A refusal says which rule the command broke and what the
 /// administrator can change, and nothing else. Argument vectors are never echoed - they
 /// arrive from a playback request, and the rewriter's own contract is that a refusal names
@@ -59,9 +69,9 @@ public sealed class WrapperApplication
     public const int ExitCodeConcurrencyLimitReached = 75;
 
     /// <summary>
-    /// Exit code when the configured FFmpeg binary could not be executed - absent, not
-    /// executable, or the wrapper pointing at itself. <c>127</c> because it is the code a
-    /// shell gives "the command you configured is not there".
+    /// Exit code when the FFmpeg binary this command was to be handed to could not be
+    /// executed - absent, not executable, or a variable pointing at the wrapper. <c>127</c>
+    /// because it is the code a shell gives "the command you configured is not there".
     /// </summary>
     public const int ExitCodeRealFFmpegNotStarted = 127;
 
@@ -168,15 +178,19 @@ public sealed class WrapperApplication
             Report($"warning: {warning}");
         }
 
-        if (!TryRealFFmpegPath(out var realFFmpegPath, out var reason))
+        // Only an Anaglyfin job is counted. A passed-through command is ordinary playback,
+        // and the limit is a budget for MVC encoding, not a gate on the server's traffic.
+        // The same answer decides the binary: an Anaglyfin job needs the build its command
+        // was written for, and an ordinary command needs the one the server wrote its command
+        // around.
+        var takesSlot = rewrite.Status == WrapperRewriteStatus.Rewritten;
+
+        if (!TrySelectedFFmpegPath(takesSlot, out var ffmpegPath, out var reason))
         {
             Report($"refused: {reason}");
             return ExitCodeRealFFmpegNotStarted;
         }
 
-        // Only an Anaglyfin job is counted. A passed-through command is ordinary playback,
-        // and the limit is a budget for MVC encoding, not a gate on the server's traffic.
-        var takesSlot = rewrite.Status == WrapperRewriteStatus.Rewritten;
         if (takesSlot && !_guard.TryAcquire())
         {
             Report(ConcurrencyRefusal());
@@ -185,7 +199,7 @@ public sealed class WrapperApplication
 
         try
         {
-            return StartRealFFmpeg(realFFmpegPath, rewrite);
+            return StartFFmpeg(ffmpegPath, rewrite);
         }
         finally
         {
@@ -200,16 +214,16 @@ public sealed class WrapperApplication
     }
 
     /// <summary>
-    /// Starts the real binary and turns a failed start into a refusal.
+    /// Starts the selected binary and turns a failed start into a refusal.
     /// </summary>
-    /// <param name="realFFmpegPath">The configured binary.</param>
+    /// <param name="ffmpegPath">The binary this command was sent to.</param>
     /// <param name="rewrite">The decision whose vector to run.</param>
     /// <returns>The exit code of the process that ran.</returns>
-    private int StartRealFFmpeg(string realFFmpegPath, WrapperRewriteResult rewrite)
+    private int StartFFmpeg(string ffmpegPath, WrapperRewriteResult rewrite)
     {
         try
         {
-            return _launcher.Launch(realFFmpegPath, rewrite.Arguments);
+            return _launcher.Launch(ffmpegPath, rewrite.Arguments);
         }
         catch (Win32Exception exception)
         {
@@ -230,55 +244,103 @@ public sealed class WrapperApplication
     }
 
     /// <summary>
-    /// Checks that the configured binary is a file this process could execute.
+    /// Checks that the binary this command is sent to is a file this process could execute.
     /// </summary>
-    /// <param name="realFFmpegPath">The binary to start, when the check passes.</param>
+    /// <param name="isAnaglyfinJob">
+    /// Whether the decided command is an Anaglyfin job, which is what picks the binary.
+    /// </param>
+    /// <param name="ffmpegPath">The binary to start, when the check passes.</param>
     /// <param name="reason">Why it may not be started, when the check fails.</param>
-    /// <returns><c>true</c> when the configured binary is usable.</returns>
+    /// <returns><c>true</c> when the selected binary is usable.</returns>
     /// <remarks>
     /// <para>
-    /// A bare name is left to the operating system, because only the operating system
-    /// knows how it resolves one; a path is checked here, so that the misconfiguration
-    /// surfaces as one attributable line in the transcode log rather than as a
+    /// The same three questions are put to whichever binary was selected, because a second
+    /// binary buys nothing if one of them can now be got wrong in a new way: a bare name is
+    /// left to the operating system, because only the operating system knows how it resolves
+    /// one, and a path is checked here, so that the misconfiguration surfaces as one
+    /// attributable line in the transcode log rather than as a
     /// <see cref="Win32Exception"/> from a child process nobody started.
     /// </para>
     /// <para>
-    /// The self-check matters more than it looks: the wrapper is deployed under the name
-    /// the server expects for FFmpeg, so a variable pointing back at that name would make
-    /// every playback fork another wrapper, forever.
+    /// The self-check matters more than it looks, and matters twice: the wrapper is deployed
+    /// under the name the server expects for FFmpeg, so a variable pointing back at that name
+    /// would make every playback fork another wrapper, forever - including an ordinary
+    /// playback, which is the playback the second variable was added to protect.
     /// </para>
     /// </remarks>
-    private bool TryRealFFmpegPath(out string realFFmpegPath, out string reason)
+    private bool TrySelectedFFmpegPath(bool isAnaglyfinJob, out string ffmpegPath, out string reason)
     {
-        realFFmpegPath = _options.RealFFmpegPath;
+        var route = RouteFor(isAnaglyfinJob);
 
-        if (realFFmpegPath.Length == 0)
+        ffmpegPath = route.Path;
+
+        if (ffmpegPath.Length == 0)
         {
-            reason = $"no FFmpeg binary is configured; set {FFmpegWrapperOptions.RealFFmpegEnvironmentVariable}.";
+            reason = $"no FFmpeg binary is configured; set {route.Variable}.";
             return false;
         }
 
-        var isSelf = IsWrapperItself(realFFmpegPath);
-        var isMissing = Path.IsPathRooted(realFFmpegPath) && !File.Exists(realFFmpegPath);
+        var isSelf = IsWrapperItself(ffmpegPath);
+        var isMissing = Path.IsPathRooted(ffmpegPath) && !File.Exists(ffmpegPath);
 
         if (isSelf)
         {
             reason =
-                $"the FFmpeg binary named by {_options.RealFFmpegPathSource} is the wrapper itself; "
-                + $"point {FFmpegWrapperOptions.RealFFmpegEnvironmentVariable} at the real FFmpeg-mvc build.";
+                $"the FFmpeg binary named by {route.Source} is the wrapper itself; "
+                + $"point {route.Variable} at {route.Target}.";
             return false;
         }
 
         if (isMissing)
         {
             reason =
-                $"the FFmpeg binary named by {_options.RealFFmpegPathSource} ('{Path.GetFileName(realFFmpegPath)}') "
+                $"the FFmpeg binary named by {route.Source} ('{Path.GetFileName(ffmpegPath)}') "
                 + "is not an existing file.";
             return false;
         }
 
         reason = string.Empty;
         return true;
+    }
+
+    /// <summary>
+    /// The binary one decided command goes to, and the names to use if it turns out not to be
+    /// a binary.
+    /// </summary>
+    /// <param name="isAnaglyfinJob">Whether the command carries an Anaglyfin profile.</param>
+    /// <returns>The binary to start, with the wording a refusal about it needs.</returns>
+    /// <remarks>
+    /// <para>
+    /// An Anaglyfin command is a command written in the FFmpeg-mvc build's own features, so it
+    /// goes to the build <see cref="FFmpegWrapperOptions.RealFFmpegEnvironmentVariable"/> names
+    /// whatever else is installed. An ordinary command is the server's own, composed around the
+    /// capabilities the server read off its FFmpeg, so it goes to the build the server would
+    /// have run - when the deployment named one.
+    /// </para>
+    /// <para>
+    /// A deployment that named no second binary gets this decision as the single binary it
+    /// already had: path, source and wording all the first binary's, so an upgrade costs it
+    /// neither a playback nor a log line it has to learn to read.
+    /// </para>
+    /// </remarks>
+    private FFmpegRoute RouteFor(bool isAnaglyfinJob)
+    {
+        if (!isAnaglyfinJob && _options.HasServerFFmpegPath)
+        {
+            // The source names the variable this server actually set, alias included, and a
+            // refusal has to name that one.
+            var source = _options.OrdinaryFFmpegPathSource;
+
+            return new FFmpegRoute(_options.OrdinaryFFmpegPath, source, source, "the FFmpeg the server would otherwise run");
+        }
+
+        // An Anaglyfin job, and an ordinary command of a deployment that named no second
+        // binary: the same binary, the same variable, and the same sentence about it.
+        return new FFmpegRoute(
+            _options.RealFFmpegPath,
+            _options.RealFFmpegPathSource,
+            FFmpegWrapperOptions.RealFFmpegEnvironmentVariable,
+            "the real FFmpeg-mvc build");
     }
 
     /// <summary>
@@ -452,4 +514,23 @@ public sealed class WrapperApplication
         return Path.GetFileNameWithoutExtension(token)
             .StartsWith(FFmpegWrapperOptions.FFmpegExecutableName, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// The binary one command is handed to, described the way a refusal about it has to
+    /// describe it.
+    /// </summary>
+    /// <param name="Path">The configured path or bare name.</param>
+    /// <param name="Source">
+    /// Where that value came from - a variable name, or the fact that the host's search
+    /// named it - which is what the refusal says named the binary.
+    /// </param>
+    /// <param name="Variable">
+    /// The variable an administrator has to go and set, which is the source when a variable
+    /// was the source.
+    /// </param>
+    /// <param name="Target">
+    /// What that variable is supposed to name, so the refusal is an instruction and not only a
+    /// complaint.
+    /// </param>
+    private readonly record struct FFmpegRoute(string Path, string Source, string Variable, string Target);
 }
