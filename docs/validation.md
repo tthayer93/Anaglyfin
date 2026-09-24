@@ -83,7 +83,7 @@ so that a `FAIL` on the real server is a finding about Anaglyfin and not about t
   ```text
   name: Anaglyfin
   guid: c7f4a1d9-3b58-4e2a-9d6c-84f0b1e5a723
-  version: 0.1.0
+  version: 0.2.0
   targetAbi: 12.0.0
   framework: net10.0
   ```
