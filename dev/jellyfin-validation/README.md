@@ -207,8 +207,9 @@ sh harness.sh ffprobe
 
 copies the image's own `ffprobe` into `/config/anaglyfin/ffmpeg/`, which is where the
 server will look, and is the same thing `docs/install.md` tells you to do on a real
-server - where you would copy the `ffprobe` from the FFmpeg-mvc build you mounted, so
-that probing and decoding come from one build. Restart after this step.
+server - there too you copy the **official** `ffprobe`, from the stock FFmpeg the server
+runs ordinary playback on, *not* the one the FFmpeg-mvc build produced (the custom build
+does build an `ffprobe`; installing it beside the wrapper is wrong). Restart after this step.
 
 ## Step 5 - library scan over `/media`
 
@@ -405,13 +406,14 @@ minute - is the evidence. `sh harness.sh collect` puts them in one directory.
 <details>
 <summary>What "works" means without an FFmpeg-mvc build</summary>
 
-The harness default points `ANAGLYFIN_REAL_FFMPEG` at the FFmpeg the image ships, which
-cannot decode MVC. Steps 2, 4, 8's marker-transport half and all of step 9 are valid
-anyway, because they are about plumbing and not about pixels; the converted profile will
+The harness default points both `ANAGLYFIN_REAL_FFMPEG` and `ANAGLYFIN_SERVER_FFMPEG` at the FFmpeg
+the image ships, which cannot decode MVC. Steps 2, 4, 8's marker-transport half and all of step 9 are
+valid anyway, because they are about plumbing and not about pixels; the converted profile will
 fail at the decoder, and that failure is a correct observation about a stock FFmpeg.
 
-To watch a real profile render, mount an FFmpeg-mvc build and point the wrapper at it.
-Both halves:
+To watch a real profile render, mount an FFmpeg-mvc build and point the wrapper's *marker* route at
+it - leaving the *server* route on the image's own FFmpeg, which is what ordinary commands and the
+startup probes should keep using. Both halves:
 
 ```yaml
 # compose.jellyfin.yml, under jellyfin.volumes
@@ -419,9 +421,11 @@ Both halves:
 ```
 
 ```sh
-# .env: the path inside the container, and its ffprobe beside the wrapper too
+# .env: point the marker route at the mounted build; keep ordinary commands + probes on the stock
+# FFmpeg, and remember ffprobe beside the wrapper is the OFFICIAL one (sh harness.sh ffprobe).
 HARNESS_FFMPEG_MVC=/path/to/ffmpeg-mvc-n8.1.2-mvc3-jf4
 HARNESS_REAL_FFMPEG=/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
+HARNESS_SERVER_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
 ```
 
 </details>

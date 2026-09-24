@@ -34,6 +34,7 @@ CONFIG_DIR="${HARNESS_CONFIG_DIR:-./jellyfin/config}"
 CACHE_DIR="${HARNESS_CACHE_DIR:-./jellyfin/cache}"
 MEDIA_DIR="${HARNESS_MEDIA_DIR:-./media}"
 REAL_FFMPEG="${HARNESS_REAL_FFMPEG:-/usr/lib/jellyfin-ffmpeg/ffmpeg}"
+SERVER_FFMPEG="${HARNESS_SERVER_FFMPEG:-/usr/lib/jellyfin-ffmpeg/ffmpeg}"
 LOCK_DIR="${HARNESS_LOCK_DIR:-/tmp/anaglyfin/ffmpeg-wrapper}"
 MAX_JOBS="${HARNESS_MAX_CONCURRENT_TRANSCODES:-1}"
 WEB_PORT="${HARNESS_WEB_PORT:-8096}"
@@ -138,8 +139,9 @@ preflight() {
     say "config         $(path_pair "$CONFIG_DIR") -> /config"
     say "cache          $(path_pair "$CACHE_DIR")  -> /cache"
     say "media          $(path_pair "$MEDIA_DIR")  -> /media"
-    say "ffmpeg target  ANAGLYFIN_FFMPEG (in container) = ${HARNESS_JELLYFIN_FFMPEG:-/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg}"
-    say "real ffmpeg    ANAGLYFIN_REAL_FFMPEG (in container) = $REAL_FFMPEG"
+    say "ffmpeg target  JELLYFIN_FFMPEG (in container) = ${HARNESS_JELLYFIN_FFMPEG:-/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg}"
+    say "marker ffmpeg  ANAGLYFIN_REAL_FFMPEG (in container) = $REAL_FFMPEG"
+    say "server ffmpeg  ANAGLYFIN_SERVER_FFMPEG (in container) = $SERVER_FFMPEG"
     say "lock dir       ANAGLYFIN_LOCK_DIR (in container) = $LOCK_DIR"
     say "max transcodes ANAGLYFIN_MAX_CONCURRENT_TRANSCODES = $MAX_JOBS"
     [ -n "${HARNESS_QSV:-}" ] && [ "$HARNESS_QSV" != "0" ] && say "qsv overlay    on (/dev/dri)"
@@ -235,11 +237,13 @@ case "${1:-help}" in
         ;;
     ffprobe)
         # Jellyfin looks for ffprobe next to the FFmpeg it was given, which is the
-        # wrapper's directory, so that directory has to hold one. Copy the image's own
-        # - or the matching build's, when an FFmpeg-mvc build is mounted, by naming its
-        # ffprobe inside the container:  sh harness.sh ffprobe /opt/anaglyfin/ffmpeg-mvc/ffprobe
-        # The target is refused as a source, and the copy is staged through a temporary
-        # file, so a bad source cannot leave the wrapper directory without an ffprobe.
+        # wrapper's directory, so that directory has to hold one. Copy the image's OWN
+        # (official) ffprobe - that is the default search below, and it is what a real
+        # deployment copies too. Do NOT copy the FFmpeg-mvc build's ffprobe here: the
+        # server probes through this one on the stock FFmpeg's terms, and the custom build
+        # does build an ffprobe that must not be installed beside the wrapper. The target is
+        # refused as a source, and the copy is staged through a temporary file, so a bad
+        # source cannot leave the wrapper directory without an ffprobe.
         shift
         src="${1:-}"
         # Quoted for the container's shell, which is the one that reads these paths.
@@ -278,7 +282,7 @@ case "${1:-help}" in
         mkdir -p -- "$out" || die "could not create $out"
         compose logs --no-color --timestamps >"$out/jellyfin-container.log" 2>&1
         compose exec -T jellyfin sh -c \
-            'ls -l /config/plugins/Anaglyfin /config/anaglyfin/ffmpeg; echo; ls -l /usr/lib/jellyfin-ffmpeg 2>/dev/null; echo; echo "JELLYFIN_FFMPEG=$JELLYFIN_FFMPEG"; echo "ANAGLYFIN_REAL_FFMPEG=$ANAGLYFIN_REAL_FFMPEG"; echo "ANAGLYFIN_LOCK_DIR=$ANAGLYFIN_LOCK_DIR"; echo "ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=$ANAGLYFIN_MAX_CONCURRENT_TRANSCODES"' \
+            'ls -l /config/plugins/Anaglyfin /config/anaglyfin/ffmpeg; echo; ls -l /usr/lib/jellyfin-ffmpeg 2>/dev/null; echo; echo "JELLYFIN_FFMPEG=$JELLYFIN_FFMPEG"; echo "ANAGLYFIN_REAL_FFMPEG=$ANAGLYFIN_REAL_FFMPEG"; echo "ANAGLYFIN_SERVER_FFMPEG=$ANAGLYFIN_SERVER_FFMPEG"; echo "ANAGLYFIN_LOCK_DIR=$ANAGLYFIN_LOCK_DIR"; echo "ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=$ANAGLYFIN_MAX_CONCURRENT_TRANSCODES"' \
             >"$out/inside-container.txt" 2>&1
         compose exec -T jellyfin sh -c \
             'for p in /proc/[0-9]*; do printf "%s " "${p##*/}"; tr "\0" " " < "$p/cmdline" 2>/dev/null; echo; done' \

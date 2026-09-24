@@ -186,6 +186,53 @@ else
     skip "no FFmpeg at ${IMAGE_FFMPEG}; discover the real path with the commands in README.md step 4 and set HARNESS_REAL_FFMPEG"
 fi
 
+# 8. Two-binary dispatch: with ANAGLYFIN_SERVER_FFMPEG and ANAGLYFIN_REAL_FFMPEG naming two
+#    DIFFERENT fakes, an ordinary vector must reach the server binary and a marker vector must
+#    reach the FFmpeg-mvc binary. Each fake prints a tag naming which route it is, so the
+#    observable is "which child ran", not just "did the child run". This is the docs' dispatch
+#    contract at the wrapper seam; only a real server shows it arriving through Jellyfin.
+cbin="${ANAGLYFIN_CHECK_TMP:-/tmp/anaglyfin-check}"
+mkdir -p "$cbin" 2>/dev/null || cbin=$(mktemp -d 2>/dev/null) || cbin=/tmp
+printf '#!/bin/sh\necho "SERVER-ROUTE $*"\n' > "$cbin/srv-ffmpeg" 2>/dev/null
+printf '#!/bin/sh\necho "MVC-ROUTE $*"\n'    > "$cbin/mvc-ffmpeg" 2>/dev/null
+chmod 0755 "$cbin/srv-ffmpeg" "$cbin/mvc-ffmpeg" 2>/dev/null
+if [ -x "$cbin/srv-ffmpeg" ] && [ -x "$cbin/mvc-ffmpeg" ]; then
+    out=$(ANAGLYFIN_SERVER_FFMPEG="$cbin/srv-ffmpeg" ANAGLYFIN_REAL_FFMPEG="$cbin/mvc-ffmpeg" \
+        ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin-check "$WRAPPER" $ORDINARY 2>&1)
+    rc=$?
+    case "$out" in
+        SERVER-ROUTE\ *)
+            ok 'an ordinary command was dispatched to ANAGLYFIN_SERVER_FFMPEG' ;;
+        *)
+            bad "an ordinary command did not reach the server binary (exit ${rc}): $(printf '%s' "$out" | head -n 1)" ;;
+    esac
+
+    out=$(ANAGLYFIN_SERVER_FFMPEG="$cbin/srv-ffmpeg" ANAGLYFIN_REAL_FFMPEG="$cbin/mvc-ffmpeg" \
+        ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin-check "$WRAPPER" \
+        -hide_banner -i "$MARKER" -c:v libx264 -f segment out.m3u8 2>&1)
+    rc=$?
+    case "$out" in
+        MVC-ROUTE\ *)
+            ok 'a marker command was dispatched to ANAGLYFIN_REAL_FFMPEG (not the server binary)' ;;
+        *)
+            bad "a marker command did not reach the FFmpeg-mvc binary (exit ${rc}): $(printf '%s' "$out" | head -n 1)" ;;
+    esac
+
+    # No server binary named => ordinary command falls back to the real binary (single-binary).
+    # Blank it explicitly so an ANAGLYFIN_SERVER_FFMPEG leaking in from the ambient environment
+    # cannot decide this leg; the wrapper treats a blank value as unset.
+    out=$(ANAGLYFIN_SERVER_FFMPEG= ANAGLYFIN_REAL_FFMPEG="$cbin/mvc-ffmpeg" \
+        ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin-check "$WRAPPER" $ORDINARY 2>&1)
+    case "$out" in
+        MVC-ROUTE\ *)
+            ok 'with ANAGLYFIN_SERVER_FFMPEG blank/unset, an ordinary command falls back to ANAGLYFIN_REAL_FFMPEG' ;;
+        *)
+            bad "single-binary fallback lost: $(printf '%s' "$out" | head -n 1)" ;;
+    esac
+else
+    skip "could not stage the two fake binaries under $cbin"
+fi
+
 note ''
 if [ "$failures" -eq 0 ]; then
     note "OK: the wrapper artifact runs and decides correctly in this image (${skips} check(s) skipped)"

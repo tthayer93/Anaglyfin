@@ -58,16 +58,22 @@ switched on from the admin settings page.
   settings (QSV, VA-API on Intel hosts); MVC decode itself is software, and
   ordinary 2D playback keeps its hardware decode.
 - Ordinary Jellyfin playback is untouched: commands that carry no Anaglyfin
-  version reach the real FFmpeg exactly as the server wrote them.
-- One configurable limit on concurrent Anaglyfin transcodes; a second version
-  requested past the limit is refused with a message that says how to raise it.
+  version - and Jellyfin's startup capability probes - reach the server's own
+  FFmpeg exactly as the server wrote them, while only the marker/profile
+  commands reach the FFmpeg-mvc build. See
+  [docs/install.md](docs/install.md) and the `ANAGLYFIN_SERVER_FFMPEG` variable.
+- One configurable limit on concurrent Anaglyfin transcodes (default `1`); a
+  second version requested past the limit is refused with a message that says
+  how to raise it. A slot left by a wrapper that died is taken over on its own
+  once the process that claimed it is gone, so slot files do not have to be
+  cleared by hand after a crash or a restart.
 
 ## Requirements
 
 | Item | Need |
 | --- | --- |
 | Jellyfin | 12 (`12.0.0`) |
-| FFmpeg runtime | `anaglyfin-ffmpeg`, an [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build, and its matching `ffprobe`, placed by [docs/install.md](docs/install.md) - the plugin never bundles or installs them |
+| FFmpeg runtime | `anaglyfin-ffmpeg` (the wrapper), an [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build for the marker/profile commands, and the `ffprobe` from the **official** Jellyfin FFmpeg placed beside the wrapper (not the FFmpeg-mvc one), placed by [docs/install.md](docs/install.md) - the plugin never bundles or installs them. Ordinary playback and the server's capability probes run on the stock FFmpeg the server would otherwise use, named by `ANAGLYFIN_SERVER_FFMPEG` |
 | Docker + Intel QSV/VA-API hardware encode | the host GPU mapped into the container (`/dev/dri`); software encoding needs no device mapping |
 
 ## Install
@@ -104,11 +110,20 @@ the deployment settings come from the server environment. Required:
 
 Optional:
 
+- `ANAGLYFIN_SERVER_FFMPEG` - the stock FFmpeg the server would otherwise run
+  (on Docker, the image's own `/usr/lib/jellyfin-ffmpeg/ffmpeg`). Ordinary
+  commands and Jellyfin's startup capability probes are dispatched to it, so a
+  codec or tone-mapping tool the server probes for is available to the commands
+  that expect it; marker/profile commands still go to the `ffmpeg-mvc` binary
+  named by `ANAGLYFIN_REAL_FFMPEG`. Unset or blank leaves the older single-binary
+  behaviour in place, where every command - ordinary and marker alike - goes to
+  `ANAGLYFIN_REAL_FFMPEG`. (`ANAGLYFIN_OFFICIAL_FFMPEG` is accepted as an alias
+  for the same value; prefer `ANAGLYFIN_SERVER_FFMPEG` as the one canonical name.)
 - `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES` - overrides the admin page's concurrency
   limit for wrapper processes that receive it
 - `ANAGLYFIN_SLOT_WAIT_MS` - how long a wrapper keeps trying to take a concurrency
   slot before it refuses the playback with exit code `75`; `0` refuses as soon as
-  every slot looks taken
+  every slot looks taken. Default `2000` ms, accepted range `0`-`30000`.
 
 Values and the procedure for both server shapes are in
 [docs/install.md](docs/install.md).
