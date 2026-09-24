@@ -7,12 +7,14 @@ Jellyfin plugin process                         FFmpeg child boundary
 ------------------------------------            --------------------------------------
 profile catalog + admin settings                Anaglyfin.FFmpegWrapper
 MVC detection                                         |
-media source provider                                 v
-profile marker construction                     real FFmpeg-mvc binary
+media source provider                     marker/profile? |yes -> FFmpeg-mvc (ANAGLYFIN_REAL_FFMPEG)
+profile marker construction                         |no -> server FFmpeg (ANAGLYFIN_SERVER_FFMPEG)
 ```
 
-The plugin process decides **what versions exist**. The wrapper decides **what command the
-real FFmpeg should run** when a user picks one of those versions.
+The plugin process decides **what versions exist**. The wrapper decides **which FFmpeg should run
+what command** when a user picks one of those versions - the FFmpeg-mvc build for a rewritten
+Anaglyfin command, the server's own FFmpeg for everything else (falling back to the single binary
+when `ANAGLYFIN_SERVER_FFMPEG` is unset).
 
 ## Playback flow
 
@@ -42,8 +44,22 @@ real FFmpeg should run** when a user picks one of those versions.
    - refuses unsafe or unsupported command shapes.
 10. For a rewritten Anaglyfin command, `WrapperConcurrencyGuard` takes one slot before the
     real FFmpeg is started.
-11. `FFmpegProcessLauncher` starts the real FFmpeg-mvc binary with no shell and inherited
+11. `FFmpegProcessLauncher` starts the chosen binary with no shell and inherited
     stdin/stdout/stderr.
+
+The chosen binary is decided by the same rewrite status that decides the slot (see "Two binaries,
+one rewrite status" under Major pieces):
+
+- A **rewritten** command — a marker/profile job — is written in features only the FFmpeg-mvc build
+  has (`-view_ids`, the depth filter), so it is launched on `ANAGLYFIN_REAL_FFMPEG`, the FFmpeg-mvc
+  binary, and it takes one concurrency slot.
+- A **passed-through** command — ordinary playback, and Jellyfin's startup capability probes — is the
+  server's own command, composed around the codecs, encoders and filters the server read off its
+  FFmpeg, so it is launched on `ANAGLYFIN_SERVER_FFMPEG`, the stock FFmpeg the server would otherwise
+  run. It takes no slot.
+- When the deployment named no `ANAGLYFIN_SERVER_FFMPEG`, both routes are the one binary the
+  deployment has always used (`ANAGLYFIN_REAL_FFMPEG`): the single-binary behaviour is unchanged, so
+  upgrading costs an existing server neither a playback nor a new variable to set.
 
 The list step 6 picks from is not assembled here: it is the server's media source manager answering
 the item, and Anaglyfin's only edit to it is the read filter behind `Offer original 3D MVC version`
@@ -69,9 +85,24 @@ untouched.
 | `WrapperSettingsFile` | Settings document crossing the plugin/wrapper boundary |
 | `WrapperSettingsPublicationService` | Writes that document at plugin startup; `Plugin` rewrites it on save |
 | `Anaglyfin.FFmpegWrapper` | Out-of-process executable started by Jellyfin |
-| `WrapperApplication` | Wrapper outcome, exit codes, diagnostics, slot use |
+| `WrapperApplication` | Wrapper outcome, exit codes, diagnostics, per-command binary selection, slot use |
 | `WrapperConcurrencyGuard` | File-slot concurrency limit for Anaglyfin jobs |
-| `FFmpegProcessLauncher` | Starts real FFmpeg through argv, not a shell |
+| `FFmpegProcessLauncher` | Starts the selected FFmpeg through argv, not a shell |
+
+### Two binaries, one rewrite status
+
+The wrapper is a two-binary dispatcher and the rewrite already says which half a command is (the
+same `Rewritten` vs `PassedThrough` answer that decides whether a concurrency slot is taken):
+
+| Rewrite status | Command | Launched on | Takes a slot? |
+| --- | --- | --- | --- |
+| `Rewritten` | Anaglyfin marker/profile job | `ANAGLYFIN_REAL_FFMPEG` (FFmpeg-mvc) | Yes |
+| `PassedThrough` | Ordinary playback and Jellyfin's capability probes | `ANAGLYFIN_SERVER_FFMPEG` (the server's stock FFmpeg), falling back to `ANAGLYFIN_REAL_FFMPEG` when unset | No |
+
+Whichever path is chosen gets the same self-check before it starts: a bare name is left to the
+operating system, a rooted path must exist, and a variable that points back at the wrapper is
+refused rather than forked — the second binary is checked exactly as hard as the first, and a refusal
+names the variable that selected it. See "Current deployment assumptions" for the variable contract.
 
 ## Which default applies
 
@@ -267,6 +298,19 @@ build `docs/install.md` compiles adds `--enable-vaapi` and `--enable-libvpl` for
 Anaglyfin names no encoder, never forces `libx264`, and takes whatever the server's settings select
 out of whatever binary the server was handed.
 
+**Capability inversion (a consequence of the split, to check rather than to code around).** Once
+ordinary commands and the startup probes reach `ANAGLYFIN_SERVER_FFMPEG`, `SupportsEncoder` and the
+`decoders`/`encoders`/filters/hwaccel lists the server reads are the **official** build's, not the
+FFmpeg-mvc build's. The server can therefore select an encoder or a tone-mapping filter for a marker
+job — `libx265`, `libvpx`, `libopus`, `tonemap_opencl` — that a minimal FFmpeg-mvc build does not
+carry, and that job then runs on the build whose `SupportsEncoder` was never consulted. The
+mitigation is build-flag parity plus a diff of `ffmpeg-mvc -encoders` against the official `-encoders`
+(see `docs/install.md` §3.1 step 9); the wrapper deliberately does **not** learn to probe encoders,
+because the rewrite has no business second-guessing the server's codec choice. For the documented
+QSV/VA-API H.264 flow the `n8.1.2-mvc7-jf4` build already matches what the server selects. The
+dashboard's FFmpeg version line is likewise the **official** banner now; only `mvcsubdepth` and
+`-view_ids` still require the mvc build.
+
 Nothing at all is taken off a command for a **decode**. The server attaches an accelerator to an input
 per reported codec, writing that choice in front of the input's `-i` (`-hwaccel`,
 `-hwaccel_output_format`, `-hwaccel_device`, `-hwaccel_args`, `-hwaccel_flags`), and it opens the
@@ -406,15 +450,38 @@ escaped the same way it was found.
   installs separately - it is never bundled in or installed by the plugin (`docs/install.md`).
 - The deployment installs a Jellyfin-compatible FFmpeg-mvc build and names it to the entry point
   through `ANAGLYFIN_REAL_FFMPEG` or `FFMPEG_MVC_PATH`, with plain `ffmpeg` on `PATH` only as a
-  fallback.
+  fallback. This binary receives the rewritten marker/profile commands.
+- The deployment may name a second binary - `ANAGLYFIN_SERVER_FFMPEG` (alias
+  `ANAGLYFIN_OFFICIAL_FFMPEG`; prefer the first name) - the stock FFmpeg the server would otherwise
+  run. Ordinary commands and the server's startup capability probes are dispatched to it; when it is
+  unset or blank, ordinary commands fall back to `ANAGLYFIN_REAL_FFMPEG`, which is the single-binary
+  behaviour every deployment had before this variable existed. It is read from those two variables
+  only - never from the server's own `JELLYFIN_FFMPEG` (which names the wrapper) nor another
+  project's `FFMPEG_PATH`.
+- The `ffprobe` beside the entry point is the **official** Jellyfin `ffprobe`, not the FFmpeg-mvc
+  build's own, because the server resolves `ffprobe` from the entry point's directory and probes
+  through it on the stock FFmpeg's terms.
 - The wrapper lock directory must be shared by every wrapper process that should share one
   Anaglyfin concurrency limit.
 - `ANAGLYFIN_WRAPPER_SETTINGS` names one settings document shared by the plugin and every wrapper
   process that should see the admin page's subtitle-depth request or concurrency limit. The plugin
   writes schema version 2; the wrapper also reads schema version 1, which carries the depth request
   but no concurrency limit.
-- The concurrency limit is resolved per wrapper invocation in this order: valid
-  `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES`, then the settings document, then the shipped default.
+- The concurrency limit defaults to `1` and is resolved per wrapper invocation in this order: valid
+  `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES`, then the settings document, then the shipped default. Only
+  marker/profile jobs take a slot; ordinary commands take none.
+- A slot whose owner is provably gone is taken over at any age - the file opens exclusively (nobody
+  holds it) and its recorded owner is dead, either by process id or by a boot identifier (`boot=`)
+  that names a different instance - so a leftover from a crash or a container restart does not have
+  to be cleared by hand. A mark that proves nothing is kept only for the 24-hour abandon window, and
+  a slot whose owner is still a live process (or from a foreign boot, never judged against this
+  machine's ids) is never taken over.
+- Before refusing over a full limit the wrapper waits a bounded, short while (default `2000` ms,
+  polled at 250 ms, configurable through `ANAGLYFIN_SLOT_WAIT_MS` in the range `0`-`30000`, `0`
+  refusing at once) to absorb one encoder handing over to the next; the wait never queues an FFmpeg
+  nor raises the limit.
+- A shared `ANAGLYFIN_LOCK_DIR` must be mounted on the same host in every container that uses it,
+  because the exclusive slot probe does not span hosts.
 - The plugin reaches administrators through the published plugin repository URL recorded in
   `docs/install.md`, whose catalog lists the released version; placing the packaged archive by
   hand is the fallback for a server that cannot add that repository.

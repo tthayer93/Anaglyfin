@@ -35,10 +35,15 @@ on bare metal — named exactly:
   [release asset](https://github.com/tthayer93/Anaglyfin/releases). The Docker commands below
   currently publish it from the tagged source instead of downloading that asset; bare metal takes
   the asset itself (§4).
-- `ffmpeg-mvc` — a Jellyfin-compatible [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build; target `n8.1.2-mvc7-jf4`.
-- `ffprobe` — the `ffprobe` from that **same** build.
+- `ffmpeg-mvc` — a Jellyfin-compatible [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build; target `n8.1.2-mvc7-jf4`. This is the binary the wrapper dispatches marker/profile commands to.
+- `ffprobe` — the `ffprobe` from the **official** Jellyfin FFmpeg, *not* the one from the FFmpeg-mvc
+  build. The custom build does produce its own `ffprobe`, but it must not be installed beside the
+  wrapper: the server probes files through this `ffprobe`, and the official one matches the stock
+  FFmpeg the server runs ordinary playback on.
 
 Jellyfin finds `ffprobe` **beside the FFmpeg path it was given** — beside the wrapper — never on `PATH`.
+The wrapper is what the server's FFmpeg path points at, so the official `ffprobe` goes into the same
+directory as the wrapper and `ffmpeg-mvc`.
 The two server shapes differ only in who fills that directory:
 
 - **Docker:** a series of `docker compose exec` commands against the running container compiles
@@ -67,8 +72,9 @@ Three things are involved, in three different places, and the sequence turns on 
   recompiles something;
 - the libraries the encoder loads when it runs come from the official image itself: mostly the
   `/usr/lib/jellyfin-ffmpeg/lib` set its own FFmpeg uses, and for the rest the Debian libraries the
-  image already carries. Step 4 links `ffmpeg-mvc` and `ffprobe` onto that first directory, so a
-  recreated container runs the runtime files with no packages installed.
+  image already carries. Step 4 links the compiled `ffmpeg-mvc` onto that first directory, and drops
+  the image's own `ffprobe` beside the wrapper, so a recreated container runs the runtime files with
+  no packages installed.
 
 **GPU access.** The three things above cover the install itself; the host GPU is a separate concern.
 The official image ships the Intel driver components — the `iHD`/`i965` VA-API drivers and
@@ -139,15 +145,17 @@ docker compose exec -u root jellyfin sh -c '
 '
 ```
 
-**4. FFmpeg-mvc: compile and install.** Both binaries come out of this one compile, and both go
-into the directory the wrapper lives in — that is where Jellyfin looks for `ffprobe`. The compile
-is the slow part of this sequence.
+**4. FFmpeg-mvc: compile and install.** The compile produces both `ffmpeg` and `ffprobe`, but only
+the `ffmpeg` half is installed here, as `ffmpeg-mvc`, into the directory the wrapper lives in. The
+`ffprobe` that directory needs is the image's **official** one, which step 4 copies in beside the
+wrapper — it does **not** install the build's own `ffprobe`. The compile is the slow part of this
+sequence.
 
 The last two `configure` lines are what makes the result outlive the container that built it. The
 official image ships its own FFmpeg runtime libraries — `libass`, `libva`, `libva-drm`, `libvpl`,
 the font stack, and the VA-API drivers under `dri/` — in `/usr/lib/jellyfin-ffmpeg/lib`; baking that
-directory into the two binaries as their RUNPATH means the encoder loads them from there at run
-time, instead of from anything apt put in the container.
+directory into the binary as its RUNPATH means `ffmpeg-mvc` loads them from there at run time,
+instead of from anything apt put in the container.
 
 ```sh
 docker compose exec -u root jellyfin sh -c '
@@ -169,8 +177,11 @@ docker compose exec -u root jellyfin sh -c '
 '
 
 docker compose exec -u root jellyfin sh -c '
-  install -m 0755 /tmp/ffmpeg-mvc-src/ffmpeg  /config/anaglyfin/ffmpeg/ffmpeg-mvc
-  install -m 0755 /tmp/ffmpeg-mvc-src/ffprobe /config/anaglyfin/ffmpeg/ffprobe
+  install -m 0755 /tmp/ffmpeg-mvc-src/ffmpeg /config/anaglyfin/ffmpeg/ffmpeg-mvc
+  # ffprobe beside the wrapper is the image'"'"'s OWN (official Jellyfin) build, not the one this
+  # compile wrote. The server probes through it and it must match the stock FFmpeg. The build'"'"'s
+  # own /tmp/ffmpeg-mvc-src/ffprobe is deliberately left unused.
+  install -m 0755 /usr/lib/jellyfin-ffmpeg/ffprobe /config/anaglyfin/ffmpeg/ffprobe
 '
 ```
 
@@ -240,9 +251,25 @@ docker compose exec -u root jellyfin sh -c \
 environment:
   JELLYFIN_FFMPEG: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
   ANAGLYFIN_REAL_FFMPEG: /config/anaglyfin/ffmpeg/ffmpeg-mvc
+  ANAGLYFIN_SERVER_FFMPEG: /usr/lib/jellyfin-ffmpeg/ffmpeg
   ANAGLYFIN_LOCK_DIR: /config/anaglyfin/lock
   ANAGLYFIN_WRAPPER_SETTINGS: /config/anaglyfin/wrapper/anaglyfin-wrapper-settings.json
 ```
+
+The two FFmpeg variables split the work: `ANAGLYFIN_REAL_FFMPEG` is the FFmpeg-mvc build the
+wrapper hands marker/profile commands to, and `ANAGLYFIN_SERVER_FFMPEG` is the stock FFmpeg the
+official image ships — the one the server would have run — which now receives every ordinary command
+and Jellyfin's startup capability probes. That is the whole point of naming a second binary: a
+codec or tone-mapping tool the server reads off its FFmpeg is then genuinely present for the
+commands built around it. Leave `ANAGLYFIN_SERVER_FFMPEG` unset and the older single-binary
+behaviour stays — every command, ordinary and marker alike, goes to `ANAGLYFIN_REAL_FFMPEG`.
+
+One consequence to check on a capability-limited build: because the startup probes now report the
+**official** set, Jellyfin may reach for an encoder or tone-mapping filter for a *marker* job that a
+minimal FFmpeg-mvc build does not carry. Verify that the `ffmpeg-mvc` binary has the encoder Jellyfin
+actually selects (compare `ffmpeg-mvc -encoders` against the official `/usr/lib/jellyfin-ffmpeg/ffmpeg
+-encoders`). For the documented QSV/VA-API H.264 flow — `configure --enable-vaapi --enable-libvpl
+--enable-libx264` — it is adequate.
 
 **10. Recreate** the service so it starts with that environment:
 
@@ -277,8 +304,9 @@ top of the same three filenames, so nothing has to be uninstalled or removed fir
 
 - **The wrapper** — repeat steps 5–7 with the new tag in the source URL (step 5 is only needed if
   `/tmp/dotnet` is gone, which a recreate does to it).
-- **FFmpeg-mvc** — repeat steps 3–4 with the new tag in the source URL; `ffmpeg-mvc` and `ffprobe`
-  come out of one compile and are replaced together. Keep both `-rpath` lines in the `configure`
+- **FFmpeg-mvc** — repeat steps 3–4 with the new tag in the source URL; the `ffmpeg` the compile
+  produces becomes `ffmpeg-mvc`, and step 4 re-copies the image's own `ffprobe` beside it (the build's
+  own `ffprobe` is not installed). Keep both `-rpath` lines in the `configure`
   command — they are what lets the new build keep running on the image's own libraries.
 - **Either half, if the container has been recreated since the build you are replacing** — run the
   step 1 dependency block first. That is a rebuild, and a rebuild needs the compiler and the headers
@@ -300,7 +328,7 @@ docker compose restart jellyfin
 docker compose exec -u root jellyfin rm -rf /config/anaglyfin
 ```
 
-Remove the four environment variables from the compose file and recreate with
+Remove the five environment variables from the compose file and recreate with
 `jellyfin/jellyfin:latest`:
 
 ```sh
@@ -321,11 +349,13 @@ everything owned by the `jellyfin` user:
 sudo install -d -m 0755 /opt/anaglyfin/ffmpeg
 sudo install -m 0755 -o jellyfin -g jellyfin ./anaglyfin-ffmpeg  /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 sudo install -m 0755 -o jellyfin -g jellyfin /path/to/ffmpeg-mvc /opt/anaglyfin/ffmpeg/ffmpeg-mvc
-sudo install -m 0755 -o jellyfin -g jellyfin /path/to/ffprobe    /opt/anaglyfin/ffmpeg/ffprobe
+# ffprobe beside the wrapper is the STOCK Jellyfin ffprobe, not the FFmpeg-mvc one. On the
+# Debian/Ubuntu package that is the ffprobe beside the server's own FFmpeg:
+sudo install -m 0755 -o jellyfin -g jellyfin /usr/lib/jellyfin-ffmpeg/ffprobe /opt/anaglyfin/ffmpeg/ffprobe
 sudo install -d -m 0755 -o jellyfin -g jellyfin /var/lib/jellyfin/anaglyfin/lock /var/lib/jellyfin/anaglyfin/wrapper
 ```
 
-Pass those four variables in a systemd drop-in. Create the drop-in directory first:
+Pass those five variables in a systemd drop-in. Create the drop-in directory first:
 
 ```sh
 sudo install -d /etc/systemd/system/jellyfin.service.d
@@ -336,6 +366,10 @@ sudo install -d /etc/systemd/system/jellyfin.service.d
 [Service]
 Environment=JELLYFIN_FFMPEG=/opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 Environment=ANAGLYFIN_REAL_FFMPEG=/opt/anaglyfin/ffmpeg/ffmpeg-mvc
+# The stock FFmpeg this server would otherwise run. On the Debian/Ubuntu package that is
+# the FFmpeg Jellyfin ships beside the ffprobe you installed above; if the server was
+# pointed at a different FFmpeg before Anaglyfin, name that one instead of guessing.
+Environment=ANAGLYFIN_SERVER_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
 Environment=ANAGLYFIN_LOCK_DIR=/var/lib/jellyfin/anaglyfin/lock
 Environment=ANAGLYFIN_WRAPPER_SETTINGS=/var/lib/jellyfin/anaglyfin/wrapper/anaglyfin-wrapper-settings.json
 ```
@@ -365,7 +399,10 @@ sudo systemctl restart jellyfin
   MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg
   ```
 
-- The wrapper answers `-version` straight through to the real encoder. Docker:
+- The wrapper answers `-version` straight through to a real encoder. These two snippets set only
+`ANAGLYFIN_REAL_FFMPEG` (and not `ANAGLYFIN_SERVER_FFMPEG`), so an ordinary command such as `-version`
+falls back to it and the banner is the FFmpeg-mvc build's — the check that that binary is reachable.
+Docker:
 
   ```sh
   docker compose exec -u root jellyfin \
@@ -380,7 +417,10 @@ sudo systemctl restart jellyfin
     /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg -version
   ```
 
-A server whose `ANAGLYFIN_REAL_FFMPEG` names a missing file does not start; full checks: `docs/validation.md`.
+A server whose `ANAGLYFIN_REAL_FFMPEG` names a missing file does not start; and once
+`ANAGLYFIN_SERVER_FFMPEG` is set, an ordinary command pointed at a missing file there is refused with
+a line naming that variable, so Jellyfin's FFmpeg validation fails the same way. Full checks:
+`docs/validation.md`.
 
 Update the plugin from the catalog and restart Jellyfin. The three runtime files are the server's
 own, and the plugin tracks none of them:

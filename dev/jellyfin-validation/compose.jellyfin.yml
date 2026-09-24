@@ -32,13 +32,19 @@ services:
       # --- The Anaglyfin deployment contract (docs/install.md, "Docker server") ---
       # The server's FFmpeg path: the wrapper, mounted from the CI artifacts.
       JELLYFIN_FFMPEG: ${HARNESS_JELLYFIN_FFMPEG:-/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg}
-      # What the wrapper hands commands to. The default is the FFmpeg the official image
-      # ships, which is enough to validate marker transport, command rewrite, and
-      # ordinary pass-through - and is NOT an FFmpeg-mvc build, so it cannot decode MVC.
+      # What the wrapper hands MARKER/PROFILE commands to. The default is the FFmpeg the
+      # official image ships, which is enough to validate marker transport, command rewrite,
+      # and ordinary pass-through - and is NOT an FFmpeg-mvc build, so it cannot decode MVC.
       # See README.md step 4 for discovering the real path in this image, and step 9 for
-      # pointing this at a mounted FFmpeg-mvc build, which is what a real MVC playback
-      # needs.
+      # pointing this at a mounted FFmpeg-mvc build, which is what a real MVC playback needs.
       ANAGLYFIN_REAL_FFMPEG: ${HARNESS_REAL_FFMPEG:-/usr/lib/jellyfin-ffmpeg/ffmpeg}
+      # What the wrapper hands ORDINARY commands and Jellyfin's startup capability probes to -
+      # the stock FFmpeg the server would otherwise run. The default matches the official
+      # image's FFmpeg, so the harness dispatches exactly as a real two-binary deployment
+      # would; unset/blank reverts to the single-binary behaviour where ordinary commands also
+      # go to ANAGLYFIN_REAL_FFMPEG. When you mount an FFmpeg-mvc build (step 9), leave this on
+      # the stock FFmpeg and move only HARNESS_REAL_FFMPEG onto the build.
+      ANAGLYFIN_SERVER_FFMPEG: ${HARNESS_SERVER_FFMPEG:-/usr/lib/jellyfin-ffmpeg/ffmpeg}
       # Concurrency slots are runtime state, deleted with the process that made them, so
       # they live in the container's tmp and not in the mounted config.
       ANAGLYFIN_LOCK_DIR: ${HARNESS_LOCK_DIR:-/tmp/anaglyfin/ffmpeg-wrapper}
@@ -64,14 +70,16 @@ services:
     #
     #   - an ffprobe beside the wrapper. Jellyfin looks for ffprobe next to the FFmpeg it
     #     was given, so the wrapper's directory has to hold one; `sh harness.sh ffprobe`
-    #     copies the image's own in, and a real deployment copies its FFmpeg-mvc build's.
-    #   - an FFmpeg-mvc build, which is what turns ordinary playback into 3D output:
+    #     copies the image's OWN (official) one in - and a real deployment copies its stock
+    #     FFmpeg's too, never the FFmpeg-mvc build's.
+    #   - an FFmpeg-mvc build, which is what turns MARKER playback into 3D output:
     #
     #       - ${HARNESS_FFMPEG_MVC}:/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc:ro
     #
     #     with HARNESS_FFMPEG_MVC in .env naming the binary on this host, and
-    #     HARNESS_REAL_FFMPEG=/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc to point the wrapper at
-    #     it. README.md step 9 has the pair, docs/install.md the bare-metal shape.
+    #     HARNESS_REAL_FFMPEG=/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc to point the wrapper's
+    #     marker route at it (leaving ANAGLYFIN_SERVER_FFMPEG on the stock FFmpeg for ordinary
+    #     commands and probes). README.md step 9 has the pair, docs/install.md the bare-metal shape.
     #
     # Intel GPU access is the same story and lives in compose.qsv.yml.
 

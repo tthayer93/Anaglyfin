@@ -16,7 +16,7 @@ wrapper path, and relevant log excerpts.
 In scope:
 
 - plugin installation and admin settings page on a real Jellyfin 12 server
-- FFmpeg-mvc deployment and wrapper environment configuration
+- the two-binary deployment (the official server FFmpeg + FFmpeg-mvc) and wrapper environment configuration
 - conservative MVC eligibility detection
 - alternate media source generation, ordering, and marker transport
 - the original MVC version switch, and what it does and does not take out of the two version pickers
@@ -55,7 +55,7 @@ Two places, and they are not interchangeable.
 answers, on your own machine and repeatably: whether the packaged plugin is discovered by
 Jellyfin 12, whether the wrapper is accepted as the server's FFmpeg, whether the linux-x64
 artifact executes and decides correctly in that image, whether a misconfigured
-`ANAGLYFIN_REAL_FFMPEG` fails loudly, and - with an FFmpeg-mvc build mounted - what a real
+`ANAGLYFIN_REAL_FFMPEG` or `ANAGLYFIN_SERVER_FFMPEG` fails loudly, and - with an FFmpeg-mvc build mounted - what a real
 converted profile looks like. Its README states which steps it can and cannot answer.
 
 The real server answers the rest: what a client offers and picks, how a real playback's
@@ -190,8 +190,11 @@ Check the rendered page against the shipped defaults:
 
 ## V3. FFmpeg-mvc and wrapper deployment
 
-Anaglyfin needs a real FFmpeg-mvc build and a real FFprobe that Jellyfin can use. The
-wrapper must not become the FFprobe.
+Anaglyfin needs a real FFmpeg-mvc build (for marker/profile commands), a stock server FFmpeg (for
+ordinary commands and the server's capability probes, named by `ANAGLYFIN_SERVER_FFMPEG`), and a real
+FFprobe that Jellyfin can use - the **official** one, placed beside the wrapper. The wrapper must not
+become the FFprobe, and the FFmpeg-mvc build's own `ffprobe` must not be installed over the official
+one.
 
 Record the deployment details:
 
@@ -199,10 +202,12 @@ Record the deployment details:
 Jellyfin version:
 Jellyfin plugin directory:
 Wrapper binary path:
-FFmpeg-mvc binary path:
-ffprobe path:
+FFmpeg-mvc binary path (ANAGLYFIN_REAL_FFMPEG):
+Server/official FFmpeg path (ANAGLYFIN_SERVER_FFMPEG, optional second binary):
+ffprobe path (official, beside the wrapper):
 ANAGLYFIN_LOCK_DIR:
 ANAGLYFIN_MAX_CONCURRENT_TRANSCODES (optional):
+ANAGLYFIN_SLOT_WAIT_MS (optional):
 ANAGLYFIN_WRAPPER_SETTINGS:
 Jellyfin FFmpeg path setting:
 ```
@@ -210,8 +215,9 @@ Jellyfin FFmpeg path setting:
 Required deployment shape:
 
 ```text
-Jellyfin -> Anaglyfin FFmpeg entry point -> ANAGLYFIN_REAL_FFMPEG -> FFmpeg-mvc
-Jellyfin -> real ffprobe, in the entry point's own directory
+Jellyfin -> Anaglyfin FFmpeg entry point -+-> marker/profile -> ANAGLYFIN_REAL_FFMPEG -> FFmpeg-mvc
+                                          \-> ordinary + probes -> ANAGLYFIN_SERVER_FFMPEG (or, if unset, -> ANAGLYFIN_REAL_FFMPEG)
+Jellyfin -> official ffprobe, in the entry point's own directory
 plugin -> ANAGLYFIN_WRAPPER_SETTINGS -> wrapper (one shared admin-settings document)
 ```
 
@@ -229,22 +235,38 @@ signature of getting this wrong is one line at startup and a library that never 
 - [x] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
   current subtitle-depth target is the official `n8.1.2-mvc7-jf4` build; an older FFmpeg-mvc may
   run ordinary commands but cannot honour a depth request if it does not carry `mvcsubdepth`.
-- [x] `FFmpeg -filters` names `mvcsubdepth` (the filter a depth request needs; it is not
-  loaded when subtitle depth is `Flat`).
-- [x] FFprobe from the same FFmpeg-mvc build is installed, executable, **in the same
-  directory as the wrapper**, because that is where the server will look for it.
+- [x] `FFmpeg -filters` on the **FFmpeg-mvc** binary names `mvcsubdepth` (the filter a depth request
+  needs; it is not loaded when subtitle depth is `Flat`). Note that the server's startup probe reads
+  the **official** FFmpeg's filters now, so `mvcsubdepth` will not appear there — it is required only
+  in the binary marker jobs run on.
+- [ ] The **official** Jellyfin `ffprobe` (not the FFmpeg-mvc build's own) is installed, executable,
+  **in the same directory as the wrapper**, because that is where the server looks for it and probes
+  through it on the stock FFmpeg's terms. The custom build may produce its own `ffprobe`; installing
+  it here is wrong. (Previously satisfied by the mvc build's `ffprobe`; re-check against a deployment
+  that copied the official one.)
+- [ ] When `ANAGLYFIN_SERVER_FFMPEG` is set, ordinary commands and the server's startup capability
+  probes reach that binary, and marker/profile commands still reach `ANAGLYFIN_REAL_FFMPEG`. Unit- and
+  CI-pinned (`WrapperApplicationTests`, `wrapper-check.sh` two-binary case); not yet re-run against a
+  real server, so left open.
 - [x] The wrapper executable is deployed to a stable path and executable by the Jellyfin
   service user.
 - [x] The server's FFmpeg path points at the Anaglyfin FFmpeg entry point, not directly at
   FFmpeg-mvc, if wrapper-based rewriting is expected.
 - [x] The server can still probe files with the real `ffprobe`.
-- [x] The wrapper's real FFmpeg resolution is one of:
+- [x] The wrapper's **marker/profile** (real) FFmpeg resolution is one of:
 
   ```text
   ANAGLYFIN_REAL_FFMPEG=/path/to/ffmpeg-mvc
   FFMPEG_MVC_PATH=/path/to/ffmpeg-mvc
   ffmpeg found through PATH
   ```
+
+- [ ] The wrapper's **ordinary** FFmpeg resolution is `ANAGLYFIN_SERVER_FFMPEG` (or its alias
+  `ANAGLYFIN_OFFICIAL_FFMPEG`) when set, and the marker path above when unset - and never
+  `JELLYFIN_FFMPEG` (which names the wrapper) or `FFMPEG_PATH`. A capability-inversion check belongs
+  here: because the startup probes now read the official binary's codec set, confirm the FFmpeg-mvc
+  binary also carries the encoder Jellyfin selects for marker jobs (diff `ffmpeg-mvc -encoders`
+  against the official `-encoders`); the documented QSV/VA-API H.264 build is adequate.
 
 - [x] Wrapper environment variables are set in the environment that Jellyfin passes to
   started helper processes. Setting them only in the administrator's login shell is not
@@ -263,16 +285,22 @@ Example environment block, adjusted to your deployment:
 
 ```sh
 ANAGLYFIN_REAL_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg-mvc
+# The stock FFmpeg ordinary commands and capability probes go to (optional; unset = single-binary):
+ANAGLYFIN_SERVER_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
 ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin/ffmpeg-wrapper
 ANAGLYFIN_WRAPPER_SETTINGS=/var/lib/jellyfin/anaglyfin/wrapper/anaglyfin-wrapper-settings.json
 # Optional override for the admin page's concurrency limit:
 # ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1
+# Optional pre-refusal slot wait in ms (0-30000, default 2000; 0 refuses at once):
+# ANAGLYFIN_SLOT_WAIT_MS=2000
+# ffprobe beside the wrapper is the OFFICIAL one, not the FFmpeg-mvc build's own.
 ```
 
 Notes:
 
-- The wrapper checks the configured real binary and refuses if it is missing or points back
-  at the wrapper itself.
+- The wrapper checks whichever binary a command is sent to and refuses if it is missing or points
+  back at the wrapper itself, naming the variable that selected it (`ANAGLYFIN_REAL_FFMPEG` for a
+  marker command, `ANAGLYFIN_SERVER_FFMPEG` for an ordinary one).
 - The wrapper reads the subtitle-depth request and concurrency limit from the document named by
   `ANAGLYFIN_WRAPPER_SETTINGS`. If that variable is unset or the document cannot be read, the
   wrapper does not fail the playback: it uses flat subtitles and falls back to its own configured or
@@ -281,10 +309,17 @@ Notes:
   a `transcoding.maxConcurrentTranscodes` field. A schema version 1 document is still readable, but
   it states only depth and states no concurrency limit. A newer or malformed schema version is
   ignored rather than trusted.
-- The wrapper resolves the real FFmpeg binary in this order:
+- The wrapper dispatches each command by whether the rewriter rewrote it: a marker/profile command
+  goes to the **real** FFmpeg, and an ordinary command goes to the **server** FFmpeg - falling back to
+  the real one when no server binary is named, which keeps a single-binary deployment's behaviour
+  unchanged. The wrapper resolves the marker (real) binary in this order:
   1. `ANAGLYFIN_REAL_FFMPEG`
   2. `FFMPEG_MVC_PATH`
   3. `ffmpeg` found on `PATH`
+- The wrapper resolves the ordinary (server) binary in this order, and never invents one:
+  1. `ANAGLYFIN_SERVER_FFMPEG`
+  2. `ANAGLYFIN_OFFICIAL_FFMPEG` (alias)
+  3. otherwise the marker binary above (no second lookup, no `PATH` search of its own)
 - The wrapper resolves the concurrency limit in this order:
   1. a valid `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES` override
   2. the settings document
@@ -1213,7 +1248,8 @@ The wrapper sits on the server's FFmpeg path, so it must be invisible for ordina
 
 Play a non-MVC item that will be transcoded, or force transcoding.
 
-- [x] The wrapper starts the real FFmpeg binary with the received arguments unchanged.
+- [x] The wrapper starts the **ordinary** FFmpeg - `ANAGLYFIN_SERVER_FFMPEG` when set, otherwise
+  `ANAGLYFIN_REAL_FFMPEG` - with the received arguments unchanged.
 - [x] Jellyfin hardware decode options from the server remain present if configured: no marker is in
       this command, so nothing about its decode is Anaglyfin's to change. V7.10 asks for the same
       patience on the commands that do carry a marker, where those arguments pass through as well.
