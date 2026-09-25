@@ -442,9 +442,10 @@ and `wrapper` directories those variables pointed at.
 command, so it is dispatched to `ANAGLYFIN_SERVER_FFMPEG` when that variable is set. To check that
 the **FFmpeg-mvc** binary is reachable, the two snippets explicitly blank `ANAGLYFIN_SERVER_FFMPEG`
 (a blank value counts as unset), which sends the ordinary command down the real/marker route so the
-banner is the FFmpeg-mvc build's. For the target build that banner reads
-`ffmpeg version n8.1.2-mvc8-jf5` — the fork names tag, VERSION and banner identically — and the
-server parses it as `8.1.2`, which is the version the two log excerpts above expect. Docker:
+banner is the FFmpeg-mvc build's. Under the fork's convention — tag, VERSION and banner named
+identically — the identity the target build is expected to print is
+`ffmpeg version n8.1.2-mvc8-jf5`, and the server parses it as `8.1.2`, which is the version the two
+log excerpts above expect. Docker:
 
   ```sh
   docker compose exec -u root jellyfin \

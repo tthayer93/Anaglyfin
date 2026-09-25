@@ -2,7 +2,8 @@
 
 A disposable Docker stack that runs the packaged plugin and the packaged FFmpeg wrapper
 inside the image the real test server runs in - `jellyfin/jellyfin:12.1`, Jellyfin
-`12.1.0`, Debian 13 - with the same mount shape the real server uses:
+`12.1` at whatever patch that tag currently publishes, Debian 13 - with the same mount
+shape the real server uses:
 
 ```text
 ./jellyfin/config -> /config
