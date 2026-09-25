@@ -320,11 +320,12 @@ Step 8 (ownership) is **not part of a routine upgrade.** A routine upgrade overw
 executable files — the `install -m 0755` lines in steps 4 and 7 — and never the `lock` or `wrapper`
 directory. The new binaries come out mode `0755`, so the server keeps execute access to them whatever
 their owner, and the two directories it writes its concurrency slots and settings document into are
-untouched, so their owner is still what step 8 set. Re-run step 8 only to re-unify ownership after
-something has genuinely shifted: the container's or host's UID/GID arrangement has changed since the
-install, a `root`-run upgrade has left the freshly written binaries root-owned while the rest of the
-tree is not, or the log reports permission errors writing the slots or the settings document. Even in
-those cases it is optional, and step 8 above carries the command.
+untouched, so their owner is still what step 8 set. An ordinary upgrade never demands step 8; act on
+the ownership state or symptom you actually observe, not on the fact that an upgrade ran. The states
+that justify re-running it are: the container's or host's UID/GID arrangement has changed since the
+install, the `lock` or `wrapper` directory has been recreated root-owned by something outside this
+flow, or the log reports permission errors writing the slots or the settings document. Even then it
+is optional, and step 8 above carries the command.
 
 Then:
 
@@ -396,9 +397,11 @@ sudo systemctl daemon-reload
 sudo systemctl restart jellyfin
 ```
 
-Uninstalling this shape mirrors §3.3: delete this drop-in — which takes all five variables with it —
-then `sudo systemctl daemon-reload`, restart Jellyfin, and remove the `/opt/anaglyfin` runtime files
-and the `/var/lib/jellyfin/anaglyfin` `lock` and `wrapper` directories those variables pointed at.
+Uninstalling this shape mirrors §3.3: delete this drop-in **and every other Anaglyfin environment
+entry, wherever you added it** — an optional `ANAGLYFIN_SLOT_WAIT_MS` or the `ANAGLYFIN_OFFICIAL_FFMPEG`
+alias may sit in some other drop-in, not this one — then `sudo systemctl daemon-reload`, restart
+Jellyfin, and remove the `/opt/anaglyfin` runtime files and the `/var/lib/jellyfin/anaglyfin` `lock`
+and `wrapper` directories those variables pointed at.
 
 ## 5. Verify and update
 
