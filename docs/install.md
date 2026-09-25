@@ -316,6 +316,16 @@ A container that was only restarted since the last build needs nothing ahead of 
 the files are under `/config`, no dependency block is a runtime requirement at all: apt is for
 building, the image is for running.
 
+Step 8 (ownership) is **not part of a routine upgrade.** A routine upgrade overwrites only the
+executable files — the `install -m 0755` lines in steps 4 and 7 — and never the `lock` or `wrapper`
+directory. The new binaries come out mode `0755`, so the server keeps execute access to them whatever
+their owner, and the two directories it writes its concurrency slots and settings document into are
+untouched, so their owner is still what step 8 set. Re-run step 8 only to re-unify ownership after
+something has genuinely shifted: the container's or host's UID/GID arrangement has changed since the
+install, a `root`-run upgrade has left the freshly written binaries root-owned while the rest of the
+tree is not, or the log reports permission errors writing the slots or the settings document. Even in
+those cases it is optional, and step 8 above carries the command.
+
 Then:
 
 ```sh
@@ -328,7 +338,12 @@ docker compose restart jellyfin
 docker compose exec -u root jellyfin rm -rf /config/anaglyfin
 ```
 
-Remove the five environment variables from the compose file and recreate with
+Take **every** Anaglyfin environment entry out of the compose file, not just some of them. That is
+all five step 9 added — `JELLYFIN_FFMPEG`, `ANAGLYFIN_REAL_FFMPEG`, `ANAGLYFIN_SERVER_FFMPEG`,
+`ANAGLYFIN_LOCK_DIR`, `ANAGLYFIN_WRAPPER_SETTINGS` — plus any optional one added alongside them, such
+as `ANAGLYFIN_SLOT_WAIT_MS` or the `ANAGLYFIN_OFFICIAL_FFMPEG` alias, if present. `JELLYFIN_FFMPEG`
+is the one that bites: leave it pointing at the wrapper just deleted and Jellyfin looks for its
+FFmpeg at a path that no longer exists and fails to find it. Then recreate with
 `jellyfin/jellyfin:latest`:
 
 ```sh
@@ -380,6 +395,10 @@ Apply it and restart:
 sudo systemctl daemon-reload
 sudo systemctl restart jellyfin
 ```
+
+Uninstalling this shape mirrors §3.3: delete this drop-in — which takes all five variables with it —
+then `sudo systemctl daemon-reload`, restart Jellyfin, and remove the `/opt/anaglyfin` runtime files
+and the `/var/lib/jellyfin/anaglyfin` `lock` and `wrapper` directories those variables pointed at.
 
 ## 5. Verify and update
 
