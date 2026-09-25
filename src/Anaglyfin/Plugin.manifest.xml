@@ -10,7 +10,7 @@
 <AnaglyfinManifest>
   <name>Anaglyfin</name>
   <guid>c7f4a1d9-3b58-4e2a-9d6c-84f0b1e5a723</guid>
-  <version>0.2.0</version>
+  <version>0.2.1</version>
   <description>Exposes 3D MVC sources to Jellyfin as selectable playback versions.</description>
   <overview>Offers 3D anaglyph, side-by-side and 2D base versions for MVC videos.</overview>
   <owner>Anaglyfin</owner>
