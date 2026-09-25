@@ -20,9 +20,12 @@ name: anaglyfin-validation
 
 services:
   jellyfin:
-    # The target runtime: Jellyfin 12.0.0 on the Debian-based official image. Override
-    # HARNESS_IMAGE to pin a digest if you need byte-identical reruns.
-    image: ${HARNESS_IMAGE:-jellyfin/jellyfin:latest}
+    # The target runtime: Jellyfin 12.1 on the Debian-based official image. The tag is pinned
+    # rather than floating, so a run recorded against 12.1 cannot silently become a later
+    # build. Override HARNESS_IMAGE to float the tag or to pin a digest for byte-identical
+    # reruns; the plugin's targetAbi 12.0.0 is a minimum-version floor, so this image loads it
+    # exactly as a 12.0 server does.
+    image: ${HARNESS_IMAGE:-jellyfin/jellyfin:12.1}
     # A validation stack should not come back after a reboot, and it should not restart
     # itself into a half-torn-down state while a transcode is being captured.
     restart: "no"
@@ -89,7 +92,7 @@ services:
   #
   #   docker compose -f compose.jellyfin.yml run --rm wrapper-check
   wrapper-check:
-    image: ${HARNESS_IMAGE:-jellyfin/jellyfin:latest}
+    image: ${HARNESS_IMAGE:-jellyfin/jellyfin:12.1}
     profiles:
       - harness-check
     restart: "no"
