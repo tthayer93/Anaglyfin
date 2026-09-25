@@ -191,12 +191,20 @@ fi
 #    reach the FFmpeg-mvc binary. Each fake prints a tag naming which route it is, so the
 #    observable is "which child ran", not just "did the child run". This is the docs' dispatch
 #    contract at the wrapper seam; only a real server shows it arriving through Jellyfin.
+#    The MVC stub is also a capability stub: it refuses any -vbr: argument exactly as the real
+#    minimal FFmpeg-mvc build refuses it (fdk's private option is not in the build, and the
+#    argument splitter dies on it before any input opens - the v0.2.0 3D deaths), so a marker
+#    command that still carries the option fails this check instead of passing quietly.
 cbin="${ANAGLYFIN_CHECK_TMP:-/tmp/anaglyfin-check}"
 mkdir -p "$cbin" 2>/dev/null || cbin=$(mktemp -d 2>/dev/null) || cbin=/tmp
 printf '#!/bin/sh\necho "SERVER-ROUTE $*"\n' > "$cbin/srv-ffmpeg" 2>/dev/null
-printf '#!/bin/sh\necho "MVC-ROUTE $*"\n'    > "$cbin/mvc-ffmpeg" 2>/dev/null
-chmod 0755 "$cbin/srv-ffmpeg" "$cbin/mvc-ffmpeg" 2>/dev/null
-if [ -x "$cbin/srv-ffmpeg" ] && [ -x "$cbin/mvc-ffmpeg" ]; then
+printf '#!/bin/sh\nfor a in "$@"; do\n  case "$a" in\n    -vbr:*) echo "MVC-REJECT Unrecognized option $a"; exit 1 ;;\n  esac\ndone\necho "MVC-ROUTE $*"\n' > "$cbin/mvc-ffmpeg" 2>/dev/null
+# The single-binary leg needs its own plain echo stub: with one binary there is no split to
+# compensate, so that leg asserts the received tokens verbatim - which the capability stub
+# would refuse, correctly, and the check would then be about the stub instead of the wrapper.
+printf '#!/bin/sh\necho "MVC-ROUTE $*"\n' > "$cbin/mvc-single" 2>/dev/null
+chmod 0755 "$cbin/srv-ffmpeg" "$cbin/mvc-ffmpeg" "$cbin/mvc-single" 2>/dev/null
+if [ -x "$cbin/srv-ffmpeg" ] && [ -x "$cbin/mvc-ffmpeg" ] && [ -x "$cbin/mvc-single" ]; then
     out=$(ANAGLYFIN_SERVER_FFMPEG="$cbin/srv-ffmpeg" ANAGLYFIN_REAL_FFMPEG="$cbin/mvc-ffmpeg" \
         ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin-check "$WRAPPER" $ORDINARY 2>&1)
     rc=$?
@@ -218,6 +226,64 @@ if [ -x "$cbin/srv-ffmpeg" ] && [ -x "$cbin/mvc-ffmpeg" ]; then
             bad "a marker command did not reach the FFmpeg-mvc binary (exit ${rc}): $(printf '%s' "$out" | head -n 1)" ;;
     esac
 
+    # Capability inversion on the audio path: the official build answers the server's fdk
+    # probe, so Jellyfin writes that selection plus its private -vbr option into every
+    # command it composes - including this marker job, whose binary has neither. The wrapper
+    # must hand the stub native aac with a mapped bitrate; if the stub ever prints its
+    # refusal, the v0.2.0 3D failure is back.
+    #
+    # The streams are captured apart, not merged: the wrapper's own fallback notice goes to
+    # stderr and necessarily names libfdk_aac and the mapped bitrate, so every child-argv
+    # assertion below reads the stub's stdout line only ($out), and the notice assertion
+    # reads the stderr file only. Merging them would let the diagnostic contaminate - and
+    # then falsely fail, or worse falsely pass - the checks on the tokens the child got.
+    fdk_stderr="$cbin/marker-fdk.stderr"
+    out=$(ANAGLYFIN_SERVER_FFMPEG="$cbin/srv-ffmpeg" ANAGLYFIN_REAL_FFMPEG="$cbin/mvc-ffmpeg" \
+        ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin-check "$WRAPPER" \
+        -hide_banner -i "$MARKER" -map 0:0 -map 0:1 -c:v libx264 \
+        -codec:a:0 libfdk_aac -ac 2 -vbr:a 4 -f segment out.m3u8 2>"$fdk_stderr")
+    rc=$?
+    case "$out" in
+        MVC-REJECT\ *)
+            bad 'the marker command reached the capability stub still carrying -vbr; the fdk audio selection must be sanitized before dispatch' ;;
+        MVC-ROUTE\ *)
+            ok 'the marker command reached the capability stub without the fdk option'
+            for fragment in '-codec:a:0 aac' '-b:a 128000'; do
+                if printf '%s' "$out" | grep -qF -- "$fragment"; then
+                    ok "the sanitized child vector carries ${fragment}"
+                else
+                    bad "the sanitized child vector lost ${fragment}: $(printf '%s' "$out" | head -n 3)"
+                fi
+            done
+            if printf '%s' "$out" | grep -q 'libfdk_aac\|vbr'; then
+                bad "the child's vector still carries the fdk selection or its option: $(printf '%s' "$out" | head -n 1)"
+            else
+                ok 'no libfdk_aac selection or vbr option reached the capability stub'
+            fi
+            if grep -q "$DIAGNOSTIC" "$fdk_stderr" && grep -qF -- 'native aac' "$fdk_stderr"; then
+                ok 'the wrapper reported the native-aac fallback on its diagnostic stream'
+            else
+                bad 'the wrapper performed the audio fallback silently; the transcode log has to say so'
+            fi
+            ;;
+        *)
+            bad "expected the sanitized marker command at the capability stub, got exit ${rc} with child '$(printf '%s' "$out" | head -n 1)' and diagnostic '$(printf '%s' "$(head -n 1 "$fdk_stderr" 2>/dev/null)")'" ;;
+    esac
+
+    # The same inversion on the ordinary route stays untouched: that command's binary carries
+    # the encoder, its tokens are the server's own, and a sanitizer that reached the probe
+    # route would be a probe that lies.
+    out=$(ANAGLYFIN_SERVER_FFMPEG="$cbin/srv-ffmpeg" ANAGLYFIN_REAL_FFMPEG="$cbin/mvc-ffmpeg" \
+        ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin-check "$WRAPPER" \
+        -hide_banner -i /media/Ordinary.mkv -c:v libx264 -c:a libfdk_aac -vbr:a 4 -f segment out.m3u8 2>&1)
+    rc=$?
+    case "$out" in
+        SERVER-ROUTE\ *libfdk_aac\ -vbr:a\ 4*)
+            ok 'an ordinary command reached the server binary with its fdk audio tokens untouched' ;;
+        *)
+            bad "an ordinary command lost or moved its fdk audio tokens (exit ${rc}): $(printf '%s' "$out" | head -n 1)" ;;
+    esac
+
     # No server binary named => ordinary command falls back to the real binary (single-binary).
     # Blank it explicitly so an ANAGLYFIN_SERVER_FFMPEG leaking in from the ambient environment
     # cannot decide this leg; the wrapper treats a blank value as unset.
@@ -229,6 +295,21 @@ if [ -x "$cbin/srv-ffmpeg" ] && [ -x "$cbin/mvc-ffmpeg" ]; then
         *)
             bad "single-binary fallback lost: $(printf '%s' "$out" | head -n 1)" ;;
     esac
+
+    # Single-binary deployments answer their own probes, so what the server selected is what
+    # the one binary was asked to run - the wrapper does not second-guess it. The fdk tokens
+    # must survive verbatim (the stub cannot parse them either, which is the administrator's
+    # build-flag problem, not a split this wrapper is compensating).
+    out=$(ANAGLYFIN_SERVER_FFMPEG= ANAGLYFIN_REAL_FFMPEG="$cbin/mvc-single" \
+        ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin-check "$WRAPPER" \
+        -hide_banner -i "$MARKER" -c:v libx264 -codec:a:0 libfdk_aac -vbr:a 4 -f segment out.m3u8 2>&1)
+    rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF -- '-codec:a:0 libfdk_aac' \
+        && printf '%s' "$out" | grep -qF -- '-vbr:a 4'; then
+        ok 'a single-binary marker command keeps its fdk audio tokens byte-for-byte'
+    else
+        bad "a single-binary marker command was altered by the audio sanitizer (exit ${rc}): $(printf '%s' "$out" | head -n 3)"
+    fi
 else
     skip "could not stage the two fake binaries under $cbin"
 fi

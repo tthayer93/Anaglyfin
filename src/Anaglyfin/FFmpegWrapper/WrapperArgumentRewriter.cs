@@ -62,7 +62,14 @@ namespace Anaglyfin.FFmpegWrapper;
 /// Jellyfin's business, and the product requirement is that Anaglyfin playback differs from
 /// stock playback in picture and not in delivery. The one audio argument this rewriter does
 /// write is the optional audio map beside its own video map, and only for a command that
-/// carried no map at all - see <see cref="OptionalAudioMapValue"/>.
+/// carried no map at all - see <see cref="OptionalAudioMapValue"/>. The one departure from
+/// that promise is not made here either: it is made after this rewriter, by
+/// <see cref="MarkerAudioCompatibility"/>, on the rewritten marker route of a two-binary
+/// deployment only, and only for the one audio selection the official build's probe makes
+/// possible and the minimal FFmpeg-mvc build cannot run - <c>libfdk_aac</c> with its private
+/// <c>vbr</c> option - which that component maps onto the native encoder from a fixed table.
+/// Every vector this rewriter returns still carries the server's encoder, muxer and HLS
+/// arguments untouched.
 /// </para>
 /// <para>
 /// <b>The composed view, not a view map.</b> Every converting profile needs the eyes

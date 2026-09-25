@@ -1242,6 +1242,45 @@ Nothing in this section is a refusal, and nothing in it produces a diagnostic: t
 such a command is the same work it does on any marker command, and the hardware arguments ride along
 untouched. FFmpeg's output naming a device it opened is expected - that is the encoder's device.
 
+### 7.11 Capability inversion: the official probe advertises fdk, and the marker job still plays
+
+The audio case of the split's known inversion (see "Capability inversion" in
+`docs/architecture.md`): the server reads its encoder list off the **official** binary, which
+carries `libfdk_aac`, so Jellyfin writes that selection - and the encoder's private `-vbr:a`
+option - into every transcode it composes, including marker jobs that then run on the minimal
+FFmpeg-mvc build. The v0.2.0 3D playbacks died exactly here, and the fix is a wrapper-side map
+with no probing, so the check is that the map fires on the marker route and nowhere else.
+
+Needs the two-binary deployment of V3 (`ANAGLYFIN_SERVER_FFMPEG` set), an official FFmpeg whose
+`-encoders` lists `libfdk_aac`, and **Enable audio VBR** in the server's playback settings - with
+the default off, Jellyfin writes `-ab`, which the FFmpeg-mvc build parses, and there is nothing
+inverted to observe.
+
+- [ ] An **ordinary** transcode on this server carries `-codec:a:0 libfdk_aac` (or `-c:a libfdk_aac`)
+      and `-vbr:a <n>` in its child command - that is the inversion visible - and it plays, because
+      its binary is the official one that answered its own probe.
+- [ ] The **marker** job of the same item, same server, arrives at the `ANAGLYFIN_REAL_FFMPEG`
+      child with the native audio selection in the server's own token spelling - `-codec:a:0 aac` -
+      with no `vbr` token anywhere on the vector, and with an audio bitrate on the command: the
+      synthesized `-b:a <bits>` where the removed level stood, level 4 stereo being `-b:a 128000`,
+      5.1 `-b:a 384000`, per the per-channel floor table.
+- [ ] The child does **not** die at argument splitting: no `Unrecognized option 'vbr:a'` and no
+      `Error splitting the argument list: Option not found` in the transcode log; the process opens
+      the input and writes segments.
+- [ ] The transcode log carries the wrapper's notice that the change was made and what the bitrate
+      is: one `anaglyfin-wrapper: warning: the FFmpeg-mvc build ...` line naming the native-aac
+      fallback and the `-b:a` value, and no other wrapper line for the job.
+- [ ] A marker job whose audio the probe never inverted (`-c:a aac -b:a 192k`, or fdk only on a
+      single-binary server) is byte-for-byte the command of V7.1-V7.10, with no wrapper notice: the
+      map triggers on the known fdk selection only, on the marker route of a split deployment only.
+- [ ] The ordinary command from the first check, looked at again after the 3D job, still carries its
+      own `libfdk_aac` and `-vbr:a` tokens verbatim: the sanitizer is the marker route's and never
+      reaches the pass-through vector a capability probe is.
+
+CI-pinned (`MarkerAudioCompatibilityTests`, the `WrapperApplicationTests` marker-audio region, and
+the `wrapper-check.sh` two-binary case against a capability stub that refuses `-vbr:` the way the
+minimal build does); not re-run against a real server, so left open.
+
 ## V8. Ordinary playback pass-through
 
 The wrapper sits on the server's FFmpeg path, so it must be invisible for ordinary playback.
