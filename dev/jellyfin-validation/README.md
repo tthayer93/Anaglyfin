@@ -1,8 +1,8 @@
 # Anaglyfin runtime validation harness
 
 A disposable Docker stack that runs the packaged plugin and the packaged FFmpeg wrapper
-inside the image the real test server runs in - `jellyfin/jellyfin:latest`, Jellyfin
-`12.0.0`, Debian 13 - with the same mount shape the real server uses:
+inside the image the real test server runs in - `jellyfin/jellyfin:12.1`, Jellyfin
+`12.1.0`, Debian 13 - with the same mount shape the real server uses:
 
 ```text
 ./jellyfin/config -> /config
@@ -87,7 +87,7 @@ which is this, spelled out:
 docker compose -f compose.jellyfin.yml run --rm wrapper-check
 ```
 
-The service starts `jellyfin/jellyfin:latest` with only the wrapper mounted and runs
+The service starts `jellyfin/jellyfin:12.1` with only the wrapper mounted and runs
 `wrapper-check.sh`, which answers one question: does the CI artifact actually run - and
 actually decide - inside the image Jellyfin runs in? Its real FFmpeg is the image's own
 `/bin/echo`, which prints the arguments it was started with, so the three wrapper
@@ -124,7 +124,11 @@ sh harness.sh up
 mount whose source does not exist is created for you as an empty root-owned *directory* -
 and a server that finds a directory where an assembly belongs is a confusing afternoon.
 
-It pulls `jellyfin/jellyfin:latest` on first use, which is a few hundred MB.
+It pulls `jellyfin/jellyfin:12.1` on first use, which is a few hundred MB. That tag is the pinned
+current target rather than a floating `:latest`, so a run recorded against 12.1 cannot drift into
+whatever `:latest` has since become; `HARNESS_IMAGE` in `.env` overrides it. The plugin's
+`targetAbi 12.0.0` is a minimum-version floor, so this image loads the assembly exactly as a 12.0
+server does.
 
 Two overlays, as switches:
 
@@ -423,7 +427,7 @@ startup probes should keep using. Both halves:
 ```sh
 # .env: point the marker route at the mounted build; keep ordinary commands + probes on the stock
 # FFmpeg, and remember ffprobe beside the wrapper is the OFFICIAL one (sh harness.sh ffprobe).
-HARNESS_FFMPEG_MVC=/path/to/ffmpeg-mvc-n8.1.2-mvc3-jf4
+HARNESS_FFMPEG_MVC=/path/to/ffmpeg-mvc-n8.1.2-mvc8-jf5
 HARNESS_REAL_FFMPEG=/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
 HARNESS_SERVER_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
 ```

@@ -1,6 +1,6 @@
 # Anaglyfin runtime validation
 
-This checklist validates Anaglyfin against a real Jellyfin 12 server, the out-of-process
+This checklist validates Anaglyfin against a real Jellyfin 12.x server, the out-of-process
 `Anaglyfin.FFmpegWrapper`, and an FFmpeg-mvc `jellyfin-8.1` build. The repository CI job
 proves only that the code builds, the unit tests pass, and whitespace formatting is
 stable. It does **not** prove that Jellyfin discovers the plugin, that markers survive
@@ -50,7 +50,8 @@ include:
 Two places, and they are not interchangeable.
 
 `dev/jellyfin-validation/` is a disposable Docker stack that runs these artifacts inside
-`jellyfin/jellyfin:latest` with the mount shape of the real target
+`jellyfin/jellyfin:12.1` - the pinned current target image, overridable with `HARNESS_IMAGE` -
+with the mount shape of the real target
 (`./jellyfin/config` -> `/config`, `./jellyfin/cache` -> `/cache`, media -> `/media`). It
 answers, on your own machine and repeatably: whether the packaged plugin is discovered by
 Jellyfin 12, whether the wrapper is accepted as the server's FFmpeg, whether the linux-x64
@@ -90,6 +91,10 @@ so that a `FAIL` on the real server is a finding about Anaglyfin and not about t
 
 Notes:
 
+- `targetAbi` is a minimum-version floor, not an exact match: a server enables a plugin it finds
+  when its own version is at or above that value, so the `12.0.0` manifest above loads on a 12.0
+  server and on a 12.1 one. The current supported runtime is Jellyfin **12.x**, with
+  `jellyfin/jellyfin:12.1` as the targeted container.
 - The CI job packages the plugin archive, the install record, and the linux-x64 wrapper binary
   into `artifacts/`, and verifies all three. Where they go on a server is `docs/install.md`: the
   release workflow publishes the packaged archive and the wrapper as GitHub release assets, the
@@ -233,8 +238,12 @@ signature of getting this wrong is one line at startup and a library that never 
 ```
 
 - [x] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
-  current subtitle-depth target is the official `n8.1.2-mvc7-jf4` build; an older FFmpeg-mvc may
-  run ordinary commands but cannot honour a depth request if it does not carry `mvcsubdepth`.
+  current subtitle-depth target is the official `n8.1.2-mvc8-jf5` build - a queue sync to
+  `jellyfin-ffmpeg v8.1.2-5` on an unchanged 8.1.2 base, carrying the same `mvcsubdepth` and
+  `-view_ids` surface as the mvc7 build it supersedes. It is a **current target**: the tick on this
+  row is the mvc7 deployment shape, and no jf5 runtime PASS is recorded in the result log yet. An
+  older FFmpeg-mvc may run ordinary commands but cannot honour a depth request if it does not carry
+  `mvcsubdepth`.
 - [x] `FFmpeg -filters` on the **FFmpeg-mvc** binary names `mvcsubdepth` (the filter a depth request
   needs; it is not loaded when subtitle depth is `Flat`). Note that the server's startup probe reads
   the **official** FFmpeg's filters now, so `mvcsubdepth` will not appear there — it is required only
