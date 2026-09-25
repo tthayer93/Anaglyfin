@@ -38,7 +38,7 @@ SERVER_FFMPEG="${HARNESS_SERVER_FFMPEG:-/usr/lib/jellyfin-ffmpeg/ffmpeg}"
 LOCK_DIR="${HARNESS_LOCK_DIR:-/tmp/anaglyfin/ffmpeg-wrapper}"
 MAX_JOBS="${HARNESS_MAX_CONCURRENT_TRANSCODES:-1}"
 WEB_PORT="${HARNESS_WEB_PORT:-8096}"
-IMAGE="${HARNESS_IMAGE:-jellyfin/jellyfin:latest}"
+IMAGE="${HARNESS_IMAGE:-jellyfin/jellyfin:12.1}"
 
 compose_files="-f $BASE_FILE"
 [ "${HARNESS_QSV:-0}" = "1" ] && compose_files="$compose_files -f compose.qsv.yml"

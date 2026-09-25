@@ -2,8 +2,10 @@
 
 Install the plugin from one repository URL, get three FFmpeg runtime files onto the server,
 and point Jellyfin's FFmpeg at the wrapper. On Docker the commands in §3 run inside the running
-container and build both halves there. Target: Jellyfin **12.0.0** — Debian/Ubuntu package or
-`jellyfin/jellyfin:latest`.
+container and build both halves there. Target: Jellyfin **12.x** — Debian/Ubuntu package or
+`jellyfin/jellyfin:12.1`, the container this flow currently targets. The plugin's
+`targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.1` loads on
+Jellyfin 12.0 and on 12.1 alike.
 
 ## 1. Install the plugin
 
@@ -35,7 +37,7 @@ on bare metal — named exactly:
   [release asset](https://github.com/tthayer93/Anaglyfin/releases). The Docker commands below
   currently publish it from the tagged source instead of downloading that asset; bare metal takes
   the asset itself (§4).
-- `ffmpeg-mvc` — a Jellyfin-compatible [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build; target `n8.1.2-mvc7-jf4`. This is the binary the wrapper dispatches marker/profile commands to.
+- `ffmpeg-mvc` — a Jellyfin-compatible [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build; target `n8.1.2-mvc8-jf5`, the `jellyfin-8.1` product line's queue sync to `jellyfin-ffmpeg v8.1.2-5`. Its FFmpeg base stays **8.1.2**, which is why the server still logs `Found ffmpeg version 8.1.2` (§5); the plain-line `n8.1.3-mvc8` tag carries no Jellyfin queue and is not a supported product target. This is the binary the wrapper dispatches marker/profile commands to.
 - `ffprobe` — the `ffprobe` from the **official** Jellyfin FFmpeg, *not* the one from the FFmpeg-mvc
   build. The custom build does produce its own `ffprobe`, but it must not be installed beside the
   wrapper: the server probes files through this `ffprobe`, and the official one matches the stock
@@ -56,7 +58,7 @@ The two server shapes differ only in who fills that directory:
 
 Every command below runs **inside the running container**. Nothing is installed on the Docker host
 and nothing extra is mounted for the runtime. Assumes the service is named `jellyfin`, the image is
-`jellyfin/jellyfin:latest`, and `./jellyfin/config` is mounted at `/config`. Every command below
+`jellyfin/jellyfin:12.1`, and `./jellyfin/config` is mounted at `/config`. Every command below
 execs as **root** with `-u root` — that is what the package install and the writes under `/config`
 need — rather than trusting the user the container happens to run its own process as, which the
 image can be configured to change. This flow targets `linux-x64`, because the wrapper publish
@@ -135,7 +137,7 @@ needed once the three files are in place, and none of it survives a recreate.
 
 ```sh
 docker compose exec -u root jellyfin curl -fsSL \
-  https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.2-mvc7-jf4.tar.gz \
+  https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.2-mvc8-jf5.tar.gz \
   -o /tmp/ffmpeg-mvc.tar.gz
 
 docker compose exec -u root jellyfin sh -c '
@@ -360,7 +362,7 @@ all five step 9 added — `JELLYFIN_FFMPEG`, `ANAGLYFIN_REAL_FFMPEG`, `ANAGLYFIN
 as `ANAGLYFIN_SLOT_WAIT_MS` or the `ANAGLYFIN_OFFICIAL_FFMPEG` alias, if present. `JELLYFIN_FFMPEG`
 is the one that bites: leave it pointing at the wrapper just deleted and Jellyfin looks for its
 FFmpeg at a path that no longer exists and fails to find it. Then recreate with
-`jellyfin/jellyfin:latest`:
+`jellyfin/jellyfin:12.1`:
 
 ```sh
 docker compose up -d --force-recreate jellyfin
@@ -440,7 +442,10 @@ and `wrapper` directories those variables pointed at.
 command, so it is dispatched to `ANAGLYFIN_SERVER_FFMPEG` when that variable is set. To check that
 the **FFmpeg-mvc** binary is reachable, the two snippets explicitly blank `ANAGLYFIN_SERVER_FFMPEG`
 (a blank value counts as unset), which sends the ordinary command down the real/marker route so the
-banner is the FFmpeg-mvc build's. Docker:
+banner is the FFmpeg-mvc build's. Under the fork's convention — tag, VERSION and banner named
+identically — the identity the target build is expected to print is
+`ffmpeg version n8.1.2-mvc8-jf5`, and the server parses it as `8.1.2`, which is the version the two
+log excerpts above expect. Docker:
 
   ```sh
   docker compose exec -u root jellyfin \

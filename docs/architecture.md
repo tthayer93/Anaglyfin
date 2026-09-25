@@ -300,7 +300,7 @@ by the FFmpeg-mvc build, so that build's encoder list is the ceiling: the interi
 `n8.1.2-mvc4-jf4` build was configured `--disable-doc --enable-gpl --enable-libx264 --enable-libass`
 and reported `libx264, libx264rgb, h264_v4l2m2m` for H.264 - no QSV, no VA-API, no NVENC. Pointing a
 Quick Sync server at that FFmpeg is what made every cp16 run come out `libx264`; the fix was a build
-with the hardware encoders compiled in, not a field on the media source, and the `n8.1.2-mvc7-jf4`
+with the hardware encoders compiled in, not a field on the media source, and the `n8.1.2-mvc8-jf5`
 build `docs/install.md` compiles adds `--enable-vaapi` and `--enable-libvpl` for exactly that.
 Anaglyfin names no encoder, never forces `libx264`, and takes whatever the server's settings select
 out of whatever binary the server was handed.
@@ -313,7 +313,9 @@ therefore select an encoder or a tone-mapping filter for a marker job — `libx2
 on the build whose `SupportsEncoder` was never consulted. For that video surface the mitigation
 stays what it always was: build-flag parity plus a diff of `ffmpeg-mvc -encoders` against the
 official `-encoders` (see `docs/install.md` §3.1 step 9); for the documented QSV/VA-API H.264 flow
-the `n8.1.2-mvc7-jf4` build already matches what the server selects. The wrapper does not learn to
+the claim made for the `n8.1.2-mvc8-jf5` build is the weaker and more durable one — its configure
+flags enable the encoders that flow selects, which is build-flag parity, not a run in which the
+server's selection was observed against this build's encoder list. The wrapper does not learn to
 probe encoders there either — the rewrite has no business second-guessing the server's video codec
 choice.
 
