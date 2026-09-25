@@ -231,10 +231,17 @@ if [ -x "$cbin/srv-ffmpeg" ] && [ -x "$cbin/mvc-ffmpeg" ] && [ -x "$cbin/mvc-sin
     # command it composes - including this marker job, whose binary has neither. The wrapper
     # must hand the stub native aac with a mapped bitrate; if the stub ever prints its
     # refusal, the v0.2.0 3D failure is back.
+    #
+    # The streams are captured apart, not merged: the wrapper's own fallback notice goes to
+    # stderr and necessarily names libfdk_aac and the mapped bitrate, so every child-argv
+    # assertion below reads the stub's stdout line only ($out), and the notice assertion
+    # reads the stderr file only. Merging them would let the diagnostic contaminate - and
+    # then falsely fail, or worse falsely pass - the checks on the tokens the child got.
+    fdk_stderr="$cbin/marker-fdk.stderr"
     out=$(ANAGLYFIN_SERVER_FFMPEG="$cbin/srv-ffmpeg" ANAGLYFIN_REAL_FFMPEG="$cbin/mvc-ffmpeg" \
         ANAGLYFIN_LOCK_DIR=/tmp/anaglyfin-check "$WRAPPER" \
         -hide_banner -i "$MARKER" -map 0:0 -map 0:1 -c:v libx264 \
-        -codec:a:0 libfdk_aac -ac 2 -vbr:a 4 -f segment out.m3u8 2>&1)
+        -codec:a:0 libfdk_aac -ac 2 -vbr:a 4 -f segment out.m3u8 2>"$fdk_stderr")
     rc=$?
     case "$out" in
         MVC-REJECT\ *)
@@ -243,24 +250,24 @@ if [ -x "$cbin/srv-ffmpeg" ] && [ -x "$cbin/mvc-ffmpeg" ] && [ -x "$cbin/mvc-sin
             ok 'the marker command reached the capability stub without the fdk option'
             for fragment in '-codec:a:0 aac' '-b:a 128000'; do
                 if printf '%s' "$out" | grep -qF -- "$fragment"; then
-                    ok "the sanitized marker command carries ${fragment}"
+                    ok "the sanitized child vector carries ${fragment}"
                 else
-                    bad "the sanitized marker command lost ${fragment}: $(printf '%s' "$out" | head -n 3)"
+                    bad "the sanitized child vector lost ${fragment}: $(printf '%s' "$out" | head -n 3)"
                 fi
             done
             if printf '%s' "$out" | grep -q 'libfdk_aac\|vbr'; then
-                bad 'the marker command still carries the fdk selection or its option at the MVC stub'
+                bad "the child's vector still carries the fdk selection or its option: $(printf '%s' "$out" | head -n 1)"
             else
                 ok 'no libfdk_aac selection or vbr option reached the capability stub'
             fi
-            if printf '%s' "$out" | grep -q "$DIAGNOSTIC"; then
-                ok 'the wrapper reported the native-aac fallback it performed'
+            if grep -q "$DIAGNOSTIC" "$fdk_stderr" && grep -qF -- 'native aac' "$fdk_stderr"; then
+                ok 'the wrapper reported the native-aac fallback on its diagnostic stream'
             else
                 bad 'the wrapper performed the audio fallback silently; the transcode log has to say so'
             fi
             ;;
         *)
-            bad "expected the sanitized marker command at the capability stub, got exit ${rc}: $(printf '%s' "$out" | head -n 3)" ;;
+            bad "expected the sanitized marker command at the capability stub, got exit ${rc} with child '$(printf '%s' "$out" | head -n 1)' and diagnostic '$(printf '%s' "$(head -n 1 "$fdk_stderr" 2>/dev/null)")'" ;;
     esac
 
     # The same inversion on the ordinary route stays untouched: that command's binary carries
