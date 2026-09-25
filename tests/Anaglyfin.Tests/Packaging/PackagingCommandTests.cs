@@ -60,7 +60,7 @@ public sealed class PackagingCommandTests : IDisposable
             _artifacts.Location);
 
         Assert.Equal(PackagingCommand.ExitOk, packed.ExitCode);
-        Assert.Contains("Anaglyfin_0.2.0.zip", packed.Output, StringComparison.Ordinal);
+        Assert.Contains("Anaglyfin_0.2.1.zip", packed.Output, StringComparison.Ordinal);
         Assert.Contains("meta.json", packed.Output, StringComparison.Ordinal);
         Assert.Equal(string.Empty, packed.Errors.Trim());
 

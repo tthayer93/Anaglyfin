@@ -25,7 +25,7 @@ Proves here, on your machine, before anyone touches a real server:
 
 | Check | Evidence |
 | --- | --- |
-| The CI artifacts are the files a server accepts | `Loaded plugin: Anaglyfin 0.2.0.0` in the container log |
+| The CI artifacts are the files a server accepts | `Loaded plugin: Anaglyfin 0.2.1.0` in the container log |
 | Jellyfin 12 accepts the wrapper as its FFmpeg | `MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` and `Found ffmpeg version 8.1.2` in the container log |
 | The linux-x64 wrapper artifact executes in this image | `sh harness.sh check`, which also asserts pass-through, marker rewrite, and refusal inside the image |
 | A missing real FFmpeg is loud, not silent | the server refuses to start with `FFmpeg validation: ... Path set by command line or environment variable is invalid` |
@@ -69,7 +69,7 @@ checkout that ran them (`artifacts/` is ignored, so a worktree is a good place t
 | --- | --- |
 | `src/Anaglyfin/bin/Release/net10.0/Anaglyfin.dll` | `/config/plugins/Anaglyfin/Anaglyfin.dll` |
 | `artifacts/anaglyfin-ffmpeg` | `/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` |
-| `artifacts/Anaglyfin_0.2.0.zip` | not mounted - it contains exactly the DLL above, for servers you install by unpacking instead of mounting |
+| `artifacts/Anaglyfin_0.2.1.zip` | not mounted - it contains exactly the DLL above, for servers you install by unpacking instead of mounting |
 
 `.env` in the repository root is a local file, not a tracked one; see the comment at the
 top of `.ci/test.yml` for `SRC_DIR` and `BUILD_CONTEXT`. The harness reads its own
@@ -169,8 +169,8 @@ sh harness.sh logs          # Ctrl-C stops following, not the stack
 Expected lines on a healthy start, in this order:
 
 ```text
-Loaded assembly Anaglyfin, Version=0.2.0.0, ... from /config/plugins/Anaglyfin/Anaglyfin.dll
-Loaded plugin: Anaglyfin 0.2.0.0
+Loaded assembly Anaglyfin, Version=0.2.1.0, ... from /config/plugins/Anaglyfin/Anaglyfin.dll
+Loaded plugin: Anaglyfin 0.2.1.0
 MediaBrowser.MediaEncoding.Encoder.MediaEncoder: Found ffmpeg version 8.1.2
 MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 ```
@@ -476,7 +476,7 @@ config.
 | `anaglyfin-wrapper: refused: 1 Anaglyfin transcode(s) are already running`, child exit `75` | the concurrency limit doing its job; the harness sets the optional `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES=1` override, so stop the first job or raise the limit on the admin page or that override |
 | `anaglyfin-wrapper: refused: the command was not started (RejectedMarker/...)` | a marker the parser rejected. The line never contains the marker or the path, so look at the playback-info response (step 7) to see what was offered |
 | `anaglyfin-wrapper: refused: the command was not started (ServerChoseVideoCopy)`, child exit `65` | the server asked for a video copy of an Anaglyfin version, so the profile had nothing to write into. Expected after a codec report the client can copy, which the step 7 `MediaStreams` check should have caught first; the reported `mvc` codec exists to make this line rare |
-| `Unrecognized option 'vbr:a'` + `Error splitting the argument list: Option not found` immediately after the child's banner, nothing else, on an Anaglyfin version's child | audio capability inversion, the known pitfall of the two-binary split: the official build's probe advertised `libfdk_aac`, so the server wrote that selection plus its private `-vbr:a` option into the marker command, which runs on the minimal FFmpeg-mvc build that carries neither and dies parsing before any input opens. The fixed wrapper (a future patch release) maps this one known selection to native `aac` on the marker route (notice on the log; see `docs/install.md` §3.1 step 9 and validation V7.11) - on a wrapper without the fix, turn off **Enable audio VBR** in the server's playback settings or unset `ANAGLYFIN_SERVER_FFMPEG` |
+| `Unrecognized option 'vbr:a'` + `Error splitting the argument list: Option not found` immediately after the child's banner, nothing else, on an Anaglyfin version's child | audio capability inversion, the known pitfall of the two-binary split: the official build's probe advertised `libfdk_aac`, so the server wrote that selection plus its private `-vbr:a` option into the marker command, which runs on the minimal FFmpeg-mvc build that carries neither and dies parsing before any input opens. The fixed wrapper (`v0.2.1` and later) maps this one known selection to native `aac` on the marker route (notice on the log; see `docs/install.md` §3.1 step 9 and validation V7.11) - on a wrapper without the fix, a `v0.2.0` build, turn off **Enable audio VBR** in the server's playback settings or unset `ANAGLYFIN_SERVER_FFMPEG` |
 | Anaglyfin versions never appear for a file you expect | the name has no MVC marker, or the provider is not eligible: step 6's Debug lines say which decision was made |
 | `No users, creating one with username root` during first start | the container is root and the wizard had not run yet; set a password in the wizard |
 | `harness: ... wrapper, not executable` | the checkout dropped the mode bit: `chmod 0755 <artifact>`, or let preflight do it |

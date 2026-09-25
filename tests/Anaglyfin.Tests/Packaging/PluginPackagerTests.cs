@@ -45,7 +45,7 @@ public sealed class PluginPackagerTests : IDisposable
     {
         var packaged = PluginPackager.Pack(Request());
 
-        Assert.Equal("Anaglyfin_0.2.0.zip", Path.GetFileName(packaged.ArchivePath));
+        Assert.Equal("Anaglyfin_0.2.1.zip", Path.GetFileName(packaged.ArchivePath));
         Assert.Equal(PackageMetadata.FileName, Path.GetFileName(packaged.MetadataPath));
         Assert.Null(packaged.WrapperPath);
 
@@ -83,7 +83,7 @@ public sealed class PluginPackagerTests : IDisposable
 
         var zipBytes = File.ReadAllBytes(packaged.ArchivePath);
 
-        Assert.Equal("Anaglyfin_0.2.0.zip", recorded.Plugin.ZipFileName);
+        Assert.Equal("Anaglyfin_0.2.1.zip", recorded.Plugin.ZipFileName);
         Assert.Equal("Anaglyfin.dll", recorded.Plugin.AssemblyFileName);
         Assert.Equal(Digest.Sha256Algorithm, recorded.Plugin.ChecksumType);
         Assert.Equal(Sha256(zipBytes), recorded.Plugin.Checksum);
@@ -193,7 +193,7 @@ public sealed class PluginPackagerTests : IDisposable
     public void VerifyRefusesAMissingArchive()
     {
         PluginPackager.Pack(Request());
-        _artifacts.Delete("Anaglyfin_0.2.0.zip");
+        _artifacts.Delete("Anaglyfin_0.2.1.zip");
 
         var refusal = Assert.Throws<PackagingError>(() => PluginPackager.Verify(VerifyRequest()));
 
@@ -206,9 +206,9 @@ public sealed class PluginPackagerTests : IDisposable
         PluginPackager.Pack(Request());
 
         // What `dotnet publish -p` style output would leave behind: the assembly in a folder.
-        File.Delete(_artifacts.LocationOf("Anaglyfin_0.2.0.zip"));
+        File.Delete(_artifacts.LocationOf("Anaglyfin_0.2.1.zip"));
 
-        using (var archive = ZipFile.Open(_artifacts.LocationOf("Anaglyfin_0.2.0.zip"), ZipArchiveMode.Create))
+        using (var archive = ZipFile.Open(_artifacts.LocationOf("Anaglyfin_0.2.1.zip"), ZipArchiveMode.Create))
         {
             archive.CreateEntryFromFile(_assemblyPath, "net10.0/Anaglyfin.dll");
         }
