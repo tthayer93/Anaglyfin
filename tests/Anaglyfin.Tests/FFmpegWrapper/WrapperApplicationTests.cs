@@ -680,6 +680,163 @@ public sealed class WrapperApplicationTests : IDisposable
         Assert.Empty(_slots.SlotFiles());
     }
 
+    // ----- marker audio compatibility on the two-binary route -------------------------------
+
+    [Fact]
+    public void AMarkerCommandWithFdkAudioIsSanitizedForTheMvcBinary()
+    {
+        // The exact failure of the v0.2.0 3D playbacks: the server probed the official binary,
+        // the official binary answered "libfdk_aac", and Jellyfin wrote that selection plus its
+        // private -vbr option into a marker command that then died at argument splitting on the
+        // FFmpeg-mvc build. The dispatch already knows this command is the marker route of a
+        // split deployment, so the launcher must receive the native encoder, no fdk option, and
+        // a bitrate where the level stood - and the log must say what was changed and why.
+        var arguments = JellyfinLikeMarkerCommand("-codec:a:0", "libfdk_aac", "-ac", "2", "-vbr:a", "4");
+        var (application, launcher) = CreateApplication(serverFFmpegPath: _serverFFmpeg);
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        var launch = Assert.Single(launcher.Launches);
+        Assert.Equal(_realFFmpeg, launch.ExecutablePath);
+        Assert.Equal(
+            RewrittenMarkerCommand("-codec:a:0", "aac", "-ac", "2", "-b:a", "128000"),
+            launch.Arguments);
+        Assert.DoesNotContain("vbr", launch.CommandLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("libfdk_aac", launch.CommandLine, StringComparison.Ordinal);
+
+        var output = _diagnostics.ToString();
+        Assert.Contains("warning: the FFmpeg-mvc build", output, StringComparison.Ordinal);
+        Assert.Contains("native aac", output, StringComparison.Ordinal);
+        Assert.Contains("-b:a 128000", output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    // Jellyfin 12's indexed spellings of the same selection and option.
+    [InlineData("-c:a:0 libfdk_aac -vbr:a:0 5", "-c:a:0 aac -b:a 192000")]
+    // The pre-12 alias with the plain audio-scoped level.
+    [InlineData("-acodec libfdk_aac -vbr:a 1", "-acodec aac -b:a 48000")]
+    public void AMarkerCommandWithOtherFdkSpellingsIsSanitizedTheSameWay(string receivedAudio, string sanitizedAudio)
+    {
+        var arguments = JellyfinLikeMarkerCommand(receivedAudio.Split(' '));
+        var (application, launcher) = CreateApplication(serverFFmpegPath: _serverFFmpeg);
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        Assert.Equal(
+            RewrittenMarkerCommand(sanitizedAudio.Split(' ')),
+            Assert.Single(launcher.Launches).Arguments);
+    }
+
+    [Theory]
+    // Stereo is the shape the users hit; 5.1 is the shape that would silently exceed the
+    // server's bandwidth budget if the table were read as a total instead of per channel.
+    [InlineData("2", "128000")]
+    [InlineData("6", "384000")]
+    public void TheVbrLevelMapsPerChannelForTheMarkerCommand(string channels, string bits)
+    {
+        var arguments = JellyfinLikeMarkerCommand("-codec:a:0", "libfdk_aac", "-ac", channels, "-vbr:a", "4");
+        var (application, launcher) = CreateApplication(serverFFmpegPath: _serverFFmpeg);
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        Assert.Equal(
+            RewrittenMarkerCommand("-codec:a:0", "aac", "-ac", channels, "-b:a", bits),
+            Assert.Single(launcher.Launches).Arguments);
+    }
+
+    [Theory]
+    // The server stated an audio bitrate: the codec still becomes native and the option the
+    // build cannot parse still goes, but no second bitrate is added to out-authorise it.
+    [InlineData("-codec:a:0 libfdk_aac -b:a 128k -vbr:a 4", "-codec:a:0 aac -b:a 128k")]
+    [InlineData("-codec:a:0 libfdk_aac -ab 192000 -vbr:a 4", "-codec:a:0 aac -ab 192000")]
+    public void AMarkerCommandWithItsOwnAudioBitrateKeepsIt(string receivedAudio, string sanitizedAudio)
+    {
+        var arguments = JellyfinLikeMarkerCommand(receivedAudio.Split(' '));
+        var (application, launcher) = CreateApplication(serverFFmpegPath: _serverFFmpeg);
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        var launch = Assert.Single(launcher.Launches);
+        Assert.Equal(RewrittenMarkerCommand(sanitizedAudio.Split(' ')), launch.Arguments);
+        Assert.Contains("keeping the audio bitrate", _diagnostics.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AMarkerCommandWithNativeAudioIsNotTouchedAtAll()
+    {
+        // The command of a server whose probe never saw fdk: this is the everyday marker job,
+        // and the compatibility route must cost it neither a token nor a log line.
+        var arguments = JellyfinLikeMarkerCommand("-c:a", "aac", "-b:a", "192k", "-ac", "2");
+        var (application, launcher) = CreateApplication(serverFFmpegPath: _serverFFmpeg);
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        Assert.Equal(
+            RewrittenMarkerCommand("-c:a", "aac", "-b:a", "192k", "-ac", "2"),
+            Assert.Single(launcher.Launches).Arguments);
+        Assert.Equal(string.Empty, _diagnostics.ToString());
+    }
+
+    [Fact]
+    public void APassedThroughCommandWithFdkAudioReachesTheServerBinaryByteForByte()
+    {
+        // The probe vectors and ordinary playbacks of the same inverted deployment: their
+        // binary has the encoder, their tokens are the server's own, and the sanitizer that
+        // saves the marker route must not reach them. A probe whose fdk answer was rewritten
+        // here would be a probe that lies about the official build.
+        var arguments = JellyfinLikeCommand("/library/movie.mkv");
+        var copyIndex = arguments.IndexOf("copy");
+        arguments[copyIndex] = "libfdk_aac";
+        arguments.Insert(copyIndex + 1, "-vbr:a");
+        arguments.Insert(copyIndex + 2, "4");
+
+        var (application, launcher) = CreateApplication(serverFFmpegPath: _serverFFmpeg);
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        var launch = Assert.Single(launcher.Launches);
+        Assert.Equal(_serverFFmpeg, launch.ExecutablePath);
+        Assert.Equal(arguments.ToArray(), launch.Arguments);
+        Assert.Equal(string.Empty, _diagnostics.ToString());
+    }
+
+    [Fact]
+    public void ASingleBinaryMarkerCommandWithFdkAudioIsNotTouchedAtAll()
+    {
+        // The other invariant deployment: one binary answers the probes and the marker jobs, so
+        // whatever the probe advertised is what the binary actually has, and the wrapper has no
+        // business second-guessing it. The fdk selection passes through exactly as it did before
+        // the split existed - even when it names something the single build lacks, which is the
+        // administrator's build-flag problem, not a split this wrapper is compensating.
+        var arguments = JellyfinLikeMarkerCommand("-codec:a:0", "libfdk_aac", "-ac", "2", "-vbr:a", "4");
+        var (application, launcher) = CreateApplication();
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        var launch = Assert.Single(launcher.Launches);
+        Assert.Equal(_realFFmpeg, launch.ExecutablePath);
+        Assert.Contains("libfdk_aac", launch.CommandLine, StringComparison.Ordinal);
+        Assert.Contains("-vbr:a", launch.CommandLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("-b:a", launch.CommandLine, StringComparison.Ordinal);
+        Assert.Equal(string.Empty, _diagnostics.ToString());
+    }
+
+    [Fact]
+    public void AMalformedFdkVectorOnTheMarkerRouteCannotCrashTheWrapper()
+    {
+        // A level outside the table is clamped the way the encoder itself clamps it, and the
+        // command starts. The wrapper that meets a malformed command has the same answer the
+        // wrapper meets a malformed marker with: it never dies on the request's data.
+        var arguments = JellyfinLikeMarkerCommand("-codec:a:0", "libfdk_aac", "-ac", "2", "-vbr:a", "9");
+        var (application, launcher) = CreateApplication(serverFFmpegPath: _serverFFmpeg);
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        Assert.Equal(
+            RewrittenMarkerCommand("-codec:a:0", "aac", "-ac", "2", "-b:a", "192000"),
+            Assert.Single(launcher.Launches).Arguments);
+    }
+
     // ----- subtitle depth through the real settings channel --------------------------------
 
     [Fact]
@@ -971,6 +1128,67 @@ public sealed class WrapperApplicationTests : IDisposable
 
     private static string Marker(string profileId)
         => ProfileMarker.Create(profileId, SourcePath, null).ToString();
+
+    /// <summary>
+    /// The marker transcode of the capability-inverted shape: the HLS command Jellyfin builds
+    /// when its probe of the official binary reported an audio encoder, carrying the given
+    /// audio tokens in the server's own encode segment. This is the command that arrives with
+    /// <c>-codec:a:0 libfdk_aac -vbr:a</c> on a split deployment whose server has fdk and whose
+    /// FFmpeg-mvc build does not.
+    /// </summary>
+    private static List<string> JellyfinLikeMarkerCommand(params string[] audioTokens)
+    {
+        var arguments = new List<string>
+        {
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-i",
+            Marker(ProfileIds.SideBySideFull),
+            "-map",
+            "0:v",
+            "-map",
+            "0:a",
+            "-c:v",
+            "libx264",
+        };
+
+        arguments.AddRange(audioTokens);
+        arguments.AddRange(new[] { "-f", "hls", "-hls_time", "6", "playlist.m3u8" });
+
+        return arguments;
+    }
+
+    /// <summary>
+    /// The <c>sbs_full</c> rewrite of that command: the marker replaced, the composed view
+    /// requested, and the audio segment exactly as the given tokens state it. What the audio
+    /// tokens themselves are is the difference each compatibility test is about - the wrapper's
+    /// own work is identical across all of them.
+    /// </summary>
+    private static List<string> RewrittenMarkerCommand(params string[] audioTokens)
+    {
+        var arguments = new List<string>
+        {
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-view_ids",
+            "-1",
+            "-i",
+            SourcePath,
+            "-map",
+            "0:v",
+            "-map",
+            "0:a",
+            "-c:v",
+            "libx264",
+        };
+
+        arguments.AddRange(audioTokens);
+        arguments.AddRange(new[] { "-f", "hls", "-hls_time", "6", "playlist.m3u8" });
+
+        return arguments;
+    }
 
     /// <summary>
     /// The command Jellyfin builds for a hardware-assisted 4K HDR transcode: the server's own
