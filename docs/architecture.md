@@ -82,6 +82,7 @@ untouched.
 | `ProfileMarkerParser` | Wrapper-side marker recognition and validation |
 | `FfmpegProfileArgumentBuilder` | Exact argument tokens per profile |
 | `WrapperArgumentRewriter` | Pure command decision: pass through, rewrite, or refuse |
+| `MarkerAudioCompatibility` | Marker-route audio fallback: maps the one `libfdk_aac` selection the official build's probe makes possible (and the FFmpeg-mvc build cannot run) onto native AAC from a fixed table |
 | `WrapperSettingsFile` | Settings document crossing the plugin/wrapper boundary |
 | `WrapperSettingsPublicationService` | Writes that document at plugin startup; `Plugin` rewrites it on save |
 | `Anaglyfin.FFmpegWrapper` | Out-of-process executable started by Jellyfin |
@@ -102,7 +103,13 @@ same `Rewritten` vs `PassedThrough` answer that decides whether a concurrency sl
 Whichever path is chosen gets the same self-check before it starts: a bare name is left to the
 operating system, a rooted path must exist, and a variable that points back at the wrapper is
 refused rather than forked — the second binary is checked exactly as hard as the first, and a refusal
-names the variable that selected it. See "Current deployment assumptions" for the variable contract.
+names the variable that selected it. The `Rewritten` row carries one extra step unique to it: when
+the deployment named a second binary, a rewritten command has its known fdk audio selection mapped
+to native AAC before launch, because the capabilities it was composed around were read off the other
+binary (see "Capability inversion" under "Hardware acceleration passes through"). The
+`PassedThrough` row is never offered that step - a probe or ordinary command runs on the binary its
+own server composed it around, exactly as written. See "Current deployment assumptions" for the
+variable contract.
 
 ## Which default applies
 
@@ -298,18 +305,45 @@ build `docs/install.md` compiles adds `--enable-vaapi` and `--enable-libvpl` for
 Anaglyfin names no encoder, never forces `libx264`, and takes whatever the server's settings select
 out of whatever binary the server was handed.
 
-**Capability inversion (a consequence of the split, to check rather than to code around).** Once
-ordinary commands and the startup probes reach `ANAGLYFIN_SERVER_FFMPEG`, `SupportsEncoder` and the
-`decoders`/`encoders`/filters/hwaccel lists the server reads are the **official** build's, not the
-FFmpeg-mvc build's. The server can therefore select an encoder or a tone-mapping filter for a marker
-job — `libx265`, `libvpx`, `libopus`, `tonemap_opencl` — that a minimal FFmpeg-mvc build does not
-carry, and that job then runs on the build whose `SupportsEncoder` was never consulted. The
-mitigation is build-flag parity plus a diff of `ffmpeg-mvc -encoders` against the official `-encoders`
-(see `docs/install.md` §3.1 step 9); the wrapper deliberately does **not** learn to probe encoders,
-because the rewrite has no business second-guessing the server's codec choice. For the documented
-QSV/VA-API H.264 flow the `n8.1.2-mvc7-jf4` build already matches what the server selects. The
-dashboard's FFmpeg version line is likewise the **official** banner now; only `mvcsubdepth` and
-`-view_ids` still require the mvc build.
+**Capability inversion (a consequence of the split).** Once ordinary commands and the startup probes
+reach `ANAGLYFIN_SERVER_FFMPEG`, `SupportsEncoder` and the `decoders`/`encoders`/filters/hwaccel
+lists the server reads are the **official** build's, not the FFmpeg-mvc build's. The server can
+therefore select an encoder or a tone-mapping filter for a marker job — `libx265`, `libvpx`,
+`libopus`, `tonemap_opencl` — that a minimal FFmpeg-mvc build does not carry, and that job then runs
+on the build whose `SupportsEncoder` was never consulted. For that video surface the mitigation
+stays what it always was: build-flag parity plus a diff of `ffmpeg-mvc -encoders` against the
+official `-encoders` (see `docs/install.md` §3.1 step 9); for the documented QSV/VA-API H.264 flow
+the `n8.1.2-mvc7-jf4` build already matches what the server selects. The wrapper does not learn to
+probe encoders there either — the rewrite has no business second-guessing the server's video codec
+choice.
+
+The **audio** surface is answered in code instead, because there the inversion is not a missing
+preference but a guaranteed death, and it is one the manual parity check could never catch in time:
+the official image's FFmpeg carries `libfdk_aac`, Jellyfin 12 prefers it whenever the probe answers
+true (with `EnableAudioVbr` on), and its builder writes the encoder's **private** quality option
+beside it — `-codec:a:0 libfdk_aac … -vbr:a <n>`. A private option is worse than a missing encoder
+name: FFmpeg's argument splitter rejects it before any input is opened, so the child dies at
+`Unrecognized option 'vbr:a'` / `Error splitting the argument list` with nothing but its banner on
+the log — the exact failure behind the v0.2.0 3D playback reports. Rewriting only the codec name
+would still die on the option, and Jellyfin's fdk branch emits **no** audio bitrate at all, so
+dropping the option without replacing it would silently drop the audio to native's default.
+
+`MarkerAudioCompatibility` closes that one gap from a fixed table, with no probing. It runs where
+dispatch has just proven what a command is — a **rewritten** marker job of a deployment that named
+its second binary — and maps the known fdk selection onto the encoder every build carries: an
+audio-scoped codec selection (`-c`/`-codec` with a specifier denoting audio or none, `-acodec`)
+carrying the value `libfdk_aac` becomes `aac`; the audio-scoped `-vbr` pairs are removed; and if
+the command carried no audio bitrate (`-b:a`, `-ab`, or bare `-b`) one is synthesized from the
+removed level at its documented per-channel floor — 24/32/48/64/96 kbit/s for VBR 1–5, levels
+outside the range clamped as fdk's own encoder clamps them — times the command's `-ac` channel
+count (stereo when unstated), written at the position of the first removed level rather than behind
+the output file. The wrapper writes a notice naming the fallback and the resulting bitrate. The
+promise the narrowing is bought against: passed-through commands — the server's probes included —
+and every command of a single-binary deployment are byte-for-byte what the server wrote, non-audio
+arguments are never touched, and `-profile:a` is left alone, because it parses on every build and
+native `aac` rejecting a hand-authored HE expectation is a misconfiguration to surface, not to
+paper over. The dashboard's FFmpeg version line is likewise the **official** banner now; only
+`mvcsubdepth` and `-view_ids` still require the mvc build.
 
 Nothing at all is taken off a command for a **decode**. The server attaches an accelerator to an input
 per reported codec, writing that choice in front of the input's `-i` (`-hwaccel`,
