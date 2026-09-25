@@ -36,11 +36,18 @@ namespace Anaglyfin.FFmpegWrapper;
 /// in features only the FFmpeg-mvc build has - view selection, the depth filter - so it is
 /// handed to the build the deployment named as the real one. A passed-through command is the
 /// server's own, composed around the decoders, encoders and filters the server believes it is
-/// talking to, so it is handed to the FFmpeg the server would have run. The discriminator is
-/// the same one the slot uses, and a deployment that named no second binary keeps the single
-/// answer it always had: both routes are the same path. Whichever one is chosen gets the same
-/// check before it is started, and a refusal about it names the variable that chose it.
-/// </para>
+    /// talking to, so it is handed to the FFmpeg the server would have run. The discriminator is
+    /// the same one the slot uses, and a deployment that named no second binary keeps the single
+    /// answer it always had: both routes are the same path. Whichever one is chosen gets the same
+    /// check before it is started, and a refusal about it names the variable that chose it. The
+    /// split has one consequence this class answers by rule: the server reads its capability
+    /// probes off the official binary, so a rewritten marker command can arrive carrying the
+    /// official build's preferred audio encoder, and the FFmpeg-mvc build it is handed to cannot
+    /// run that selection or its private quality option. The one known case - <c>libfdk_aac</c>
+    /// and its <c>vbr</c> option - is mapped to the native encoder on this route only, by
+    /// <see cref="MarkerAudioCompatibility"/>, and only when the deployment named the second
+    /// binary that made the split; everything else about a command stays as the server wrote it.
+    /// </para>
 /// <para>
 /// <b>What reaches the log.</b> A refusal says which rule the command broke and what the
 /// administrator can change, and nothing else. Argument vectors are never echoed - they
@@ -169,11 +176,26 @@ public sealed class WrapperApplication
             return RefuseRewrite(rewrite);
         }
 
+        // The one capability gap this dispatch closes by rule instead of by parity. Naming a
+        // second binary lets the server read its audio encoders off the official build, and
+        // Jellyfin answers that probe with libfdk_aac plus its private -vbr option on every
+        // transcode it composes - including this marker job, which now runs on the minimal
+        // FFmpeg-mvc build that carries neither. Rewritten status and a named server binary are
+        // exactly the proof that this command is the marker route of a two-binary deployment, so
+        // the known selection is mapped to the native encoder here, from a fixed table, with no
+        // probing. A passed-through command and a single-binary deployment never reach this call
+        // and stay byte-for-byte what the server wrote.
+        if (rewrite.Status == WrapperRewriteStatus.Rewritten && _options.HasServerFFmpegPath)
+        {
+            rewrite = MarkerAudioCompatibility.ApplyTo(rewrite);
+        }
+
         // What the rewrite declined, and why. A rewrite that carried on without something it was
         // asked for has already decided that the request is not worth a playback - a subtitle depth
         // the command's filter graph has no shape for, say - and the only thing left to decide is
         // whether anybody finds out afterwards. That is decided here, because this is the only place
-        // the wrapper has a log to write to.
+        // the wrapper has a log to write to. The audio-compatibility notice travels on the same
+        // channel, ahead of the declines, because it names a change the command did undergo.
         foreach (var warning in rewrite.Warnings)
         {
             Report($"warning: {warning}");
