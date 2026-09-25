@@ -197,12 +197,12 @@ docker compose exec -u root jellyfin bash /tmp/dotnet-install.sh \
   --install-dir /tmp/dotnet
 ```
 
-**6. The wrapper: fetch and unpack.** `v0.2.0` is a tag, not a branch — the source arrives as a tag
+**6. The wrapper: fetch and unpack.** `v0.2.1` is a tag, not a branch — the source arrives as a tag
 archive.
 
 ```sh
 docker compose exec -u root jellyfin curl -fsSL \
-  https://github.com/tthayer93/Anaglyfin/archive/refs/tags/v0.2.0.tar.gz \
+  https://github.com/tthayer93/Anaglyfin/archive/refs/tags/v0.2.1.tar.gz \
   -o /tmp/anaglyfin.tar.gz
 
 docker compose exec -u root jellyfin sh -c '
@@ -276,7 +276,7 @@ transcode log shows `Unrecognized option 'vbr:a'` and `Error splitting the argum
 nothing else after the child's banner, the official build's probe advertised `libfdk_aac` (which it
 carries and the FFmpeg-mvc build does not), Jellyfin wrote `-codec:a… libfdk_aac` plus the
 encoder's private `-vbr:a <n>` into the command, and the minimal build died parsing it. That is the
-audio capability inversion, and the fixed wrapper - a future patch release; v0.2.0 itself still
+audio capability inversion, and the fixed wrapper - `v0.2.1` and later; a `v0.2.0` wrapper still
 dies this way - handles this known case on the marker route: a rewritten marker command has that
 selection mapped to native `aac`, the `vbr` option
 removed and a bitrate synthesized from a fixed table, with an `anaglyfin-wrapper: warning:` line
