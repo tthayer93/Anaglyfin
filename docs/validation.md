@@ -237,13 +237,9 @@ signature of getting this wrong is one line at startup and a library that never 
       trying to start process '/config/anaglyfin/ffmpeg/ffprobe' ... No such file or directory
 ```
 
-- [x] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
-  current subtitle-depth target is the official `n8.1.2-mvc8-jf5` build - a queue sync to
-  `jellyfin-ffmpeg v8.1.2-5` on an unchanged 8.1.2 base, carrying the same `mvcsubdepth` and
-  `-view_ids` surface as the mvc7 build it supersedes. It is a **current target**: the tick on this
-  row is the mvc7 deployment shape, and no jf5 runtime PASS is recorded in the result log yet. An
-  older FFmpeg-mvc may run ordinary commands but cannot honour a depth request if it does not carry
-  `mvcsubdepth`.
+- [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
+  latest tag is `n8.1.2-mvc8-jf5`. An older FFmpeg-mvc may run ordinary commands but cannot honour
+  a depth request if it does not carry `mvcsubdepth`.
 - [x] `FFmpeg -filters` on the **FFmpeg-mvc** binary names `mvcsubdepth` (the filter a depth request
   needs; it is not loaded when subtitle depth is `Flat`). Note that the server's startup probe reads
   the **official** FFmpeg's filters now, so `mvcsubdepth` will not appear there — it is required only
