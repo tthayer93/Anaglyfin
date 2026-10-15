@@ -1,8 +1,8 @@
 # Anaglyfin runtime validation harness
 
 A disposable Docker stack that runs the packaged plugin and the packaged FFmpeg wrapper
-inside the image the real test server runs in - `jellyfin/jellyfin:12.1`, Jellyfin
-`12.1` at whatever patch that tag currently publishes, Debian 13 - with the same mount
+inside the image the real test server runs in - `jellyfin/jellyfin:12.2`, Jellyfin
+`12.2` at whatever patch that tag currently publishes, Debian 13 - with the same mount
 shape the real server uses:
 
 ```text
@@ -27,7 +27,7 @@ Proves here, on your machine, before anyone touches a real server:
 | Check | Evidence |
 | --- | --- |
 | The CI artifacts are the files a server accepts | `Loaded plugin: Anaglyfin 0.2.1.0` in the container log |
-| Jellyfin 12 accepts the wrapper as its FFmpeg | `MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` and `Found ffmpeg version 8.1.2` in the container log |
+| Jellyfin 12 accepts the wrapper as its FFmpeg | `MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` in the container log - that line names the wrapper as Jellyfin's FFmpeg |
 | The linux-x64 wrapper artifact executes in this image | `sh harness.sh check`, which also asserts pass-through, marker rewrite, and refusal inside the image |
 | A missing real FFmpeg is loud, not silent | the server refuses to start with `FFmpeg validation: ... Path set by command line or environment variable is invalid` |
 | FFprobe has to sit next to the wrapper | `Running /config/anaglyfin/ffmpeg/ffprobe ... No such file or directory` until it does |
@@ -88,7 +88,7 @@ which is this, spelled out:
 docker compose -f compose.jellyfin.yml run --rm wrapper-check
 ```
 
-The service starts `jellyfin/jellyfin:12.1` with only the wrapper mounted and runs
+The service starts `jellyfin/jellyfin:12.2` with only the wrapper mounted and runs
 `wrapper-check.sh`, which answers one question: does the CI artifact actually run - and
 actually decide - inside the image Jellyfin runs in? Its real FFmpeg is the image's own
 `/bin/echo`, which prints the arguments it was started with, so the three wrapper
@@ -125,8 +125,8 @@ sh harness.sh up
 mount whose source does not exist is created for you as an empty root-owned *directory* -
 and a server that finds a directory where an assembly belongs is a confusing afternoon.
 
-It pulls `jellyfin/jellyfin:12.1` on first use, which is a few hundred MB. That tag is the pinned
-current target rather than a floating `:latest`, so a run recorded against 12.1 cannot drift into
+It pulls `jellyfin/jellyfin:12.2` on first use, which is a few hundred MB. That tag is the pinned
+current target rather than a floating `:latest`, so a run recorded against 12.2 cannot drift into
 whatever `:latest` has since become; `HARNESS_IMAGE` in `.env` overrides it. The plugin's
 `targetAbi 12.0.0` is a minimum-version floor, so this image loads the assembly exactly as a 12.0
 server does.
@@ -176,14 +176,12 @@ Expected lines on a healthy start, in this order:
 ```text
 Loaded assembly Anaglyfin, Version=0.2.1.0, ... from /config/plugins/Anaglyfin/Anaglyfin.dll
 Loaded plugin: Anaglyfin 0.2.1.0
-MediaBrowser.MediaEncoding.Encoder.MediaEncoder: Found ffmpeg version 8.1.2
 MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 ```
 
-That pair of `MediaEncoder` lines is the whole deployment contract in two lines: the
-server believes its FFmpeg *is* the wrapper, and the wrapper let the server's version and
-capability probes through to the real binary. No `anaglyfin-wrapper:` line belongs in a
-healthy start.
+That `MediaEncoder: FFmpeg:` line is the whole deployment contract in one line: it identifies
+the wrapper as Jellyfin's FFmpeg - the server believes its FFmpeg *is* the wrapper. No
+`anaglyfin-wrapper:` line belongs in a healthy start.
 
 Then, from the host:
 
@@ -428,7 +426,7 @@ startup probes should keep using. Both halves:
 ```sh
 # .env: point the marker route at the mounted build; keep ordinary commands + probes on the stock
 # FFmpeg, and remember ffprobe beside the wrapper is the OFFICIAL one (sh harness.sh ffprobe).
-HARNESS_FFMPEG_MVC=/path/to/ffmpeg-mvc-n8.1.2-mvc8-jf5
+HARNESS_FFMPEG_MVC=/path/to/ffmpeg-mvc-n8.1.3-mvc9-jf1
 HARNESS_REAL_FFMPEG=/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
 HARNESS_SERVER_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
 ```
