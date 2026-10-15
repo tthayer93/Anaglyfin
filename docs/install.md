@@ -5,7 +5,7 @@ and point Jellyfin's FFmpeg at the wrapper. On Docker the commands in §3 run in
 container and build both halves there. Target: Jellyfin **12.x** — Debian/Ubuntu package or
 `jellyfin/jellyfin:12.2`, the container this flow currently targets. The plugin's
 `targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.1` loads on
-Jellyfin 12.0 and later through 12.2.
+Jellyfin 12.0 or later.
 
 ## 1. Install the plugin
 
