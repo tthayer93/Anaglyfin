@@ -3,9 +3,9 @@
 Install the plugin from one repository URL, get three FFmpeg runtime files onto the server,
 and point Jellyfin's FFmpeg at the wrapper. On Docker the commands in §3 run inside the running
 container and build both halves there. Target: Jellyfin **12.x** — Debian/Ubuntu package or
-`jellyfin/jellyfin:12.1`, the container this flow currently targets. The plugin's
+`jellyfin/jellyfin:12.2`, the container this flow currently targets. The plugin's
 `targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.1` loads on
-Jellyfin 12.0 and on 12.1 alike.
+Jellyfin 12.0 and later through 12.2.
 
 ## 1. Install the plugin
 
@@ -60,7 +60,7 @@ The two server shapes differ only in who fills that directory:
 
 Every command below runs **inside the running container**. Nothing is installed on the Docker host
 and nothing extra is mounted for the runtime. Assumes the service is named `jellyfin`, the image is
-`jellyfin/jellyfin:12.1`, and `./jellyfin/config` is mounted at `/config`. Every command below
+`jellyfin/jellyfin:12.2`, and `./jellyfin/config` is mounted at `/config`. Every command below
 execs as **root** with `-u root` — that is what the package install and the writes under `/config`
 need — rather than trusting the user the container happens to run its own process as, which the
 image can be configured to change. This flow targets `linux-x64`, because the wrapper publish
@@ -364,7 +364,7 @@ all five step 9 added — `JELLYFIN_FFMPEG`, `ANAGLYFIN_REAL_FFMPEG`, `ANAGLYFIN
 as `ANAGLYFIN_SLOT_WAIT_MS` or the `ANAGLYFIN_OFFICIAL_FFMPEG` alias, if present. `JELLYFIN_FFMPEG`
 is the one that bites: leave it pointing at the wrapper just deleted and Jellyfin looks for its
 FFmpeg at a path that no longer exists and fails to find it. Then recreate with
-`jellyfin/jellyfin:12.1`:
+`jellyfin/jellyfin:12.2`:
 
 ```sh
 docker compose up -d --force-recreate jellyfin
