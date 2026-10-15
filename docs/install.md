@@ -425,18 +425,17 @@ and `wrapper` directories those variables pointed at.
 ## 5. Verify and update
 
 - `Dashboard → Plugins` lists **Anaglyfin** and its settings page opens.
-- The server log names the wrapper as Jellyfin's FFmpeg, at the path the shape installed it to.
-  Docker:
+- The server log names the wrapper as Jellyfin's FFmpeg. The `MediaEncoder: FFmpeg:` line, naming the
+  wrapper's path, is what identifies the wrapper as Jellyfin's FFmpeg; no server-reported FFmpeg
+  version is part of the contract. Docker:
 
   ```text
-  MediaBrowser.MediaEncoding.Encoder.MediaEncoder: Found ffmpeg version 8.1.2
   MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
   ```
 
   Bare metal:
 
   ```text
-  MediaBrowser.MediaEncoding.Encoder.MediaEncoder: Found ffmpeg version 8.1.2
   MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg
   ```
 

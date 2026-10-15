@@ -27,7 +27,7 @@ Proves here, on your machine, before anyone touches a real server:
 | Check | Evidence |
 | --- | --- |
 | The CI artifacts are the files a server accepts | `Loaded plugin: Anaglyfin 0.2.1.0` in the container log |
-| Jellyfin 12 accepts the wrapper as its FFmpeg | `MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` and `Found ffmpeg version 8.1.2` in the container log |
+| Jellyfin 12 accepts the wrapper as its FFmpeg | `MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` in the container log - that line names the wrapper as Jellyfin's FFmpeg |
 | The linux-x64 wrapper artifact executes in this image | `sh harness.sh check`, which also asserts pass-through, marker rewrite, and refusal inside the image |
 | A missing real FFmpeg is loud, not silent | the server refuses to start with `FFmpeg validation: ... Path set by command line or environment variable is invalid` |
 | FFprobe has to sit next to the wrapper | `Running /config/anaglyfin/ffmpeg/ffprobe ... No such file or directory` until it does |
@@ -176,14 +176,12 @@ Expected lines on a healthy start, in this order:
 ```text
 Loaded assembly Anaglyfin, Version=0.2.1.0, ... from /config/plugins/Anaglyfin/Anaglyfin.dll
 Loaded plugin: Anaglyfin 0.2.1.0
-MediaBrowser.MediaEncoding.Encoder.MediaEncoder: Found ffmpeg version 8.1.2
 MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 ```
 
-That pair of `MediaEncoder` lines is the whole deployment contract in two lines: the
-server believes its FFmpeg *is* the wrapper, and the wrapper let the server's version and
-capability probes through to the real binary. No `anaglyfin-wrapper:` line belongs in a
-healthy start.
+That `MediaEncoder: FFmpeg:` line is the whole deployment contract in one line: it identifies
+the wrapper as Jellyfin's FFmpeg - the server believes its FFmpeg *is* the wrapper. No
+`anaglyfin-wrapper:` line belongs in a healthy start.
 
 Then, from the host:
 
