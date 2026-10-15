@@ -238,7 +238,7 @@ signature of getting this wrong is one line at startup and a library that never 
 ```
 
 - [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
-  latest tag is `n8.1.2-mvc8-jf5`. An older FFmpeg-mvc may run ordinary commands but cannot honour
+  latest tag is `n8.1.3-mvc9-jf1`. An older FFmpeg-mvc may run ordinary commands but cannot honour
   a depth request if it does not carry `mvcsubdepth`.
 - [x] `FFmpeg -filters` on the **FFmpeg-mvc** binary names `mvcsubdepth` (the filter a depth request
   needs; it is not loaded when subtitle depth is `Flat`). Note that the server's startup probe reads

@@ -428,7 +428,7 @@ startup probes should keep using. Both halves:
 ```sh
 # .env: point the marker route at the mounted build; keep ordinary commands + probes on the stock
 # FFmpeg, and remember ffprobe beside the wrapper is the OFFICIAL one (sh harness.sh ffprobe).
-HARNESS_FFMPEG_MVC=/path/to/ffmpeg-mvc-n8.1.2-mvc8-jf5
+HARNESS_FFMPEG_MVC=/path/to/ffmpeg-mvc-n8.1.3-mvc9-jf1
 HARNESS_REAL_FFMPEG=/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
 HARNESS_SERVER_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
 ```

@@ -38,7 +38,7 @@ on bare metal — named exactly:
   currently publish it from the tagged source instead of downloading that asset; bare metal takes
   the asset itself (§4).
 - `ffmpeg-mvc` — a [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build from the
-  `jellyfin-8.1` branch; latest tag `n8.1.2-mvc8-jf5`. This is the binary the wrapper dispatches
+  `jellyfin-8.1` branch; latest tag `n8.1.3-mvc9-jf1`. This is the binary the wrapper dispatches
   marker/profile commands to.
 - `ffprobe` — the `ffprobe` from the **official** Jellyfin FFmpeg, *not* the one from the FFmpeg-mvc
   build. The custom build does produce its own `ffprobe`, but it must not be installed beside the
@@ -139,7 +139,7 @@ needed once the three files are in place, and none of it survives a recreate.
 
 ```sh
 docker compose exec -u root jellyfin curl -fsSL \
-  https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.2-mvc8-jf5.tar.gz \
+  https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.3-mvc9-jf1.tar.gz \
   -o /tmp/ffmpeg-mvc.tar.gz
 
 docker compose exec -u root jellyfin sh -c '
