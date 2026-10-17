@@ -853,6 +853,10 @@ Capture the real child FFmpeg command while playback starts. The wrapper should 
 marker token and insert the profile's output arguments after the last input. Server-owned
 encoder, muxer, HLS, and output arguments should survive.
 
+Only Red/Cyan Dubois is enabled by default, so reaching another profile's command from a client
+means switching that profile on first; a marker command built by hand (see the harness appendix)
+needs no enablement, because the wrapper judges the marker in front of it and not the settings.
+
 Before any per-profile fragment, check that the command is an encode at all. A profile converts
 pictures; a command that copies the video stream has decided not to produce one.
 
