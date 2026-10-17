@@ -56,7 +56,10 @@ public static class ProfileIds
     /// </summary>
     public const string CustomGrayscale = "custom_grayscale";
 
-    /// <summary>Red/cyan Dubois anaglyph (<c>stereo3d</c> code <c>arcd</c>). Shipped default profile.</summary>
+    /// <summary>
+    /// Red/cyan Dubois anaglyph (<c>stereo3d</c> code <c>arcd</c>). The shipped default
+    /// profile, and the only profile a fresh installation enables.
+    /// </summary>
     public const string AnaglyphRedCyanDubois = AnaglyphProfileIdPrefix + "arcd";
 
     /// <summary>Red/cyan anaglyph (<c>stereo3d</c> code <c>arcc</c>).</summary>
@@ -126,13 +129,28 @@ public static class ProfileIds
     private static readonly HashSet<string> AllowedIds = new(AllProfileIds, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The profile ids enabled on a fresh installation: the MVP formats.
+    /// The profile ids enabled on a fresh installation: the red/cyan Dubois anaglyph, and
+    /// nothing else.
     /// </summary>
     /// <remarks>
-    /// An admin enabling more presets is a settings change, not a code change.
+    /// <para>
+    /// One profile is the whole shipped enabled set, because one profile is the answer that
+    /// is right for a server nobody has configured yet: red/cyan is the glasses almost
+    /// everybody owns, it needs no special display, and it is the profile the plugin's own
+    /// default points at. Every other catalog entry - both side-by-side sizes, both
+    /// over-under sizes, the plain base view, the other anaglyph presets and the custom
+    /// colours - is listed on the admin page unticked and stays off until it is switched on.
+    /// </para>
+    /// <para>
+    /// An admin enabling more presets is a settings change, not a code change. This set is
+    /// not applied to a server that already has settings: a stored enabled list is
+    /// authoritative and an upgrade rewrites nothing. It answers only a settings document
+    /// that named no known profile, which is the fresh installation and the
+    /// disabled-everything case.
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<string> DefaultEnabledProfileIds { get; } =
-        new[] { AnaglyphRedCyanDubois, SideBySideFull, SideBySideHalf, TwoDBase };
+        new[] { AnaglyphRedCyanDubois };
 
     /// <summary>
     /// Builds the profile id of a built-in anaglyph output code.

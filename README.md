@@ -9,11 +9,13 @@ plays.
 ## Supported playback versions
 
 Every version below is built into the catalog and listed in catalog order -
-20 supported catalog versions. On a fresh install four of them are enabled -
-3D Anaglyph Red/Cyan (Dubois), 3D Full Side-by-Side, 3D Half Side-by-Side, and
-2D Base - and Red/Cyan (Dubois) is also the default offered first; the others,
-including both Top-and-Bottom versions, are switched on from the admin settings
-page.
+20 supported catalog versions. On a fresh install one of them is enabled: 3D
+Anaglyph Red/Cyan (Dubois), which is also the default offered first. Every
+other catalog version - both side-by-side sizes, both Top-and-Bottom versions,
+2D Base, the other anaglyph presets and the custom-colours anaglyph - is listed
+on the admin settings page unticked and is switched on from there. An
+installation that already has settings keeps the enabled list it stored;
+upgrading changes nothing about what it offers.
 
 - 3D Full Side-by-Side
 - 3D Full Top-and-Bottom

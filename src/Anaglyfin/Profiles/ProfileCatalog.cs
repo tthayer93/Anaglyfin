@@ -97,7 +97,8 @@ public sealed class ProfileCatalog : IProfileCatalog
 
         // An admin who disabled every profile, or a settings file written against a
         // catalog this build does not know, must not leave a client with no version to
-        // pick. Fall back to the shipped enabled set.
+        // pick. Fall back to the shipped enabled set - one profile, red/cyan, which is
+        // the version the widest pair of glasses can watch.
         IReadOnlyList<string> candidates = configured.Count > 0 ? configured : ProfileIds.DefaultEnabledProfileIds;
 
         var enabled = new List<string>(candidates.Count);
@@ -276,8 +277,8 @@ public sealed class ProfileCatalog : IProfileCatalog
 
             // Full top-and-bottom leads the over-under pair the way full SBS leads the
             // side-by-side pair: two full-size eyes in one frame, just stacked instead
-            // of laid sideways. It is not shipped enabled - the MVP four stand until an
-            // administrator asks for more.
+            // of laid sideways. It is not shipped enabled - nothing but red/cyan is,
+            // until an administrator asks for more.
             new()
             {
                 Id = ProfileIds.TopAndBottomFull,

@@ -72,6 +72,20 @@ public class AnaglyfinMediaSourceProviderTests
 
     private static readonly string SecondMvcVersionKey = SecondMvcVersionItemId.ToString("N", CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// The enabled list the multi-profile offers below are built from. Only
+    /// <see cref="ProfileIds.AnaglyphRedCyanDubois"/> ships enabled, so a test that wants to
+    /// watch more than one version reach the client has to switch the others on here - which
+    /// is what this list is for, and why it is spelled out instead of assumed.
+    /// </summary>
+    private static readonly string[] FourConversionProfileIds =
+    [
+        ProfileIds.AnaglyphRedCyanDubois,
+        ProfileIds.SideBySideFull,
+        ProfileIds.SideBySideHalf,
+        ProfileIds.TwoDBase
+    ];
+
     // --- identity and interface -------------------------------------------------
 
     [Fact]
@@ -383,15 +397,39 @@ public class AnaglyfinMediaSourceProviderTests
     // --- the offer itself ---------------------------------------------------------
 
     [Fact]
+    public async Task GetMediaSourcesOnFreshSettingsOffersOnlyTheShippedRedCyanVersion()
+    {
+        // The fresh-install behaviour from the client's side: settings that stored no enabled
+        // list answer with one version - red/cyan Dubois, the profile the shipped default
+        // names. A conversion nobody switched on is not offered, however useful it would be.
+        var provider = CreateProvider();
+
+        var source = Assert.Single(await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None));
+
+        Assert.Equal(IdOf(ProfileIds.AnaglyphRedCyanDubois), source.Id);
+        Assert.Equal("3D Anaglyph Red/Cyan (Dubois)", source.Name);
+    }
+
+    [Fact]
     public async Task GetMediaSourcesOffersTheEnabledProfilesWithTheDefaultFirst()
     {
+        // The four conversions, switched on in the settings rather than taken from the shipped
+        // set: this test is about the order an offer is built in, and an order needs more than
+        // one entry to be an order.
+        var configuration = new StubConfigurationSource
+        {
+            Configuration = new PluginConfiguration
+            {
+                EnabledProfileIds = new List<string>(FourConversionProfileIds)
+            }
+        };
         var detectorScript = new ScriptedDetector();
-        var provider = CreateProvider(detector: detectorScript);
+        var provider = CreateProvider(detector: detectorScript, configuration: configuration);
 
         var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
 
-        // Shipped settings: red/cyan Dubois default, the MVP profile set.
-        // The ids say nothing about which profile they are (they are GUIDs), so the order
+        // Red/cyan Dubois is the configured default, so it leads; the rest follow in catalog
+        // order. The ids say nothing about which profile they are (they are GUIDs), so the order
         // is asserted against the id each of those profiles is bound to.
         Assert.Equal(
             new[]
@@ -406,7 +444,7 @@ public class AnaglyfinMediaSourceProviderTests
             new[] { "3D Anaglyph Red/Cyan (Dubois)", "3D Full Side-by-Side", "3D Half Side-by-Side", "2D Base" },
             sources.Select(source => source.Name));
 
-        // The shipped set names 2D Base last, so it sorts last (no separate fallback setting).
+        // The enabled list puts 2D Base last, so it sorts last (no separate fallback setting).
         Assert.Equal(IdOf(ProfileIds.TwoDBase), sources[^1].Id);
 
         // The detector saw the item's own signals (path, name), not a fabricated copy.
@@ -419,7 +457,14 @@ public class AnaglyfinMediaSourceProviderTests
     {
         var configuration = new StubConfigurationSource
         {
-            Configuration = new PluginConfiguration { DefaultProfileId = ProfileIds.SideBySideFull }
+            Configuration = new PluginConfiguration
+            {
+                DefaultProfileId = ProfileIds.SideBySideFull,
+
+                // Enabled explicitly: the promotion under test only applies to a default the
+                // enabled list carries - which is the next test's subject.
+                EnabledProfileIds = new List<string>(FourConversionProfileIds)
+            }
         };
         var provider = CreateProvider(configuration: configuration);
 
@@ -431,6 +476,29 @@ public class AnaglyfinMediaSourceProviderTests
     }
 
     [Fact]
+    public async Task AConfiguredDefaultThatIsNotEnabledIsNotOffered()
+    {
+        // The order promise has a precondition: only enabled profiles are offered. The case
+        // that matters is an administrator who names a default the enabled list does not carry
+        // - or who switches it off afterwards. A version is never offered because it was
+        // configured; the offer falls back to the enabled set.
+        var configuration = new StubConfigurationSource
+        {
+            Configuration = new PluginConfiguration
+            {
+                DefaultProfileId = ProfileIds.SideBySideFull,
+                EnabledProfileIds = new List<string> { ProfileIds.AnaglyphRedCyanDubois }
+            }
+        };
+
+        var sources = (await CreateProvider(configuration: configuration)
+            .GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
+
+        var source = Assert.Single(sources);
+        Assert.Equal(IdOf(ProfileIds.AnaglyphRedCyanDubois), source.Id);
+    }
+
+    [Fact]
     public async Task TheOfferedOrderIsTheGlobalDefaultFirstAndTheRemainingEnabledProfilesAfter()
     {
         // The global default is the only default that resolves: the offer is the global
@@ -439,7 +507,11 @@ public class AnaglyfinMediaSourceProviderTests
         // else to the front, so this is the order every client sees.
         var configuration = new StubConfigurationSource
         {
-            Configuration = new PluginConfiguration { DefaultProfileId = ProfileIds.SideBySideHalf }
+            Configuration = new PluginConfiguration
+            {
+                DefaultProfileId = ProfileIds.SideBySideHalf,
+                EnabledProfileIds = new List<string>(FourConversionProfileIds)
+            }
         };
         var provider = CreateProvider(configuration: configuration);
 
@@ -1172,7 +1244,9 @@ public class AnaglyfinMediaSourceProviderTests
     [Fact]
     public async Task EveryOfferedSourceIdIsAGuidTheDynamicHlsRoutesAccept()
     {
-        var provider = CreateProvider();
+        // Several profiles enabled so the distinctness below is a claim about more than the one
+        // version a fresh install offers.
+        var provider = CreateProvider(configuration: SettingsWithFourConversionsEnabled());
 
         var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
 
@@ -1204,7 +1278,7 @@ public class AnaglyfinMediaSourceProviderTests
         var provider = new AnaglyfinMediaSourceProvider(
             new MvcSourceDetector(),
             new ProfileCatalog(),
-            new StubConfigurationSource(),
+            SettingsWithFourConversionsEnabled(),
             NullLogger<AnaglyfinMediaSourceProvider>.Instance);
 
         var sources = (await provider.GetMediaSources(CreateMvcItem(), CancellationToken.None)).ToList();
@@ -1255,8 +1329,9 @@ public class AnaglyfinMediaSourceProviderTests
         // item, the movie is not 3D at all and nothing is offered - which is the bug: the MVC
         // file is not a listable item a client could open instead, so those versions simply
         // do not exist anywhere. Judged per source, the 1080p file stays out and the MVC one
-        // gets its versions.
-        var provider = CreateRealProvider();
+        // gets its versions. The four profiles below are enabled by id: the offer this reads
+        // is the whole point, and one version per file would not show it.
+        var provider = CreateRealProvider(SettingsWithFourConversionsEnabled());
         var item = CreateStackedMovie();
 
         var sources = (await provider.GetMediaSources(item, CancellationToken.None)).ToList();
@@ -1362,7 +1437,8 @@ public class AnaglyfinMediaSourceProviderTests
     {
         // Two eligible files in one item is a choice of file as well as a choice of conversion,
         // so both get their full set of profiles and each label says which file it converts.
-        var provider = CreateRealProvider();
+        // The set is enabled here, not shipped: four profiles x two files.
+        var provider = CreateRealProvider(SettingsWithFourConversionsEnabled());
         var item = CreateStackedMovie();
         var secondMvc = CreateVersionSource(
             SecondMvcVersionItemId,
@@ -1417,8 +1493,9 @@ public class AnaglyfinMediaSourceProviderTests
         // version and a linked one, say. Duplicate control is by the identity a version's id is
         // folded from, which is the same question as "is this the same file again?", so the two
         // cannot disagree about the answer: the second listing is not a second question, and the
-        // offer is not a second copy of the answer.
-        var provider = CreateRealProvider();
+        // offer is not a second copy of the answer. With four profiles enabled the wrong answer
+        // is eight sources, which is easier to see than one becoming two.
+        var provider = CreateRealProvider(SettingsWithFourConversionsEnabled());
         var item = CreateStackedMovie();
         var mvc = item.StaticSources[1];
         item.StaticSources = new[] { item.StaticSources[0], mvc, mvc };
@@ -1539,9 +1616,10 @@ public class AnaglyfinMediaSourceProviderTests
     {
         // The fallback the enumeration may not silently remove: a source implementation with no
         // static list has one witness, and dropping it would cost every single-file MVC movie
-        // its versions.
+        // its versions. Versions plural is what the count below reads, so the profiles are
+        // enabled rather than left to the shipped one.
         var detector = new ScriptedDetector();
-        var provider = CreateProvider(detector: detector);
+        var provider = CreateProvider(detector: detector, configuration: SettingsWithFourConversionsEnabled());
         var item = CreateMvcItem();
         item.StaticSources = Array.Empty<MediaSourceInfo>();
 
@@ -1559,9 +1637,11 @@ public class AnaglyfinMediaSourceProviderTests
     {
         // The regression this whole file guards: an item whose only source is its own file must
         // come out of the per-source code path with the same ids, names, markers and settings
-        // reads it always had - four versions, asked once, one read, nothing doubled.
+        // reads it always had - four versions, asked once, one read, nothing doubled. The four
+        // are the enabled set of this settings object, not the shipped one: what must not change
+        // is the per-source path's answer for a given configuration.
         var detector = new ScriptedDetector();
-        var configuration = new StubConfigurationSource();
+        var configuration = SettingsWithFourConversionsEnabled();
         var provider = CreateProvider(detector: detector, configuration: configuration);
         var item = CreateMvcItem();
 
@@ -1612,10 +1692,11 @@ public class AnaglyfinMediaSourceProviderTests
 
         item.StaticSources = new[] { item.StaticSources[0], versionItem };
 
-        var sources = (await CreateRealProvider().GetMediaSources(item, CancellationToken.None)).ToList();
+        var sources = (await CreateRealProvider(SettingsWithFourConversionsEnabled())
+            .GetMediaSources(item, CancellationToken.None)).ToList();
 
-        // The four default profiles, one of which the library already carries: withheld by id, and no
-        // substitute offered in its place.
+        // The four enabled profiles, one of which the library already carries: withheld by id, and
+        // no substitute offered in its place.
         Assert.Equal(3, sources.Count);
         Assert.DoesNotContain(sources, source => string.Equals(source.Id, versionItemId.ToString("N", CultureInfo.InvariantCulture), StringComparison.Ordinal));
         Assert.Contains(sources, source => source.Id == IdOf(ProfileIds.SideBySideHalf));
@@ -1626,6 +1707,8 @@ public class AnaglyfinMediaSourceProviderTests
     {
         // Withholding reads the item's own source list and nothing else, so it has to be exact: a
         // version of one profile that silenced the others would remove versions no item exists for.
+        // The red/cyan profile carried by the library is the shipped default, so this needs no
+        // explicit enablement to hold - the other three profiles it must not silence do.
         var item = CreateMvcItem();
         var versionItemId = AnaglyfinMediaSourceProvider.BuildVersionItemIdFromSource(ItemKey, MvcMoviePath, ProfileIds.AnaglyphRedCyanDubois);
         var versionItem = CreateVersionSource(
@@ -1635,7 +1718,8 @@ public class AnaglyfinMediaSourceProviderTests
 
         item.StaticSources = new[] { item.StaticSources[0], versionItem };
 
-        var sources = (await CreateRealProvider().GetMediaSources(item, CancellationToken.None)).ToList();
+        var sources = (await CreateRealProvider(SettingsWithFourConversionsEnabled())
+            .GetMediaSources(item, CancellationToken.None)).ToList();
 
         Assert.Equal(3, sources.Count);
         Assert.DoesNotContain(sources, source => source.Id == IdOf(ProfileIds.AnaglyphRedCyanDubois));
@@ -1656,12 +1740,28 @@ public class AnaglyfinMediaSourceProviderTests
             configuration ?? new StubConfigurationSource(),
             NullLogger<AnaglyfinMediaSourceProvider>.Instance);
 
-    private static AnaglyfinMediaSourceProvider CreateRealProvider()
+    private static AnaglyfinMediaSourceProvider CreateRealProvider(
+        StubConfigurationSource? configuration = null)
         => new(
             new MvcSourceDetector(),
             new ProfileCatalog(),
-            new StubConfigurationSource(),
+            configuration ?? new StubConfigurationSource(),
             NullLogger<AnaglyfinMediaSourceProvider>.Instance);
+
+    /// <summary>
+    /// Settings with the four conversions enabled by id. The stacked offers, the withheld
+    /// versions and the per-source id checks below need several versions per file before they
+    /// can tell one from another, and a fresh install enables only red/cyan - so the ones that
+    /// need them say so here.
+    /// </summary>
+    private static StubConfigurationSource SettingsWithFourConversionsEnabled()
+        => new()
+        {
+            Configuration = new PluginConfiguration
+            {
+                EnabledProfileIds = new List<string>(FourConversionProfileIds)
+            }
+        };
 
     /// <summary>
     /// The stacked movie: one item whose own path, name and 3D format describe its plain

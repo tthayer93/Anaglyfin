@@ -84,7 +84,7 @@ so that a `FAIL` on the real server is a finding about Anaglyfin and not about t
   ```text
   name: Anaglyfin
   guid: c7f4a1d9-3b58-4e2a-9d6c-84f0b1e5a723
-  version: 0.2.1
+  version: 0.2.2
   targetAbi: 12.0.0
   framework: net10.0
   ```
@@ -109,8 +109,9 @@ Install the plugin from the Anaglyfin repository URL `docs/install.md` gives, or
 a repository is not the shape you want, by placing the built `Anaglyfin.dll` in the server's
 configured plugin directory. `docs/install.md` gives the paths for a bare-metal server and for
 a container that mounts `./jellyfin/config` at `/config`. That URL now serves the published
-catalog - `v0.2.1` is tagged and its assets are on the release - so a run can install from the
-catalog, and placement is the troubleshooting route for a server that cannot add a repository.
+catalog - `v0.2.2` is the version it offers, and the release behind it carries the packaged
+artifacts - so a run can install from the catalog, and placement is the troubleshooting route
+for a server that cannot add a repository.
 Restart or reload Jellyfin after installation.
 
 - [x] Jellyfin lists the plugin with name `Anaglyfin`.
@@ -150,7 +151,7 @@ Check the rendered page against the shipped defaults:
 | Field | Shipped default | Validation |
 | --- | --- | --- |
 | Default profile | `3D Anaglyph Red/Cyan (Dubois)` (`anaglyph_arcd`) | Shown and selectable; the profile every client starts on |
-| Enabled profiles | shipped MVP set | Red/Cyan Dubois, full SBS, half SBS, and 2D Base are enabled by default |
+| Enabled profiles | one profile: Red/Cyan Dubois | Only Red/Cyan Dubois is ticked; every other catalog version - full SBS, half SBS, both Top-and-Bottom sizes, 2D Base, the other anaglyph presets and the custom colours - is listed beside it unticked, ready to switch on |
 | Custom left eye colour | `#FF0000` | Color input defaults correctly |
 | Custom right eye colour | `#00FFFF` | Color input defaults correctly |
 | Offer original 3D MVC version | checked | Checkbox is ticked, and its help text is beside the box rather than part of its click target; V5.3 checks what turning it off does |
@@ -176,7 +177,7 @@ Check the rendered page against the shipped defaults:
   transcodes** and saving writes that number to the shared settings document; a wrapper started after
   the save sees it without another deployment step.
 - [ ] Disabling all enabled profiles is not accepted as an empty offer: saving that state
-  should come back as the shipped enabled set.
+  should come back as the shipped enabled set - one tick, Red/Cyan Dubois.
 - [ ] Changing the default profile changes the first Anaglyfin version offered, for every client.
 - [ ] The page carries no device defaults section at all: no rows, no device picker, nothing
   device-shaped - the default is global and there is nowhere else to set one.
@@ -393,10 +394,14 @@ server's config directory:
 Then look for:
 
 ```text
-Anaglyfin offers 4 versions for <item name>.
+Anaglyfin offers 1 versions for <item name>.
 Anaglyfin offers no versions for <item name>: no media source of it is 3D MVC.
 Anaglyfin offers no versions for the media source <version label> of <item name>: <decision>.
 ```
+
+The count is the number of enabled profiles, so on a fresh install - Red/Cyan Dubois alone - the
+first line says `1 versions`. A server that has had full SBS, half SBS and 2D Base switched on
+from the admin page says `4 versions` for the same item.
 
 The second and third lines are the per-file decisions: an item that is several files is asked
 about once per file, so a movie whose MVC version was missed shows up as a refusal naming that
@@ -411,10 +416,11 @@ Default enabled profiles on a fresh install:
 
 ```text
 anaglyph_arcd
-sbs_full
-sbs_half
-two_d_base
 ```
+
+One version is the whole shipped enabled set. Every other profile is on the admin page
+unticked, so any offer with more than one Anaglyfin version in it - including the multi-profile
+examples below - was set up by switching those profiles on there first.
 
 Expected Anaglyfin contribution order:
 
@@ -422,7 +428,15 @@ Expected Anaglyfin contribution order:
    client, because the global default is the only default there is.
 2. The remaining enabled profiles in catalog display order.
 
-For the default installation the expected Anaglyfin order is therefore:
+On a fresh install the default and the enabled set are the same one profile, so the expected
+Anaglyfin order is simply:
+
+```text
+1. 3D Anaglyph Red/Cyan (Dubois)
+```
+
+With full SBS, half SBS and 2D Base also switched on from the admin page - the setup the
+examples below are written against - the same two rules give:
 
 ```text
 1. 3D Anaglyph Red/Cyan (Dubois)
@@ -513,8 +527,9 @@ This is the layout to reproduce it with:
 ```
 
 Request playback info for the movie item itself - not for the MVC file, which the client cannot
-address directly - and expect the item's two originals followed by the four profiles of the MVC
-one:
+address directly - and expect the item's two originals followed by the enabled profiles of the
+MVC one. The list below is a server that has full SBS, half SBS and 2D Base switched on beside
+the shipped Red/Cyan Dubois; on a fresh install the four converted versions are one:
 
 ```text
 1080p                          original, untouched
@@ -535,7 +550,9 @@ one:
       and from the id of any version it was derived from.
 - [x] Ids are stable across repeated playback-info requests and across a server restart.
 - [ ] With one eligible MVC file among the versions the labels are unchanged: `3D Full
-      Side-by-Side`, `3D Half Side-by-Side`, `3D Anaglyph Red/Cyan (Dubois)`, `2D Base`.
+      Side-by-Side`, `3D Half Side-by-Side`, `3D Anaglyph Red/Cyan (Dubois)`, `2D Base`. Those
+      four are this example's enabled set, not a fresh install's offer - a fresh install shows
+      the Red/Cyan label alone.
 - [ ] With more than one eligible MVC file, every label names the file it converts, e.g.
       `3D mvc / 3D Full Side-by-Side`, and each profile appears once per eligible file.
 - [x] Nothing is offered twice: one eligible file yields one source per profile, and the total
@@ -543,7 +560,7 @@ one:
 - [ ] A stack with no MVC file among its versions gets no Anaglyfin sources at all.
 - [ ] The static sources themselves are untouched: the primary 1080p source and the MVC source
       both keep their real codec, frame size, runtime and stereo declaration.
-- [ ] A single-file MVC movie is unaffected: same ids, same labels, same four versions.
+- [ ] A single-file MVC movie is unaffected: same ids, same labels, same enabled versions.
 
 ### 5.2 Global default ordering
 
@@ -836,6 +853,10 @@ away, or passed to HTTP is not safe to rewrite.
 Capture the real child FFmpeg command while playback starts. The wrapper should replace the
 marker token and insert the profile's output arguments after the last input. Server-owned
 encoder, muxer, HLS, and output arguments should survive.
+
+Only Red/Cyan Dubois is enabled by default, so reaching another profile's command from a client
+means switching that profile on first; a marker command built by hand (see the harness appendix)
+needs no enablement, because the wrapper judges the marker in front of it and not the settings.
 
 Before any per-profile fragment, check that the command is an encode at all. A profile converts
 pictures; a command that copies the video stream has decided not to produce one.
@@ -1603,10 +1624,11 @@ Current state:
   its own repository instead: `.github/workflows/release.yml` turns an already-existing `vX.Y.Z`
   tag into a GitHub release carrying the packaged artifacts and republishes the manifest at
   `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json`, the URL
-  `docs/install.md` tells administrators to add. `v0.2.1` is published, so that manifest and the
-  release assets behind it are live: the catalog lists Anaglyfin `0.2.1` as the current
-  version (`0.1.0` and `0.2.0` remain as release history) and the release carries the plugin
-  archive, the wrapper, and `SHA256SUMS.txt`.
+  `docs/install.md` tells administrators to add. `v0.2.2` is that release: the catalog lists
+  Anaglyfin `0.2.2` as the current version (`0.1.0`, `0.2.0` and `0.2.1` remain as release
+  history) and the release carries the plugin archive, the wrapper, and `SHA256SUMS.txt`. That
+  this is the version a server installs is a packaging and catalog statement, not a runtime one:
+  the dated result logs below record earlier builds, and no `v0.2.2` runtime pass is recorded here.
 
 Validation expectation:
 
@@ -1662,7 +1684,7 @@ checks are optional unless a failure shows a provider-created marker being refus
 ## Result log
 
 The rows below are the dated 2026-09-21 formal pass recorded against the `v0.1.0` build; a version
-string in a row - V1's `0.1.0.0`, for example - is that dated evidence, not a `v0.2.1` runtime result.
+string in a row - V1's `0.1.0.0`, for example - is that dated evidence, not a runtime result for the current release.
 
 | Item | Area | Expected | Result | Notes |
 | --- | --- | --- | --- | --- |

@@ -4,7 +4,7 @@ Install the plugin from one repository URL, get three FFmpeg runtime files onto 
 and point Jellyfin's FFmpeg at the wrapper. On Docker the commands in §3 run inside the running
 container and build both halves there. Target: Jellyfin **12.x** — Debian/Ubuntu package or
 `jellyfin/jellyfin:12.2`, the container this flow currently targets. The plugin's
-`targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.1` loads on
+`targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.2` loads on
 Jellyfin 12.0 or later.
 
 ## 1. Install the plugin
@@ -201,12 +201,12 @@ docker compose exec -u root jellyfin bash /tmp/dotnet-install.sh \
   --install-dir /tmp/dotnet
 ```
 
-**6. The wrapper: fetch and unpack.** `v0.2.1` is a tag, not a branch — the source arrives as a tag
+**6. The wrapper: fetch and unpack.** `v0.2.2` is a tag, not a branch — the source arrives as a tag
 archive.
 
 ```sh
 docker compose exec -u root jellyfin curl -fsSL \
-  https://github.com/tthayer93/Anaglyfin/archive/refs/tags/v0.2.1.tar.gz \
+  https://github.com/tthayer93/Anaglyfin/archive/refs/tags/v0.2.2.tar.gz \
   -o /tmp/anaglyfin.tar.gz
 
 docker compose exec -u root jellyfin sh -c '

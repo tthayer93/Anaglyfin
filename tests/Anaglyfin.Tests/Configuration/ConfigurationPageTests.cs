@@ -234,6 +234,11 @@ public class ConfigurationPageTests
             .Select(profile => profile.Id)
             .ToArray();
 
+        // One tick on the whole page, and it is the profile a fresh install offers. Named
+        // before the comparison below so a page that ticks the wrong single profile is
+        // reported as the wrong profile rather than as a set mismatch.
+        Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, Assert.Single(enabledByDefault));
+
         // Compared as a set: the page lists profiles in catalog order while the shipped set
         // is declared in preference order, and the profile catalog resolves either way to
         // the catalog order it offers clients in.
@@ -243,11 +248,27 @@ public class ConfigurationPageTests
     }
 
     [Fact]
+    public void TheAdminPageListsTheSideBySideAndTwoDProfilesUnTicked()
+    {
+        // The three profiles an earlier build shipped enabled are listed unticked now: a
+        // fresh install shows one ticked version, and an administrator who wants full SBS,
+        // half SBS or the plain base view switches them on here.
+        var listed = ReadProfileList();
+
+        foreach (var profileId in new[] { ProfileIds.SideBySideFull, ProfileIds.SideBySideHalf, ProfileIds.TwoDBase })
+        {
+            var profile = listed.Single(entry => entry.Id == profileId);
+
+            Assert.False(profile.EnabledByDefault);
+        }
+    }
+
+    [Fact]
     public void TheAdminPageListsTheTopAndBottomPairUnTicked()
     {
         // The over-under pair joined the catalog without joining the shipped enabled set,
         // and the page has to say exactly that: both listed, both unticked, so a fresh
-        // install shows the same four enabled versions it showed before the pair existed
+        // install still shows the one enabled version it showed before the pair existed
         // while an administrator can still switch the new ones on.
         var listed = ReadProfileList();
 

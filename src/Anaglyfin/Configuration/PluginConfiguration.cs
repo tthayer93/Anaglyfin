@@ -59,10 +59,15 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <remarks>
     /// <para>
     /// Empty means "no explicit selection", which the profile catalog answers with the
-    /// shipped default set (red/cyan Dubois, full SBS, half SBS, 2D base). Keeping the
-    /// persisted default empty is also what makes a settings file load cleanly: the XML
-    /// serialiser adds stored ids to the collection the constructor created, so a
-    /// prefilled default would come back duplicated after every restart.
+    /// shipped enabled set: the red/cyan Dubois anaglyph alone. Keeping the persisted default
+    /// empty is also what makes a settings file load cleanly: the XML serialiser adds stored
+    /// ids to the collection the constructor created, so a prefilled default would come back
+    /// duplicated after every restart.
+    /// </para>
+    /// <para>
+    /// A stored list is authoritative. An upgrade does not add to it, trim it or replace it,
+    /// so a server that switched on more profiles keeps offering exactly those profiles
+    /// however many the shipped set has grown or shrunk to since.
     /// </para>
     /// <para>
     /// Unknown ids are ignored rather than rejected, so a settings file that mentions a
