@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.RegularExpressions;
+using Anaglyfin.Packager;
 
 namespace Anaglyfin.Tests.Packaging;
 
@@ -48,6 +49,19 @@ internal static class PluginBuildStandin
             return reader.ReadToEnd();
         }
     }
+
+    /// <summary>
+    /// Gets the archive name the packager derives from the identity the build carries.
+    /// </summary>
+    /// <remarks>
+    /// Asked of the manifest itself rather than repeated by hand, so a version bump moves the
+    /// expected file name with it: a test that spelled out the current version would fail for
+    /// the release rather than for anything the packaging did. The one place the release number
+    /// is pinned by value is <c>PluginManifestTests</c>, which is exactly where a bump is
+    /// supposed to be noticed.
+    /// </remarks>
+    internal static string PluginArchiveName =>
+        PluginManifest.Parse(ManifestText(), "the build under test").ZipFileName;
 
     /// <summary>
     /// Copies the plugin assembly into a test directory under the name the manifest declares.
