@@ -243,6 +243,27 @@ public class ConfigurationPageTests
     }
 
     [Fact]
+    public void TheAdminPageListsTheTopAndBottomPairUnTicked()
+    {
+        // The over-under pair joined the catalog without joining the shipped enabled set,
+        // and the page has to say exactly that: both listed, both unticked, so a fresh
+        // install shows the same four enabled versions it showed before the pair existed
+        // while an administrator can still switch the new ones on.
+        var listed = ReadProfileList();
+
+        var full = listed.Single(profile => profile.Id == ProfileIds.TopAndBottomFull);
+        var half = listed.Single(profile => profile.Id == ProfileIds.TopAndBottomHalf);
+
+        Assert.False(full.EnabledByDefault);
+        Assert.False(half.EnabledByDefault);
+
+        // Beside their side-by-side siblings, in catalog order.
+        var ids = listed.Select(profile => profile.Id).ToArray();
+        Assert.Equal(Array.IndexOf(ids, ProfileIds.SideBySideFull) + 1, Array.IndexOf(ids, ProfileIds.TopAndBottomFull));
+        Assert.Equal(Array.IndexOf(ids, ProfileIds.SideBySideHalf) - 1, Array.IndexOf(ids, ProfileIds.TopAndBottomHalf));
+    }
+
+    [Fact]
     public void TheAdminPageBindsEverySettingAndNothingElse()
     {
         var bound = ReadBoundFieldNames();

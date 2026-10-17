@@ -33,6 +33,70 @@ public class ProfileCatalogTests
     }
 
     [Fact]
+    public void AllowlistIsTheCatalogOrderVerbatim()
+    {
+        // Pinned element by element: AllProfileIds order IS display order, and the id
+        // feeds the version-item sort rank, so a profile quietly moving in this list
+        // re-ranks the version picker without anyone deciding it.
+        Assert.Equal(
+            new[]
+            {
+                ProfileIds.SideBySideFull,
+                ProfileIds.TopAndBottomFull,
+                ProfileIds.AnaglyphRedCyanDubois,
+                ProfileIds.AnaglyphRedCyanColor,
+                ProfileIds.AnaglyphRedCyanHalfColor,
+                ProfileIds.AnaglyphRedCyanGray,
+                ProfileIds.AnaglyphGreenMagentaDubois,
+                ProfileIds.AnaglyphGreenMagentaColor,
+                ProfileIds.AnaglyphGreenMagentaHalfColor,
+                ProfileIds.AnaglyphGreenMagentaGray,
+                ProfileIds.AnaglyphYellowBlueDubois,
+                ProfileIds.AnaglyphYellowBlueColor,
+                ProfileIds.AnaglyphYellowBlueHalfColor,
+                ProfileIds.AnaglyphYellowBlueGray,
+                ProfileIds.AnaglyphRedBlueGray,
+                ProfileIds.AnaglyphRedGreenGray,
+                ProfileIds.CustomGrayscale,
+                ProfileIds.TopAndBottomHalf,
+                ProfileIds.SideBySideHalf,
+                ProfileIds.TwoDBase
+            },
+            ProfileIds.AllProfileIds);
+        Assert.Equal(20, ProfileIds.AllProfileIds.Count);
+    }
+
+    [Fact]
+    public void CatalogCarriesTheTopAndBottomPairBesideItsSideBySideSiblings()
+    {
+        var full = _catalog.GetProfile(ProfileIds.TopAndBottomFull);
+        var half = _catalog.GetProfile(ProfileIds.TopAndBottomHalf);
+
+        Assert.Equal("3D Full Top-and-Bottom", full.DisplayName);
+        Assert.Equal(ProfileKind.TopAndBottomFull, full.Kind);
+        Assert.Equal("3D Half Top-and-Bottom", half.DisplayName);
+        Assert.Equal(ProfileKind.TopAndBottomHalf, half.Kind);
+
+        // Full TB seats directly behind full SBS (10 -> 15), half TB directly ahead of
+        // half SBS (45 -> 50): each over-under profile sits beside the side-by-side
+        // profile of the same size class.
+        Assert.Equal(15, full.DisplayOrder);
+        Assert.Equal(45, half.DisplayOrder);
+        var ids = _catalog.Profiles.Select(profile => profile.Id).ToArray();
+        Assert.Equal(Array.IndexOf(ids, ProfileIds.SideBySideFull) + 1, Array.IndexOf(ids, ProfileIds.TopAndBottomFull));
+        Assert.Equal(Array.IndexOf(ids, ProfileIds.SideBySideHalf) - 1, Array.IndexOf(ids, ProfileIds.TopAndBottomHalf));
+
+        // Over-under is a layout conversion, not an anaglyph mix and not an output code:
+        // the anaglyph allowlist stays closed and the profiles carry no code of any kind.
+        Assert.False(full.IsAnaglyph);
+        Assert.False(half.IsAnaglyph);
+        Assert.Null(full.Stereo3DOutputCode);
+        Assert.Null(half.Stereo3DOutputCode);
+        Assert.True(full.RequiresAllViews);
+        Assert.True(half.RequiresAllViews);
+    }
+
+    [Fact]
     public void CatalogCarriesTheMvpFormats()
     {
         foreach (var id in MvpFormatIds)
@@ -190,6 +254,14 @@ public class ProfileCatalogTests
             enabled);
         Assert.DoesNotContain(ProfileIds.CustomGrayscale, enabled);
         Assert.DoesNotContain(ProfileIds.AnaglyphRedCyanGray, enabled);
+
+        // The over-under pair joins the catalog, not the shipped enabled set: adding a
+        // profile is a code change, enabling it stays the administrator's decision.
+        Assert.DoesNotContain(ProfileIds.TopAndBottomFull, enabled);
+        Assert.DoesNotContain(ProfileIds.TopAndBottomHalf, enabled);
+        Assert.DoesNotContain(ProfileIds.TopAndBottomFull, ProfileIds.DefaultEnabledProfileIds);
+        Assert.DoesNotContain(ProfileIds.TopAndBottomHalf, ProfileIds.DefaultEnabledProfileIds);
+        Assert.Equal(4, ProfileIds.DefaultEnabledProfileIds.Count);
     }
 
     [Fact]

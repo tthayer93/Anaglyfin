@@ -692,6 +692,8 @@ public class AnaglyfinMediaSourceProviderTests
             {
                 ProfileIds.SideBySideFull,
                 ProfileIds.SideBySideHalf,
+                ProfileIds.TopAndBottomFull,
+                ProfileIds.TopAndBottomHalf,
                 ProfileIds.TwoDBase,
                 ProfileIds.AnaglyphRedCyanDubois,
                 ProfileIds.CustomGrayscale
@@ -719,6 +721,12 @@ public class AnaglyfinMediaSourceProviderTests
             {
                 // The native all-view frame: both eyes, side by side, at full height.
                 [ProfileIds.SideBySideFull] = (3840, 1080),
+
+                // The over-under pair: full TB stacks the eyes at full size, so it is the
+                // one version that reports double the height at the source's width; half TB
+                // lands back on the source's size like its horizontal sibling.
+                [ProfileIds.TopAndBottomFull] = (1920, 2160),
+                [ProfileIds.TopAndBottomHalf] = (1920, 1080),
 
                 // Halved back to the source's own size on the way to the encoder, so the source's
                 // size is the size the encoder is handed.

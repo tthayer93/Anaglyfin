@@ -34,31 +34,51 @@ public class ProfileVideoGeometryTests
     [InlineData(ProfileKind.TwoDimensional, SourceWidth, SourceHeight)]
     [InlineData(ProfileKind.SideBySideFull, SourceWidth * 2, SourceHeight)]
     [InlineData(ProfileKind.SideBySideHalf, SourceWidth, SourceHeight)]
+    [InlineData(ProfileKind.TopAndBottomFull, SourceWidth, SourceHeight * 2)]
+    [InlineData(ProfileKind.TopAndBottomHalf, SourceWidth, SourceHeight)]
     [InlineData(ProfileKind.Stereo3DAnaglyph, SourceWidth, SourceHeight)]
     [InlineData(ProfileKind.CustomGrayscaleAnaglyph, SourceWidth, SourceHeight)]
     public void EveryFamilyAnswersWithTheFrameItsCommandEncodes(ProfileKind kind, int expectedWidth, int expectedHeight)
     {
         // Each of these numbers is the shape the profile's own filter chain produces, which is
         // what makes it checkable without running FFmpeg: full SBS is the decoder's doubled
-        // native frame, and everything else either halves that frame again (half SBS) or works
-        // inside the source's own size (2D, both anaglyph families).
+        // native frame, full top-and-bottom is that frame restacked over-under (the one family
+        // that doubles the height), and everything else either halves a frame that was built by
+        // doubling (half SBS, half top-and-bottom) or works inside the source's own size
+        // (2D, both anaglyph families).
         var frame = ProfileVideoGeometry.EncodedFrameSize(AProfileOf(kind), SourceWidth, SourceHeight);
 
         Assert.Equal((int?)expectedWidth, frame.Width);
         Assert.Equal((int?)expectedHeight, frame.Height);
     }
 
-    [Fact]
-    public void FullSideBySideIsTheOnlyFamilyThatMovesTheWidth()
+    [Theory]
+    [InlineData(ProfileKind.TopAndBottomFull)]
+    [InlineData(ProfileKind.TopAndBottomHalf)]
+    public void TheTopAndBottomFamiliesNeverMoveTheWidth(ProfileKind kind)
     {
-        // The height never moves: the eyes are laid out sideways, at full height, in every
-        // profile this build offers.
+        // Over-under stacks vertically: whatever the frame's size, the width of a TB
+        // version is the width the source reported. Only full SBS's sideways layout
+        // doubles a width, and only full TB's stacking doubles a height.
+        var frame = ProfileVideoGeometry.EncodedFrameSize(AProfileOf(kind), SourceWidth, SourceHeight);
+
+        Assert.Equal(SourceWidth, frame.Width);
+    }
+
+    [Fact]
+    public void OnlyFullSBSMovesTheWidthAndOnlyFullTopAndBottomMovesTheHeight()
+    {
+        // The two axes have exactly one owner each. Full SBS lays the eyes sideways at
+        // full height - double width, height unmoved. Full top-and-bottom stacks them at
+        // full eye size - width unmoved, double height. Every other family lands back on
+        // the source's own frame, and the assertion enumerates the whole enum so a new
+        // family cannot move an axis without being stated here.
         foreach (var kind in Enum.GetValues<ProfileKind>())
         {
             var frame = ProfileVideoGeometry.EncodedFrameSize(AProfileOf(kind), SourceWidth, SourceHeight);
 
-            Assert.Equal(SourceHeight, frame.Height);
             Assert.Equal(kind == ProfileKind.SideBySideFull ? SourceWidth * 2 : SourceWidth, frame.Width);
+            Assert.Equal(kind == ProfileKind.TopAndBottomFull ? SourceHeight * 2 : SourceHeight, frame.Height);
         }
     }
 
@@ -86,6 +106,33 @@ public class ProfileVideoGeometryTests
 
         Assert.Equal(SourceWidth * 2, frame.Width);
         Assert.Null(frame.Height);
+    }
+
+    [Theory]
+    [InlineData(null)] // a stream the probe never sized
+    [InlineData(0)] // a stream that carries 0 rather than nothing
+    [InlineData(-1)] // and a report that is not a size at all
+    public void AHeightTheSourceNeverNamedIsNotDoubledIntoOne(int? sourceHeight)
+    {
+        // The height guard of the height-doubling family is the height twin of the width
+        // rule above: doubling an unprobed stream's nothing produces a number that sizes a
+        // real scale of a real picture, so the version says what the file says. The width
+        // travels unchanged either way - stacking never moved it.
+        var frame = ProfileVideoGeometry.EncodedFrameSize(AProfileOf(ProfileKind.TopAndBottomFull), SourceWidth, sourceHeight);
+
+        Assert.Equal(SourceWidth, frame.Width);
+        Assert.Equal(sourceHeight, frame.Height);
+    }
+
+    [Fact]
+    public void AHeightIsDoubledEvenWhenTheSourceNamedNoWidth()
+    {
+        // The twin of the named-width case, on the axis full top-and-bottom owns: the
+        // height the source did name is doubled, the unnamed width stays unknown.
+        var frame = ProfileVideoGeometry.EncodedFrameSize(AProfileOf(ProfileKind.TopAndBottomFull), null, SourceHeight);
+
+        Assert.Null(frame.Width);
+        Assert.Equal(SourceHeight * 2, frame.Height);
     }
 
     [Fact]
@@ -137,6 +184,7 @@ public class ProfileVideoGeometryTests
     [Theory]
     [InlineData(ProfileKind.TwoDimensional)]
     [InlineData(ProfileKind.SideBySideHalf)]
+    [InlineData(ProfileKind.TopAndBottomHalf)]
     [InlineData(ProfileKind.Stereo3DAnaglyph)]
     [InlineData(ProfileKind.CustomGrayscaleAnaglyph)]
     public void AVersionThatSizesNothingGetsTheStreamsItCameWithUnchanged(ProfileKind kind)
@@ -258,6 +306,8 @@ public class ProfileVideoGeometryTests
                 ProfileKind.TwoDimensional => ProfileIds.TwoDBase,
                 ProfileKind.SideBySideFull => ProfileIds.SideBySideFull,
                 ProfileKind.SideBySideHalf => ProfileIds.SideBySideHalf,
+                ProfileKind.TopAndBottomFull => ProfileIds.TopAndBottomFull,
+                ProfileKind.TopAndBottomHalf => ProfileIds.TopAndBottomHalf,
                 ProfileKind.Stereo3DAnaglyph => ProfileIds.AnaglyphRedCyanDubois,
                 ProfileKind.CustomGrayscaleAnaglyph => ProfileIds.CustomGrayscale,
 
