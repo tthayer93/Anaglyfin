@@ -89,6 +89,34 @@ public interface IFfmpegProfileArgumentBuilder
     ProfileRewrite BuildSideBySideHalf(SubtitleBurnIn? subtitleBurnIn = null);
 
     /// <summary>
+    /// Builds the full top-and-bottom (over-under) profile from the composed all-view
+    /// output.
+    /// </summary>
+    /// <param name="subtitleBurnIn">An optional subtitle burn-in.</param>
+    /// <returns>
+    /// A rewrite needing the composed input and restacking it with
+    /// <c>stereo3d=sbsl:tbl</c>: left eye above right, each eye keeping the source's own
+    /// frame, so the encoded frame is the source's width at double its height. Unlike
+    /// full SBS this profile is not the composed layout itself, so it always carries its
+    /// conversion filter.
+    /// </returns>
+    ProfileRewrite BuildTopAndBottomFull(SubtitleBurnIn? subtitleBurnIn = null);
+
+    /// <summary>
+    /// Builds the half top-and-bottom (over-under) profile from the composed all-view
+    /// output.
+    /// </summary>
+    /// <param name="subtitleBurnIn">An optional subtitle burn-in.</param>
+    /// <returns>
+    /// A rewrite needing the composed input, restacking it over-under and scaling the
+    /// result back to the source's size - the vertical sibling of
+    /// <see cref="BuildSideBySideHalf"/>, and for the same reason a re-tag alone is not
+    /// sufficient: real scaling is required, and the square-pixel declaration belongs to
+    /// it.
+    /// </returns>
+    ProfileRewrite BuildTopAndBottomHalf(SubtitleBurnIn? subtitleBurnIn = null);
+
+    /// <summary>
     /// Builds a built-in <c>stereo3d</c> anaglyph profile.
     /// </summary>
     /// <param name="stereo3DOutputCode">
