@@ -70,10 +70,13 @@ public static class ProfileVideoGeometry
     /// <param name="sourceHeight">The height the item's own video stream reports.</param>
     /// <returns>
     /// The width and height a version of this profile puts on the wire. For every family but
-    /// full SBS that is the pair the source reported, either because the conversion lands on
-    /// that size anyway or - for a source that named no width at all - because the source's own
-    /// numbers are the best answer available: inventing a doubled one out of nothing would be a
-    /// guess the server then scales a real picture against.
+    /// full SBS and full top-and-bottom that is the pair the source reported, either because
+    /// the conversion lands on that size anyway or - for a source that named no such dimension
+    /// at all - because the source's own numbers are the best answer available: inventing a
+    /// doubled one out of nothing would be a guess the server then scales a real picture
+    /// against. Full SBS doubles the reported width at the reported height; full
+    /// top-and-bottom is its vertical twin and doubles the reported height at the reported
+    /// width.
     /// </returns>
     /// <exception cref="ArgumentNullException"><paramref name="profile"/> is <c>null</c>.</exception>
     /// <remarks>
@@ -92,10 +95,23 @@ public static class ProfileVideoGeometry
     /// height: double the source's width, the source's height.</description>
     /// </item>
     /// <item>
+    /// <description>Full top-and-bottom</description>
+    /// <description>The all-view frame restacked over-under at full eye size - the
+    /// height-doubling family: the source's width, double the source's height. It is the
+    /// vertical twin of full SBS, and unlike full SBS it is not what the decoder emits, so
+    /// the doubling is written into the profile's own conversion.</description>
+    /// </item>
+    /// <item>
     /// <description>Half SBS</description>
     /// <description>The native all-view frame halved in width, which lands back on the
     /// source's size - the doubled frame it is scaled from is inside the profile chain and
     /// never reaches the encoder, let alone the server's scale.</description>
+    /// </item>
+    /// <item>
+    /// <description>Half top-and-bottom</description>
+    /// <description>The restacked full frame halved in height, which lands back on the
+    /// source's size exactly like half SBS - the doubled-height frame stays inside the
+    /// profile chain.</description>
     /// </item>
     /// <item>
     /// <description>Built-in anaglyph</description>
@@ -116,18 +132,28 @@ public static class ProfileVideoGeometry
 
         return profile.Kind switch
         {
-            // The one profile whose encoded frame is wider than the frame the source reports.
+            // The profile whose encoded frame is wider than the frame the source reports.
             // Zero and negative answer "no usable width", which is what an unprobed stream's
             // 0 really claims rather than a real width to double.
             ProfileKind.SideBySideFull => sourceWidth > 0
                 ? (sourceWidth.Value * 2, sourceHeight)
                 : (sourceWidth, sourceHeight),
 
+            // The family that moves the height instead of the width: full top-and-bottom
+            // stacks the two full-size eyes over-under, so the width travels unchanged and
+            // the height doubles. The same guard the width doubling carries applies to the
+            // height: an unprobed stream's 0 or null is not a height to double.
+            ProfileKind.TopAndBottomFull => sourceHeight > 0
+                ? (sourceWidth, sourceHeight.Value * 2)
+                : (sourceWidth, sourceHeight),
+
             // The conversions that pass the source's own frame size through: 2D takes the
-            // base view whole, half SBS halves a frame that was built by doubling, and both
+            // base view whole, half SBS halves a frame that was built by doubling the width,
+            // half top-and-bottom halves one that was built by doubling the height, and both
             // anaglyph families mix the eyes inside the source's frame.
             ProfileKind.TwoDimensional
                 or ProfileKind.SideBySideHalf
+                or ProfileKind.TopAndBottomHalf
                 or ProfileKind.Stereo3DAnaglyph
                 or ProfileKind.CustomGrayscaleAnaglyph => (sourceWidth, sourceHeight),
 
@@ -152,7 +178,7 @@ public static class ProfileVideoGeometry
     /// A list whose first video stream is a clone of the reported one reporting the profile's
     /// encoded frame size, or <paramref name="reported"/> itself when there is nothing to
     /// correct - no stream list, no video stream in it, a profile whose frame is the size the
-    /// source reports, or a source that named no width to double.
+    /// source reports, or a source that named no dimension to double.
     /// </returns>
     /// <exception cref="ArgumentNullException"><paramref name="profile"/> is <c>null</c>.</exception>
     /// <remarks>
