@@ -150,7 +150,7 @@ Check the rendered page against the shipped defaults:
 | Field | Shipped default | Validation |
 | --- | --- | --- |
 | Default profile | `3D Anaglyph Red/Cyan (Dubois)` (`anaglyph_arcd`) | Shown and selectable; the profile every client starts on |
-| Enabled profiles | shipped MVP set | Red/Cyan Dubois, full SBS, half SBS, and 2D Base are enabled by default |
+| Enabled profiles | one profile: Red/Cyan Dubois | Only Red/Cyan Dubois is ticked; every other catalog version - full SBS, half SBS, both Top-and-Bottom sizes, 2D Base, the other anaglyph presets and the custom colours - is listed beside it unticked, ready to switch on |
 | Custom left eye colour | `#FF0000` | Color input defaults correctly |
 | Custom right eye colour | `#00FFFF` | Color input defaults correctly |
 | Offer original 3D MVC version | checked | Checkbox is ticked, and its help text is beside the box rather than part of its click target; V5.3 checks what turning it off does |
@@ -176,7 +176,7 @@ Check the rendered page against the shipped defaults:
   transcodes** and saving writes that number to the shared settings document; a wrapper started after
   the save sees it without another deployment step.
 - [ ] Disabling all enabled profiles is not accepted as an empty offer: saving that state
-  should come back as the shipped enabled set.
+  should come back as the shipped enabled set - one tick, Red/Cyan Dubois.
 - [ ] Changing the default profile changes the first Anaglyfin version offered, for every client.
 - [ ] The page carries no device defaults section at all: no rows, no device picker, nothing
   device-shaped - the default is global and there is nowhere else to set one.
@@ -393,10 +393,14 @@ server's config directory:
 Then look for:
 
 ```text
-Anaglyfin offers 4 versions for <item name>.
+Anaglyfin offers 1 versions for <item name>.
 Anaglyfin offers no versions for <item name>: no media source of it is 3D MVC.
 Anaglyfin offers no versions for the media source <version label> of <item name>: <decision>.
 ```
+
+The count is the number of enabled profiles, so on a fresh install - Red/Cyan Dubois alone - the
+first line says `1 versions`. A server that has had full SBS, half SBS and 2D Base switched on
+from the admin page says `4 versions` for the same item.
 
 The second and third lines are the per-file decisions: an item that is several files is asked
 about once per file, so a movie whose MVC version was missed shows up as a refusal naming that
@@ -411,10 +415,11 @@ Default enabled profiles on a fresh install:
 
 ```text
 anaglyph_arcd
-sbs_full
-sbs_half
-two_d_base
 ```
+
+One version is the whole shipped enabled set. Every other profile is on the admin page
+unticked, so any offer with more than one Anaglyfin version in it - including the multi-profile
+examples below - was set up by switching those profiles on there first.
 
 Expected Anaglyfin contribution order:
 
@@ -422,7 +427,15 @@ Expected Anaglyfin contribution order:
    client, because the global default is the only default there is.
 2. The remaining enabled profiles in catalog display order.
 
-For the default installation the expected Anaglyfin order is therefore:
+On a fresh install the default and the enabled set are the same one profile, so the expected
+Anaglyfin order is simply:
+
+```text
+1. 3D Anaglyph Red/Cyan (Dubois)
+```
+
+With full SBS, half SBS and 2D Base also switched on from the admin page - the setup the
+examples below are written against - the same two rules give:
 
 ```text
 1. 3D Anaglyph Red/Cyan (Dubois)
@@ -513,8 +526,9 @@ This is the layout to reproduce it with:
 ```
 
 Request playback info for the movie item itself - not for the MVC file, which the client cannot
-address directly - and expect the item's two originals followed by the four profiles of the MVC
-one:
+address directly - and expect the item's two originals followed by the enabled profiles of the
+MVC one. The list below is a server that has full SBS, half SBS and 2D Base switched on beside
+the shipped Red/Cyan Dubois; on a fresh install the four converted versions are one:
 
 ```text
 1080p                          original, untouched
@@ -535,7 +549,9 @@ one:
       and from the id of any version it was derived from.
 - [x] Ids are stable across repeated playback-info requests and across a server restart.
 - [ ] With one eligible MVC file among the versions the labels are unchanged: `3D Full
-      Side-by-Side`, `3D Half Side-by-Side`, `3D Anaglyph Red/Cyan (Dubois)`, `2D Base`.
+      Side-by-Side`, `3D Half Side-by-Side`, `3D Anaglyph Red/Cyan (Dubois)`, `2D Base`. Those
+      four are this example's enabled set, not a fresh install's offer - a fresh install shows
+      the Red/Cyan label alone.
 - [ ] With more than one eligible MVC file, every label names the file it converts, e.g.
       `3D mvc / 3D Full Side-by-Side`, and each profile appears once per eligible file.
 - [x] Nothing is offered twice: one eligible file yields one source per profile, and the total
@@ -543,7 +559,7 @@ one:
 - [ ] A stack with no MVC file among its versions gets no Anaglyfin sources at all.
 - [ ] The static sources themselves are untouched: the primary 1080p source and the MVC source
       both keep their real codec, frame size, runtime and stereo declaration.
-- [ ] A single-file MVC movie is unaffected: same ids, same labels, same four versions.
+- [ ] A single-file MVC movie is unaffected: same ids, same labels, same enabled versions.
 
 ### 5.2 Global default ordering
 

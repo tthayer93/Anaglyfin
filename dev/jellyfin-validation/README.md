@@ -260,17 +260,31 @@ Restart. The lines you are looking for, from
 `Anaglyfin.MediaSources.AnaglyfinMediaSourceProvider`:
 
 ```text
-Anaglyfin offers 4 versions for Ready Player One (2018) - 3D mvc.
+Anaglyfin offers 1 versions for Ready Player One (2018) - 3D mvc.
 Anaglyfin offers no versions for Ready Player One (2018) - 1080p: <decision>.
 ```
+
+The count is the number of enabled profiles: a fresh install enables only 3D Anaglyph
+Red/Cyan (Dubois), so it says `1 versions`. Step 7's picker shows the four-profile version of
+this line, which is what a server with full SBS, half SBS and 2D Base switched on from the
+admin page says.
 
 Delete the file, or set the level back to `Information`, when you are done: this is the
 noisiest logging the plugin has and it is not meant to stay on.
 
 ## Step 7 - alternate media sources
 
-Start the MVC item and open the client's version/source picker. Expected, for a fresh
-install with shipped defaults:
+Start the MVC item and open the client's version/source picker. A fresh install with shipped
+defaults offers one Anaglyfin version, the profile it also defaults to:
+
+```text
+<the item's own library source>            (Jellyfin's, unchanged)
+3D Anaglyph Red/Cyan (Dubois)              (the configured default, promoted first)
+```
+
+The fuller picker below needs enabling first: switch on **3D Full Side-by-Side**, **3D Half
+Side-by-Side** and **2D Base** on the Anaglyfin settings page, and the same item offers the
+rest of these labels in catalog order behind the default.
 
 ```text
 <the item's own library source>            (Jellyfin's, unchanged)
@@ -351,7 +365,9 @@ docker compose -f compose.jellyfin.yml exec jellyfin sh -c \
 Both loops skip their own command line, which otherwise matches everything they are
 looking for. The appendix at the bottom is a set of captures from this harness.
 
-Expected shape, and this is the pass condition:
+Expected shape, and this is the pass condition. The marker names the version that was picked -
+`sbs_full` below, one of the profiles Step 7 enables from the admin page, since a fresh install
+offers nothing but Red/Cyan Dubois:
 
 ```text
 jellyfin
