@@ -1684,7 +1684,7 @@ checks are optional unless a failure shows a provider-created marker being refus
 ## Result log
 
 The rows below are the dated 2026-09-21 formal pass recorded against the `v0.1.0` build; a version
-string in a row - V1's `0.1.0.0`, for example - is that dated evidence, not a `v0.2.1` runtime result.
+string in a row - V1's `0.1.0.0`, for example - is that dated evidence, not a runtime result for the current release.
 
 | Item | Area | Expected | Result | Notes |
 | --- | --- | --- | --- | --- |
