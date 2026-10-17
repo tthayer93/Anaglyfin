@@ -148,24 +148,6 @@ public class FfmpegProfileArgumentBuilderTests
     }
 
     [Fact]
-    public void OnlyHalfSideBySideDeclaresItsSampleAspectRatio()
-    {
-        // The other chains change no pixel shape: full SBS is the decoder's own frame, an
-        // anaglyph mixes inside it, and 2D inserts nothing. A setsar in one of those would be a
-        // claim about a scale that never happened.
-        Assert.DoesNotContain(
-            "setsar",
-            string.Join(' ', _builder.BuildSideBySideFull().InsertArguments));
-        Assert.DoesNotContain(
-            "setsar",
-            string.Join(' ', _builder.BuildStereo3DAnaglyph("arcd").InsertArguments));
-        Assert.DoesNotContain(
-            "setsar",
-            string.Join(' ', _builder.BuildCustomGrayscaleAnaglyph(new RgbColor(255, 0, 0), new RgbColor(0, 255, 255)).InsertArguments));
-        Assert.DoesNotContain("setsar", string.Join(' ', _builder.BuildTwoDimensionalBase().InsertArguments));
-    }
-
-    [Fact]
     public void HalfSideBySideIsDerivedFromTheComposedOutputNotSeparateEyeTranscodes()
     {
         var rewrite = _builder.BuildSideBySideHalf();
@@ -180,6 +162,116 @@ public class FfmpegProfileArgumentBuilderTests
         // Two pins feeding an hstack is the other way to express this profile, and the one the
         // composed route replaced: no graph here means no second decode and no second pin.
         Assert.DoesNotContain("hstack", string.Join(" ", rewrite.InsertArguments));
+    }
+
+    // ----- Top-and-bottom ------------------------------------------------------------
+
+    [Fact]
+    public void FullTopAndBottomRestacksTheComposedFrameWithoutScalingIt()
+    {
+        var rewrite = _builder.BuildTopAndBottomFull();
+
+        Assert.Equal(ProfileIds.TopAndBottomFull, rewrite.ProfileId);
+        Assert.Equal(
+            new[] { "-vf", "stereo3d=sbsl:tbl,format=yuv420p" },
+            rewrite.InsertArguments);
+
+        // Unlike full SBS this profile is not the composed layout itself: the pivot is
+        // side-by-side, so the restack is a real filter and this rewrite always carries
+        // it. It stays inside the linear route though - no graph, no map of its own.
+        Assert.Equal("stereo3d=sbsl:tbl,format=yuv420p", rewrite.VideoFilter);
+        Assert.Null(rewrite.VideoMap);
+        Assert.Null(rewrite.FilterComplex);
+        Assert.True(rewrite.RequiresComposedViewInput);
+        Assert.True(rewrite.OwnsVideoPipeline);
+        Assert.DoesNotContain("-map", rewrite.InsertArguments);
+        Assert.DoesNotContain("-filter_complex", rewrite.InsertArguments);
+        Assert.DoesNotContain("scale", string.Join(" ", rewrite.InsertArguments));
+    }
+
+    [Fact]
+    public void HalfTopAndBottomRestacksAndHalvesTheHeightOfTheCombinedFrame()
+    {
+        var rewrite = _builder.BuildTopAndBottomHalf();
+
+        Assert.Equal(ProfileIds.TopAndBottomHalf, rewrite.ProfileId);
+        Assert.Equal(
+            new[] { "-vf", "stereo3d=sbsl:tbl,scale=iw:ih/2:flags=bicubic,setsar=sar=1,format=yuv420p" },
+            rewrite.InsertArguments);
+        Assert.Equal(
+            "stereo3d=sbsl:tbl,scale=iw:ih/2:flags=bicubic,setsar=sar=1,format=yuv420p",
+            rewrite.VideoFilter);
+
+        // No map: the restack and scale run on the composed frames wherever the command
+        // maps them, exactly like the half-SBS scale.
+        Assert.Null(rewrite.VideoMap);
+        Assert.Null(rewrite.FilterComplex);
+        Assert.True(rewrite.RequiresComposedViewInput);
+        Assert.True(rewrite.OwnsVideoPipeline);
+    }
+
+    [Fact]
+    public void HalfTopAndBottomDeclaresSquarePixelsAfterHalvingTheHeight()
+    {
+        // The vertical sibling of the half-SBS ordering pin: restack first (the layout
+        // conversion), then the scale that halves the height, then the square-pixel
+        // declaration that undoes the 1:2 shape the scale hands on, then the pixel
+        // format - in that order, because a setsar before the scale is overwritten.
+        var stages = _builder.BuildTopAndBottomHalf().VideoFilter!.Split(',');
+
+        Assert.Equal(
+            new[] { "stereo3d=sbsl:tbl", "scale=iw:ih/2:flags=bicubic", "setsar=sar=1", "format=yuv420p" },
+            stages);
+    }
+
+    [Fact]
+    public void TheCatalogBuildsTheTopAndBottomPairExactlyLikeTheExplicitBuilders()
+    {
+        foreach (var (profileId, explicitBuild) in new[]
+                 {
+                     (ProfileIds.TopAndBottomFull, _builder.BuildTopAndBottomFull()),
+                     (ProfileIds.TopAndBottomHalf, _builder.BuildTopAndBottomHalf())
+                 })
+        {
+            var generic = _builder.Build(Catalog.GetProfile(profileId));
+
+            Assert.Equal(explicitBuild.ProfileId, generic.ProfileId);
+            Assert.Equal(explicitBuild.Kind, generic.Kind);
+            Assert.Equal(explicitBuild.InsertArguments, generic.InsertArguments);
+            Assert.Equal(explicitBuild.VideoFilter, generic.VideoFilter);
+            Assert.Equal(explicitBuild.VideoMap, generic.VideoMap);
+            Assert.Equal(explicitBuild.FilterComplex, generic.FilterComplex);
+        }
+    }
+
+    [Fact]
+    public void OnlyTheHalfProfilesDeclareTheirSampleAspectRatio()
+    {
+        // The other chains change no pixel shape: full SBS is the decoder's own frame,
+        // full TB restacks without resizing, an anaglyph mixes inside the source frame,
+        // and 2D inserts nothing. A setsar in one of those would be a claim about a
+        // scale that never happened.
+        Assert.DoesNotContain(
+            "setsar",
+            string.Join(' ', _builder.BuildSideBySideFull().InsertArguments));
+        Assert.DoesNotContain(
+            "setsar",
+            string.Join(' ', _builder.BuildTopAndBottomFull().InsertArguments));
+        Assert.Contains(
+            "setsar=sar=1",
+            _builder.BuildSideBySideHalf().VideoFilter,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "setsar=sar=1",
+            _builder.BuildTopAndBottomHalf().VideoFilter,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "setsar",
+            string.Join(' ', _builder.BuildStereo3DAnaglyph("arcd").InsertArguments));
+        Assert.DoesNotContain(
+            "setsar",
+            string.Join(' ', _builder.BuildCustomGrayscaleAnaglyph(new RgbColor(255, 0, 0), new RgbColor(0, 255, 255)).InsertArguments));
+        Assert.DoesNotContain("setsar", string.Join(' ', _builder.BuildTwoDimensionalBase().InsertArguments));
     }
 
     // ----- Stereo3D anaglyph presets -----------------------------------------------
@@ -440,8 +532,29 @@ public class FfmpegProfileArgumentBuilderTests
     }
 
     [Theory]
+    [InlineData(ProfileIds.TopAndBottomFull, "stereo3d=sbsl:tbl,format=yuv420p")]
+    [InlineData(ProfileIds.TopAndBottomHalf, "stereo3d=sbsl:tbl,scale=iw:ih/2:flags=bicubic,setsar=sar=1,format=yuv420p")]
+    public void BurnInIsAppendedAfterTheTopAndBottomChain(string profileId, string profileFilter)
+    {
+        // Same rule as every other linear profile: text is rendered onto the finished
+        // picture, so the subtitles stage lands last in the profile's own chain, and
+        // the two facts the wrapper acts on - suppression and merge - follow it.
+        var rewrite = _builder.Build(Catalog.GetProfile(profileId), new SubtitleBurnIn(MoviePath, 1));
+
+        Assert.Equal(
+            new[] { "-vf", profileFilter + ",subtitles=filename='" + MoviePath + "':si=1" },
+            rewrite.InsertArguments);
+        Assert.Equal(profileFilter, rewrite.VideoFilter);
+        Assert.Equal("subtitles=filename='" + MoviePath + "':si=1", rewrite.SubtitleFilter);
+        Assert.True(rewrite.ShouldAppendSubtitlesToProfileFilter);
+        Assert.True(rewrite.ShouldSuppressSubtitleStreams);
+    }
+
+    [Theory]
     [InlineData(ProfileIds.SideBySideFull)]
     [InlineData(ProfileIds.SideBySideHalf)]
+    [InlineData(ProfileIds.TopAndBottomFull)]
+    [InlineData(ProfileIds.TopAndBottomHalf)]
     [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
     [InlineData(ProfileIds.CustomGrayscale)]
     [InlineData(ProfileIds.TwoDBase)]
@@ -461,6 +574,8 @@ public class FfmpegProfileArgumentBuilderTests
     [Theory]
     [InlineData(ProfileIds.SideBySideFull)]
     [InlineData(ProfileIds.SideBySideHalf)]
+    [InlineData(ProfileIds.TopAndBottomFull)]
+    [InlineData(ProfileIds.TopAndBottomHalf)]
     [InlineData(ProfileIds.AnaglyphRedCyanDubois)]
     [InlineData(ProfileIds.CustomGrayscale)]
     public void ABurnInIsWhatAsksForTheSubtitleStreamsToBeTakenOut(string profileId)
@@ -612,6 +727,8 @@ public class FfmpegProfileArgumentBuilderTests
             ProfileKind.SideBySideHalf,
             ProfileKind.Stereo3DAnaglyph,
             ProfileKind.CustomGrayscaleAnaglyph,
+            ProfileKind.TopAndBottomFull,
+            ProfileKind.TopAndBottomHalf,
             (ProfileKind)99
         };
 
@@ -668,6 +785,8 @@ public class FfmpegProfileArgumentBuilderTests
             _builder.BuildTwoDimensionalBase(),
             _builder.BuildSideBySideFull(),
             _builder.BuildSideBySideHalf(),
+            _builder.BuildTopAndBottomFull(),
+            _builder.BuildTopAndBottomHalf(),
             _builder.BuildStereo3DAnaglyph(ProfileIds.BuiltInAnaglyphOutputCodes[0]),
             _builder.BuildCustomGrayscaleAnaglyph(
                 ProfileCatalog.DefaultCustomLeftEyeColor,

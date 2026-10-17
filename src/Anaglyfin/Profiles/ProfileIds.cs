@@ -41,6 +41,17 @@ public static class ProfileIds
     public const string SideBySideHalf = "sbs_half";
 
     /// <summary>
+    /// Full height top-and-bottom (over-under) output: the composed side-by-side frame
+    /// restacked so each eye keeps the source's own frame, left eye above right.
+    /// </summary>
+    public const string TopAndBottomFull = "tb_full";
+
+    /// <summary>
+    /// Half height top-and-bottom (over-under) output, each eye at half height.
+    /// </summary>
+    public const string TopAndBottomHalf = "tb_half";
+
+    /// <summary>
     /// Grayscale tinted anaglyph using admin chosen eye colours.
     /// </summary>
     public const string CustomGrayscale = "custom_grayscale";
@@ -170,9 +181,15 @@ public static class ProfileIds
 
     private static IReadOnlyList<string> BuildAllProfileIds()
     {
-        var ids = new List<string>(BuiltInAnaglyphOutputCodes.Count + 3)
+        // The order here IS the catalog display order (ProfileCatalog sorts by
+        // DisplayOrder and ValidateCatalog pins the two against each other):
+        // full SBS first, then its over-under sibling, the anaglyph family,
+        // the custom anaglyph, half TB ahead of half SBS the way the full
+        // pair leads, and the plain view last.
+        var ids = new List<string>(BuiltInAnaglyphOutputCodes.Count + 5)
         {
-            SideBySideFull
+            SideBySideFull,
+            TopAndBottomFull
         };
 
         foreach (var code in BuiltInAnaglyphOutputCodes)
@@ -181,6 +198,7 @@ public static class ProfileIds
         }
 
         ids.Add(CustomGrayscale);
+        ids.Add(TopAndBottomHalf);
         ids.Add(SideBySideHalf);
         ids.Add(TwoDBase);
 

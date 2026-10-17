@@ -9,12 +9,14 @@ plays.
 ## Supported playback versions
 
 Every version below is built into the catalog and listed in catalog order -
-18 supported playback versions. On a fresh install four of them are enabled -
+20 supported catalog versions. On a fresh install four of them are enabled -
 3D Anaglyph Red/Cyan (Dubois), 3D Full Side-by-Side, 3D Half Side-by-Side, and
-2D Base - and Red/Cyan (Dubois) is also the default offered first; the others are
-switched on from the admin settings page.
+2D Base - and Red/Cyan (Dubois) is also the default offered first; the others,
+including both Top-and-Bottom versions, are switched on from the admin settings
+page.
 
 - 3D Full Side-by-Side
+- 3D Full Top-and-Bottom
 - The anaglyph presets - every built-in FFmpeg `stereo3d` anaglyph output:
   - Red/Cyan:
     - 3D Anaglyph Red/Cyan (Dubois)
@@ -36,6 +38,7 @@ switched on from the admin settings page.
   - Red/Green:
     - 3D Anaglyph Red/Green (Gray)
 - 3D Anaglyph Custom Colours
+- 3D Half Top-and-Bottom
 - 3D Half Side-by-Side
 - 2D Base
 

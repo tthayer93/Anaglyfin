@@ -43,6 +43,14 @@ namespace Anaglyfin.Ffmpeg;
 /// re-tag, which only changes the pixel aspect ratio.
 /// </item>
 /// <item>
+/// The top-and-bottom pair restacks that same composed frame over-under
+/// (<c>stereo3d=sbsl:tbl</c>, left eye above right). Full TB stops there and encodes
+/// the source's width at double its height; half TB scales that restacked frame back
+/// to the source's size (<c>scale=iw:ih/2</c> plus <c>setsar=sar=1</c>), the vertical
+/// sibling of the half-SBS scale. Neither is the composed layout itself, so both
+/// always carry their conversion filter.
+/// </item>
+/// <item>
 /// A built-in anaglyph preset is the composed frame through
 /// <c>stereo3d=sbsl:&lt;code&gt;</c> for an official output code.
 /// </item>
@@ -154,6 +162,38 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     public const string HalfSideBySideScaleFilter =
         "scale=iw/2:ih:flags=bicubic," + SquareSampleAspectRatioFilter + "," + FormatYuv420PFilter;
 
+    /// <summary>
+    /// The eye restack both top-and-bottom profiles start from: read the composed native
+    /// side-by-side frame (<c>sbsl</c>) and lay the eyes one above the other, left eye on
+    /// top. This is a real layout conversion - the composed pivot is side-by-side, so
+    /// neither over-under profile is a re-tag of it.
+    /// </summary>
+    public const string TopAndBottomRestackFilter = "stereo3d=sbsl:tbl";
+
+    /// <summary>
+    /// Full TB conversion: restack the composed frame over-under with each eye at the
+    /// source's own size. The encoded frame is the source's width at double its height -
+    /// the one family in this build that moves the height rather than the width.
+    /// </summary>
+    public const string FullTopAndBottomFilter =
+        TopAndBottomRestackFilter + "," + FormatYuv420PFilter;
+
+    /// <summary>
+    /// Half TB conversion: restack over-under, then halve the height of the combined
+    /// frame, landing back on the source's size. Real scaling, so the output is genuinely
+    /// half-top-and-bottom.
+    /// </summary>
+    /// <remarks>
+    /// This is the half-SBS scale turned through a quarter turn, and it inherits the half
+    /// SBS lesson with it: <c>scale</c> keeps the display aspect by adjusting the sample
+    /// aspect ratio it hands on, so halving the <em>height</em> of a square-pixel frame
+    /// hands on a 1:2 one. The encoded pixels are the half-TB frame this profile sells
+    /// either way, but declaring the result square-pixel behind the scale is what makes
+    /// the size this profile reports mean square pixels all the way to the player.
+    /// </remarks>
+    public const string HalfTopAndBottomScaleFilter =
+        TopAndBottomRestackFilter + ",scale=iw:ih/2:flags=bicubic," + SquareSampleAspectRatioFilter + "," + FormatYuv420PFilter;
+
     /// <summary>Filter graph output label of the custom grayscale anaglyph.</summary>
     public const string CustomAnaglyphOutputLabel = "[anaglyfin_custom]";
 
@@ -206,6 +246,12 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
             case ProfileKind.SideBySideHalf:
                 return BuildComposedFiltered(profileId, ProfileKind.SideBySideHalf, HalfSideBySideScaleFilter, burnIn);
 
+            case ProfileKind.TopAndBottomFull:
+                return BuildComposedFiltered(profileId, ProfileKind.TopAndBottomFull, FullTopAndBottomFilter, burnIn);
+
+            case ProfileKind.TopAndBottomHalf:
+                return BuildComposedFiltered(profileId, ProfileKind.TopAndBottomHalf, HalfTopAndBottomScaleFilter, burnIn);
+
             case ProfileKind.Stereo3DAnaglyph:
                 {
                     var code = RequireOutputCode(profile);
@@ -237,6 +283,14 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     /// <inheritdoc />
     public ProfileRewrite BuildSideBySideHalf(SubtitleBurnIn? subtitleBurnIn = null)
         => BuildComposedFiltered(ProfileIds.SideBySideHalf, ProfileKind.SideBySideHalf, HalfSideBySideScaleFilter, subtitleBurnIn);
+
+    /// <inheritdoc />
+    public ProfileRewrite BuildTopAndBottomFull(SubtitleBurnIn? subtitleBurnIn = null)
+        => BuildComposedFiltered(ProfileIds.TopAndBottomFull, ProfileKind.TopAndBottomFull, FullTopAndBottomFilter, subtitleBurnIn);
+
+    /// <inheritdoc />
+    public ProfileRewrite BuildTopAndBottomHalf(SubtitleBurnIn? subtitleBurnIn = null)
+        => BuildComposedFiltered(ProfileIds.TopAndBottomHalf, ProfileKind.TopAndBottomHalf, HalfTopAndBottomScaleFilter, subtitleBurnIn);
 
     /// <inheritdoc />
     public ProfileRewrite BuildStereo3DAnaglyph(string stereo3DOutputCode, SubtitleBurnIn? subtitleBurnIn = null)
@@ -279,10 +333,11 @@ public sealed class FfmpegProfileArgumentBuilder : IFfmpegProfileArgumentBuilder
     /// conversion filter and an optional subtitle burn-in appended after it.
     /// </summary>
     /// <remarks>
-    /// Shared by full SBS (no conversion filter at all), half SBS (the full-frame scale) and
-    /// the stereo3d presets: they differ only in the chain they put behind the composed
+    /// Shared by full SBS (no conversion filter at all), half SBS (the full-frame scale), the
+    /// top-and-bottom pair (the eye restack, plus its own scale for the half one) and the
+    /// stereo3d presets: they differ only in the chain they put behind the composed
     /// frame, while the composed decode - the one pivot - and the stream that carries it are
-    /// the same question for all three. That shared answer is an empty insertion for full SBS:
+    /// the same question for all of them. That shared answer is an empty insertion for full SBS:
     /// the composed frame needs neither a filter nor a map of its own, only the input the
     /// caller composed.
     /// </remarks>

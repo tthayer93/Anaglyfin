@@ -848,6 +848,54 @@ public class WrapperArgumentRewriterTests
     }
 
     [Fact]
+    public void FullTopAndBottomAsksForTheComposedInputAndRestacksWithItsOwnChain()
+    {
+        // The over-under full-size profile is a linear converter like half SBS, not the
+        // untouched composed layout full SBS is: the input still gets exactly one
+        // composed view request in front of -i, the server's maps survive untouched, and
+        // the restack arrives as the profile's own -vf chain with no map of its own.
+        var result = _rewriter.Rewrite(JellyfinLikeCommand(Marker(ProfileIds.TopAndBottomFull)));
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Equal(ProfileIds.TopAndBottomFull, result.ProfileId);
+        Assert.Equal(
+            new[]
+            {
+                "-hide_banner", "-loglevel", "warning",
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-vf", "stereo3d=sbsl:tbl,format=yuv420p",
+                "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
+                "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+            },
+            result.Arguments);
+
+        // No Anaglyfin map, and the composed request is written exactly once.
+        Assert.Single(result.Arguments, token => token == "-view_ids");
+        Assert.DoesNotContain("-filter_complex", result.Arguments, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void HalfTopAndBottomRunsItsRestackAndScaleAheadOfTheServersMaps()
+    {
+        var result = _rewriter.Rewrite(JellyfinLikeCommand(Marker(ProfileIds.TopAndBottomHalf)));
+
+        Assert.Equal(WrapperRewriteStatus.Rewritten, result.Status);
+        Assert.Equal(ProfileIds.TopAndBottomHalf, result.ProfileId);
+        Assert.Equal(
+            new[]
+            {
+                "-hide_banner", "-loglevel", "warning",
+                "-view_ids", "-1",
+                "-i", SourcePath,
+                "-vf", "stereo3d=sbsl:tbl,scale=iw:ih/2:flags=bicubic,setsar=sar=1,format=yuv420p",
+                "-map", "0:v", "-map", "0:a", "-c:v", "libx264", "-c:a", "copy",
+                "-f", "hls", "-hls_time", "6", "playlist.m3u8"
+            },
+            result.Arguments);
+    }
+
+    [Fact]
     public void RedCyanRunsItsConversionInFrontOfTheVideoFilterChainTheServerAlreadyAskedFor()
     {
         var arguments = new List<string>
@@ -908,6 +956,8 @@ public class WrapperArgumentRewriterTests
     [Theory]
     [InlineData(ProfileIds.AnaglyphRedCyanDubois, "stereo3d=sbsl:arcd,format=yuv420p")]
     [InlineData(ProfileIds.SideBySideHalf, "scale=iw/2:ih:flags=bicubic,setsar=sar=1,format=yuv420p")]
+    [InlineData(ProfileIds.TopAndBottomFull, "stereo3d=sbsl:tbl,format=yuv420p")]
+    [InlineData(ProfileIds.TopAndBottomHalf, "stereo3d=sbsl:tbl,scale=iw:ih/2:flags=bicubic,setsar=sar=1,format=yuv420p")]
     public void TheProfileConvertsBeforeTheServerScales(string profileId, string profileFilter)
     {
         // The order this asserts is the whole reason the wrapper touches the chain at all. The
