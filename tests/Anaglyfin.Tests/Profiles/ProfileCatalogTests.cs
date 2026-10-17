@@ -256,11 +256,12 @@ public class ProfileCatalogTests
         var enabled = _catalog.GetEnabledProfileIds(new PluginConfiguration());
 
         // One version for a server nobody has configured: the profile the shipped default
-        // names, offered first because it is also the only one offered.
+        // names, offered first because it is also the only one offered. Assert.Single is the
+        // count assertion, and the equality below is the identity assertion: exactly one
+        // entry, and it is red/cyan Dubois - in the resolved offer and as declared.
         Assert.Equal(new[] { ProfileIds.AnaglyphRedCyanDubois }, enabled);
-        Assert.Single(enabled);
+        Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, Assert.Single(enabled));
         Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, new PluginConfiguration().DefaultProfileId);
-        Assert.Equal(1, ProfileIds.DefaultEnabledProfileIds.Count);
         Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, Assert.Single(ProfileIds.DefaultEnabledProfileIds));
     }
 
