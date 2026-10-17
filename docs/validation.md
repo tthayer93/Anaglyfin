@@ -1094,13 +1094,22 @@ auto/high bitrate, or a `maxWidth`/`maxHeight` at or above the values in the sec
 | Version | Expected segment `width x height` | Expected `sample_aspect_ratio` |
 | --- | --- | --- |
 | `sbs_full` | `3840 x 1080` | `1:1` |
+| `tb_full` | `1920 x 2160` | `1:1` |
 | `sbs_half` | `1920 x 1080` | `1:1` |
+| `tb_half` | `1920 x 1080` | `1:1` |
 | `anaglyph_*` | `1920 x 1080` | `1:1` |
 | `custom_grayscale` | `1920 x 1080` | `1:1` |
 | `two_d_base` | `1920 x 1080` | `1:1` |
 
 - [ ] Full SBS segments are **source width x 2** by **source height**, and no server shrink has been
       applied on top of the conversion.
+- [ ] Full top-and-bottom segments are **source width** by **source height x 2** - the first
+      shipped profile whose extra pixels are vertical, so the server-scale-clamp bug of the row
+      above shows up here as a segment clamped in *height* (e.g. `1920 x 1080`-shaped shrink of
+      the stacked frame) if the version's reported geometry and the conversion ever disagree.
+      Half top-and-bottom is expected back on the source's own size with `sample_aspect_ratio`
+      `1:1`, never `1:2`. Both rows are unchecked expectations: the pair has not been run through
+      this harness yet.
 - [ ] Half SBS and every anaglyph version are **source width** by **source height**.
 - [ ] Half SBS reports `sample_aspect_ratio=1:1` and not `2:1`. A `2:1` there means the
       `setsar=sar=1` stage did not run (or ran before the scale, where it is overwritten), and
@@ -1285,6 +1294,70 @@ inverted to observe.
 CI-pinned (`MarkerAudioCompatibilityTests`, the `WrapperApplicationTests` marker-audio region, and
 the `wrapper-check.sh` two-binary case against a capability stub that refuses `-vbr:` the way the
 minimal build does); not re-run against a real server, so left open.
+
+### 7.12 Full Top-and-Bottom
+
+Profile id:
+
+```text
+tb_full
+```
+
+Expected inserted fragments:
+
+```text
+-view_ids -1  (immediately before the marker input's -i)
+-vf stereo3d=sbsl:tbl,format=yuv420p
+```
+
+Expected behavior (all of it still to be observed on a real server - the chain and its frame
+size are pinned in CI, the runtime outcome is not):
+
+- [ ] The composed all-view request is written exactly once, in front of the marker input's `-i`,
+      and the command carries no view specifier - the restack starts from the same composed
+      side-by-side pivot every converting profile uses, never from a second decode.
+- [ ] The profile rides the linear `-vf` route: no Anaglyfin `-filter_complex` and no Anaglyfin
+      `-map` appear for this profile. If Jellyfin already supplied `-vf`, the profile chain is
+      **prepended** to the last existing chain, exactly as in 7.2.
+- [ ] The encoded segment is the source's width at **double the source's height** - for the
+      1920x1080 fixture, `1920 x 2160`. This is the first shipped profile whose encoded frame
+      doubles the height rather than the width, so the version must report `1920x2160` in
+      PlaybackInfo as well: a version reporting the source's height here invites the server's
+      scale to shrink the converted picture into a 1080-tall box.
+- [ ] A subtitle burn-in, when the marker asks for one, lands **after** the profile chain
+      (`stereo3d=sbsl:tbl,format=yuv420p,subtitles=...`) and is what brings `-sn` and the
+      subtitle-map removal, exactly as for the existing linear profiles.
+
+The label reads "3D Full Top-and-Bottom" in the pickers (over-under is the same layout's other
+name); the admin-page checkbox starts unticked - the pair is not in the shipped enabled set, so
+this version only appears once an administrator enables it.
+
+### 7.13 Half Top-and-Bottom
+
+Profile id:
+
+```text
+tb_half
+```
+
+Expected inserted fragments:
+
+```text
+-view_ids -1  (immediately before the marker input's -i)
+-vf stereo3d=sbsl:tbl,scale=iw:ih/2:flags=bicubic,setsar=sar=1,format=yuv420p
+```
+
+- [ ] The chain is verbatim: restack, scale that halves the height of the restacked frame, the
+      `setsar=sar=1` declaration immediately behind that scale (halving a height hands on a 1:2
+      sample aspect ratio the same way halving a width hands on 2:1), then the pixel-format
+      normalisation.
+- [ ] Linear-route rules as in 7.12 and 7.2: composed input once, profile chain ahead of the
+      server's chain, no Anaglyfin map.
+- [ ] The encoded segment is the **source's own size** - `1920 x 1080` for the fixture - with
+      `sample_aspect_ratio` `1:1`, the vertical twin of the half-SBS expectations in 7.2 and 7.8.
+
+Not yet run against a real server for either profile; see the V7.8 table for the dimension rows
+these checks measure against.
 
 ## V8. Ordinary playback pass-through
 
