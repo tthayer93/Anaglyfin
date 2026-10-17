@@ -272,6 +272,18 @@ public sealed class ProfileCatalog : IProfileCatalog
                 DisplayName = "3D Full Side-by-Side",
                 Kind = ProfileKind.SideBySideFull,
                 DisplayOrder = 10
+            },
+
+            // Full top-and-bottom leads the over-under pair the way full SBS leads the
+            // side-by-side pair: two full-size eyes in one frame, just stacked instead
+            // of laid sideways. It is not shipped enabled - the MVP four stand until an
+            // administrator asks for more.
+            new()
+            {
+                Id = ProfileIds.TopAndBottomFull,
+                DisplayName = "3D Full Top-and-Bottom",
+                Kind = ProfileKind.TopAndBottomFull,
+                DisplayOrder = 15
             }
         };
 
@@ -298,6 +310,17 @@ public sealed class ProfileCatalog : IProfileCatalog
             LeftEyeColor = DefaultCustomLeftEyeColor,
             RightEyeColor = DefaultCustomRightEyeColor,
             DisplayOrder = 40
+        });
+
+        // The half-size pair trails the full-size pair (custom anaglyph at 40, then the
+        // two halves), and within it the over-under sibling keeps its seat beside its
+        // side-by-side counterpart.
+        profiles.Add(new StereoProfile
+        {
+            Id = ProfileIds.TopAndBottomHalf,
+            DisplayName = "3D Half Top-and-Bottom",
+            Kind = ProfileKind.TopAndBottomHalf,
+            DisplayOrder = 45
         });
 
         profiles.Add(new StereoProfile

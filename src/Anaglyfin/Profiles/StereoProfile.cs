@@ -17,9 +17,9 @@ namespace Anaglyfin.Profiles;
 /// </para>
 /// <para>
 /// Every profile is produced by one decode of the source: the all-view native
-/// side-by-side pivot. Full SBS is that pivot unchanged, while half SBS and the
-/// anaglyph profiles are derived from the same output, so choosing a profile never
-/// means decoding the file twice.
+/// side-by-side pivot. Full SBS is that pivot unchanged, while half SBS, the
+/// top-and-bottom pair and the anaglyph profiles are derived from the same
+/// output, so choosing a profile never means decoding the file twice.
 /// </para>
 /// </remarks>
 public sealed record StereoProfile

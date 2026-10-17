@@ -41,5 +41,21 @@ public enum ProfileKind
     /// grayscale, tinted with the chosen colour and both eyes are combined again.
     /// Deliberately not colour balanced (no Dubois projection).
     /// </summary>
-    CustomGrayscaleAnaglyph = 4
+    CustomGrayscaleAnaglyph = 4,
+
+    /// <summary>
+    /// Full height top-and-bottom (over-under) output: the composed side-by-side frame
+    /// restacked with the left eye above the right, each eye keeping the source's own
+    /// frame. Unlike full SBS this is not a layout the decoder emits natively, so it
+    /// needs a real stereo conversion, and it is the one family whose encoded frame
+    /// doubles the source's <em>height</em>.
+    /// </summary>
+    TopAndBottomFull = 5,
+
+    /// <summary>
+    /// Half height top-and-bottom (over-under) output: the restacked full frame scaled
+    /// back to the source's own size, each eye occupying half the height. The vertical
+    /// sibling of half SBS - a re-tag is not enough, real scaling is required.
+    /// </summary>
+    TopAndBottomHalf = 6
 }
