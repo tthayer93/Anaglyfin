@@ -13,12 +13,16 @@ namespace Anaglyfin.Tests.Profiles;
 /// </summary>
 public class ProfileCatalogTests
 {
-    private static readonly string[] MvpFormatIds =
+    /// <summary>
+    /// Profiles a test can enable by name when it needs more than one profile in play.
+    /// They are catalog members and nothing more: only red/cyan Dubois ships enabled, so a
+    /// test that wants any of these has to ask for it in its settings.
+    /// </summary>
+    private static readonly string[] ConversionFormatIds =
     [
         ProfileIds.TwoDBase,
         ProfileIds.SideBySideFull,
-        ProfileIds.SideBySideHalf,
-        ProfileIds.AnaglyphRedCyanDubois
+        ProfileIds.SideBySideHalf
     ];
 
     private readonly ProfileCatalog _catalog = new();
@@ -97,9 +101,11 @@ public class ProfileCatalogTests
     }
 
     [Fact]
-    public void CatalogCarriesTheMvpFormats()
+    public void CatalogCarriesTheTwoDAndSideBySideFormatsBesidesTheDefaultAnaglyph()
     {
-        foreach (var id in MvpFormatIds)
+        // Catalog membership only. Which of them a fresh installation offers is the
+        // enabled-set test below, and the answer there is one profile.
+        foreach (var id in ConversionFormatIds.Append(ProfileIds.AnaglyphRedCyanDubois))
         {
             Assert.True(_catalog.TryGetProfile(id, out _), $"profile {id} is missing from the catalog");
         }
@@ -245,23 +251,60 @@ public class ProfileCatalogTests
     }
 
     [Fact]
-    public void FreshSettingsEnableTheMvpFormatsOnly()
+    public void FreshSettingsEnableRedCyanDuboisAlone()
     {
         var enabled = _catalog.GetEnabledProfileIds(new PluginConfiguration());
 
-        Assert.Equal(
-            MvpFormatIds.OrderBy(id => _catalog.GetProfile(id).DisplayOrder),
-            enabled);
+        // One version for a server nobody has configured: the profile the shipped default
+        // names, offered first because it is also the only one offered.
+        Assert.Equal(new[] { ProfileIds.AnaglyphRedCyanDubois }, enabled);
+        Assert.Single(enabled);
+        Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, new PluginConfiguration().DefaultProfileId);
+        Assert.Equal(1, ProfileIds.DefaultEnabledProfileIds.Count);
+        Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, Assert.Single(ProfileIds.DefaultEnabledProfileIds));
+    }
+
+    [Fact]
+    public void EveryOtherCatalogProfileNeedsAnExplicitEnable()
+    {
+        var enabled = _catalog.GetEnabledProfileIds(new PluginConfiguration());
+
+        // The named entries an administrator has to switch on. The over-under pair is here
+        // because adding a profile is a code change while enabling it stays the
+        // administrator's decision; the side-by-side pair, the base view and the custom
+        // colours are here because a fresh install no longer offers them either.
+        Assert.DoesNotContain(ProfileIds.SideBySideFull, enabled);
+        Assert.DoesNotContain(ProfileIds.SideBySideHalf, enabled);
+        Assert.DoesNotContain(ProfileIds.TwoDBase, enabled);
+        Assert.DoesNotContain(ProfileIds.TopAndBottomFull, enabled);
+        Assert.DoesNotContain(ProfileIds.TopAndBottomHalf, enabled);
         Assert.DoesNotContain(ProfileIds.CustomGrayscale, enabled);
         Assert.DoesNotContain(ProfileIds.AnaglyphRedCyanGray, enabled);
 
-        // The over-under pair joins the catalog, not the shipped enabled set: adding a
-        // profile is a code change, enabling it stays the administrator's decision.
-        Assert.DoesNotContain(ProfileIds.TopAndBottomFull, enabled);
-        Assert.DoesNotContain(ProfileIds.TopAndBottomHalf, enabled);
-        Assert.DoesNotContain(ProfileIds.TopAndBottomFull, ProfileIds.DefaultEnabledProfileIds);
-        Assert.DoesNotContain(ProfileIds.TopAndBottomHalf, ProfileIds.DefaultEnabledProfileIds);
-        Assert.Equal(4, ProfileIds.DefaultEnabledProfileIds.Count);
+        // The sweep, so no catalog entry slips through the named list above: red/cyan Dubois
+        // is the only shipped-enabled id, in the resolved offer and in the declared set.
+        Assert.All(
+            _catalog.AllProfileIds.Where(id => !ProfileIds.EqualsId(id, ProfileIds.AnaglyphRedCyanDubois)),
+            id =>
+            {
+                Assert.DoesNotContain(id, enabled);
+                Assert.DoesNotContain(id, ProfileIds.DefaultEnabledProfileIds);
+            });
+    }
+
+    [Fact]
+    public void ADefaultThatIsNotShippedEnabledIsNotOfferedByAFreshInstall()
+    {
+        // Configuring a default is not enabling: on settings that store no enabled list the
+        // offer is the shipped set, so a default naming a profile nobody switched on
+        // degrades to red/cyan instead of promoting itself. Full SBS was offered by the
+        // shipped defaults of earlier builds, which is exactly the drift this pins.
+        var configuration = new PluginConfiguration { DefaultProfileId = ProfileIds.SideBySideFull };
+
+        Assert.Equal(ProfileIds.AnaglyphRedCyanDubois, _catalog.ResolveDefaultProfileId(configuration));
+        Assert.Equal(
+            new[] { ProfileIds.AnaglyphRedCyanDubois },
+            _catalog.GetOfferedProfiles(configuration).Select(profile => profile.Id));
     }
 
     [Fact]
@@ -288,13 +331,15 @@ public class ProfileCatalogTests
         var configuration = new PluginConfiguration();
         configuration.EnabledProfileIds.AddRange(new[] { "gone_one", "gone_two" });
 
+        // Nothing usable was stored, so the shipped set answers - which is one profile now,
+        // and still never an empty offer.
         Assert.Equal(
-            MvpFormatIds.OrderBy(id => _catalog.GetProfile(id).DisplayOrder),
+            new[] { ProfileIds.AnaglyphRedCyanDubois },
             _catalog.GetEnabledProfileIds(configuration));
     }
 
     [Fact]
-    public void AnaglyphPresetsCanBeEnabledAlongsideTheMvpFormats()
+    public void AnaglyphPresetsCanBeEnabledAlongsideTheOtherProfiles()
     {
         var configuration = new PluginConfiguration();
         configuration.EnabledProfileIds.AddRange(new[]

@@ -241,10 +241,13 @@
             };
 
             // Mirrors the Anaglyfin profile catalog: id, label and shipped-enabled flag, in
-            // catalog order. A unit test compares this list against the catalog, so a profile
-            // that appears, disappears or is renamed cannot drift out of this page silently.
+            // catalog order. Exactly one entry carries "enabledByDefault": true - red/cyan
+            // Dubois, the only profile a fresh install enables - and every other profile is
+            // listed unticked until an administrator switches it on. A unit test compares this
+            // list against the catalog, so a profile that appears, disappears or is renamed
+            // cannot drift out of this page silently.
             var AnaglyfinProfiles = [
-                { "id": "sbs_full", "name": "3D Full Side-by-Side", "enabledByDefault": true },
+                { "id": "sbs_full", "name": "3D Full Side-by-Side", "enabledByDefault": false },
                 { "id": "tb_full", "name": "3D Full Top-and-Bottom", "enabledByDefault": false },
                 { "id": "anaglyph_arcd", "name": "3D Anaglyph Red/Cyan (Dubois)", "enabledByDefault": true },
                 { "id": "anaglyph_arcc", "name": "3D Anaglyph Red/Cyan", "enabledByDefault": false },
@@ -262,8 +265,8 @@
                 { "id": "anaglyph_argg", "name": "3D Anaglyph Red/Green (Gray)", "enabledByDefault": false },
                 { "id": "custom_grayscale", "name": "3D Anaglyph Custom Colours", "enabledByDefault": false },
                 { "id": "tb_half", "name": "3D Half Top-and-Bottom", "enabledByDefault": false },
-                { "id": "sbs_half", "name": "3D Half Side-by-Side", "enabledByDefault": true },
-                { "id": "two_d_base", "name": "2D Base", "enabledByDefault": true }
+                { "id": "sbs_half", "name": "3D Half Side-by-Side", "enabledByDefault": false },
+                { "id": "two_d_base", "name": "2D Base", "enabledByDefault": false }
             ];
 
             (function () {

@@ -232,9 +232,10 @@ public class PluginConfigurationTests
         // load path in PluginTests - and the reason a bare settings load is not enough on its own.
         Assert.Equal(SubtitleDepthMode.Automatic, loaded.SubtitleDepthMode);
 
-        // And the empty enabled list still offers the MVP formats.
+        // And the empty enabled list still answers with the shipped enabled set: red/cyan
+        // Dubois, alone.
         var catalog = new ProfileCatalog();
-        Assert.Contains(ProfileIds.AnaglyphRedCyanDubois, catalog.GetEnabledProfileIds(loaded));
+        Assert.Equal(new[] { ProfileIds.AnaglyphRedCyanDubois }, catalog.GetEnabledProfileIds(loaded));
     }
 
     [Fact]
@@ -294,9 +295,19 @@ public class PluginConfigurationTests
         //      model, so the entries are not silently preserved for the next upgrade.
         //
         // Nothing is migrated on disk and nothing is honoured from the dark.
+        //
+        // The enabled list below is spelled out because the offer this check reads has to be
+        // the administrator's, not the shipped set: only red/cyan Dubois ships enabled, so a
+        // file that stored no enabled list would offer that one profile and the ordering
+        // promise in point 2 would have nothing to order.
         const string DeviceEraXml = """
             <PluginConfiguration xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
               <DefaultProfileId>two_d_base</DefaultProfileId>
+              <EnabledProfileIds>
+                <string>anaglyph_arcd</string>
+                <string>sbs_full</string>
+                <string>two_d_base</string>
+              </EnabledProfileIds>
               <DeviceDefaultProfiles>
                 <DeviceProfileDefault>
                   <DeviceId>old-device</DeviceId>
@@ -318,12 +329,13 @@ public class PluginConfigurationTests
         Assert.Equal(ProfileIds.TwoDBase, loaded.DefaultProfileId);
 
         // 2. The stale entry decides nothing. Were it still applied, "old-device" would
-        // start on sbs_half; there is no longer any reader that could ask that question,
-        // so the global default and the catalog's global order stand.
+        // start on sbs_half - a profile this file does not even enable; there is no longer
+        // any reader that could ask that question, so the global default and the catalog's
+        // global order stand: the stored default first, the enabled rest in display order.
         var catalog = new ProfileCatalog();
         Assert.Equal(ProfileIds.TwoDBase, catalog.ResolveDefaultProfileId(loaded));
         Assert.Equal(
-            new[] { ProfileIds.TwoDBase, ProfileIds.SideBySideFull, ProfileIds.AnaglyphRedCyanDubois, ProfileIds.SideBySideHalf },
+            new[] { ProfileIds.TwoDBase, ProfileIds.SideBySideFull, ProfileIds.AnaglyphRedCyanDubois },
             catalog.GetOfferedProfiles(loaded).Select(profile => profile.Id).ToArray());
 
         // 3. The next save - what the settings path writes from this model - carries the
