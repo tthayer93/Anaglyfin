@@ -483,14 +483,18 @@ everywhere else; only the fallback directory and the restart command differ.
 **Not runtime-validated by this project.** Every runtime result recorded in `docs/validation.md`
 was observed on Linux — inside `jellyfin/jellyfin:12.2`, and on the Debian/Ubuntu package. Neither
 the wrapper nor FFmpeg-mvc has ever been executed on Windows by this project's CI or by its
-validation runs, so what this route carries is documentation, not evidence. State the two halves of
-that precisely, because they are not the same claim: the wrapper is **written** for Windows and its
-Windows behaviour is pinned by tests that run on the other platforms — it offers the `ffmpeg.exe`
-candidate when it searches `PATH`, compares its own path case-insensitively so it cannot be talked
-into launching itself, and registers no stop-signal handler at all where the platform has no POSIX
-signals to register one for. What nobody has shown is the rest: that this wrapper, in front of a
-Windows FFmpeg-mvc build, on a Windows `JellyfinServer`, plays a movie. Two facts also make this the
-longest of the three flows, and neither is a documentation gap:
+validation runs, so what this route carries is documentation, not evidence. Keep the design apart
+from the test evidence here, because they are not the same claim: the wrapper is **written** for
+Windows and all three of its Windows-specific behaviours are present in the code — it offers the
+`ffmpeg.exe` candidate when it searches `PATH`, compares its own path case-insensitively so it
+cannot be talked into launching itself, and refuses POSIX signal registration on Windows. None of
+the three is *executed* by this project's CI, which runs only on Linux: the first two sit behind
+`OperatingSystem.IsWindows()` branches a Linux run never takes, and the refusal rule, though visible
+in `PosixSignalForwarder` and tested around that platform gate, is exercised on the POSIX side of the
+gate — the Windows no-op branch is not. And no runtime result on any Windows host exists for any of
+them. What nobody has shown is the rest: that this wrapper, in front of a Windows FFmpeg-mvc build,
+on a Windows `JellyfinServer`, plays a movie. Two facts also make this the longest of the three
+flows, and neither is a documentation gap:
 
 - **there is no `win-x64` wrapper release asset.** The published `anaglyfin-ffmpeg` is a linux-x64
   binary, so step 3 publishes the same tag for `win-x64` on your machine.
@@ -661,13 +665,16 @@ bash msys2/build.sh
 
 `/c/build/anaglyfin` is scratch space for this build alone — the wrapper's own build tree from step 3
 is elsewhere (`C:\build\anaglyfin-wrapper-src`), and none of it is needed once step 5 has the files.
-`build.sh` configures and builds in the source tree, and then moves `ffmpeg.exe` and `ffprobe.exe`
-into its own `msys2/` directory and zips them as the portable package under `msys2/artifacts/` — that
-last part is the parent project's packaging, and it reads the parent's `debian/changelog` for the
-version in the zip's name, so a product tree without that file can stop the script after a successful
-build rather than spoil the build itself. Either way the file wanted is the `ffmpeg.exe` this build
-wrote: `C:\build\anaglyfin\FFmpeg-mvc\msys2\ffmpeg.exe` when the script ran to its end, and
-`C:\build\anaglyfin\FFmpeg-mvc\ffmpeg.exe` when it stopped before the move. Step 5 installs that
+`build.sh` configures and compiles in the source tree, so the file this build is for is sitting there
+the moment `make` finishes: **`/c/build/anaglyfin/FFmpeg-mvc/ffmpeg.exe`**, which is
+`C:\build\anaglyfin\FFmpeg-mvc\ffmpeg.exe` in step 5's spelling. Treat that as the artifact.
+Everything in the script after `make` is the parent project's packaging and not the compile: it reads
+`debian/changelog` to name the portable zip and then *moves* `ffmpeg.exe` and `ffprobe.exe` into its
+own `msys2/` directory, and a FFmpeg-mvc product tag carries no `debian/changelog` at all — so the
+script can exit non-zero on that read **after a build that succeeded**. That is a packaging-step
+mismatch and not a compiler failure; the binary it is arguing about is already built, and it is
+still in the source root. Only a script that ran to its end has moved the file out of there, and then
+it is at `C:\build\anaglyfin\FFmpeg-mvc\msys2\ffmpeg.exe` instead. Step 5 installs the source-root
 **`ffmpeg.exe`** as `ffmpeg-mvc.exe` and deliberately leaves the `ffprobe.exe` beside it behind: the
 probe beside the wrapper is the server's own (§2), always. The parent's Windows configuration is a
 full hardware set (`dxva2`, `d3d11va`, `d3d12va`, `mediafoundation`, `libvpl` for Quick Sync, AMF,
@@ -690,8 +697,9 @@ Copy-Item C:\build\anaglyfin-wrapper\anaglyfin-ffmpeg.exe `
   "$ffmpegDir\anaglyfin-ffmpeg.exe" -Force
 
 # FFmpeg-mvc, as built by step 4: its ffmpeg.exe, installed under the name this page uses.
-# Use whichever of the two paths step 4 describes the build leaving it in.
-Copy-Item C:\build\anaglyfin\FFmpeg-mvc\msys2\ffmpeg.exe `
+# The source root is where the compile leaves it. Only if step 4's packaging step ran to
+# its end has the file been moved, and then it is under msys2\ instead of beside it.
+Copy-Item C:\build\anaglyfin\FFmpeg-mvc\ffmpeg.exe `
   "$ffmpegDir\ffmpeg-mvc.exe" -Force
 
 # the STOCK ffprobe, from the installer — not the one step 4 produced
@@ -900,8 +908,23 @@ Both halves install over themselves, and neither records anything the other depe
 Windows-specific wrinkle is that a running `.exe` cannot be overwritten, so a replacement is done with
 the service stopped.
 
-- **The wrapper** — re-run step 3 with the new tag in the clone, then, with the service stopped,
-  replace the file and start it again:
+- **The wrapper** — the tag changes, the clone does not. Step 3 left a checkout at
+  `C:\build\anaglyfin-wrapper-src` and `git clone` refuses an existing directory, so move that
+  checkout onto the new tag rather than cloning over it. `--depth 1` keeps it as shallow as step 3
+  made it, and `--detach` is how you land on the new tag from the detached HEAD the old one left you
+  on:
+
+  ```powershell
+  cd C:\build\anaglyfin-wrapper-src
+  git fetch --depth 1 origin "<new-tag>"
+  git checkout --detach FETCH_HEAD
+  ```
+
+  Then run step 3's `dotnet publish` block again, unchanged — the same project, the same
+  `win-x64` / self-contained / single-file switches, the same
+  `--output C:\build\anaglyfin-wrapper` — and rename the published
+  `Anaglyfin.FFmpegWrapper.exe` to `anaglyfin-ffmpeg.exe` as step 3 does. Then, with the service
+  stopped, replace the file and start it again:
 
   ```powershell
   Stop-Service JellyfinServer
@@ -910,9 +933,13 @@ the service stopped.
   Start-Service JellyfinServer
   ```
 
-- **FFmpeg-mvc** — same tag change in the step 4 clone, rebuild, and swap `ffmpeg-mvc.exe` the same
-  way. Do **not** replace `ffprobe.exe` from that build: the file beside the wrapper stays the
-  installer's stock one (§2).
+- **FFmpeg-mvc** — the same two commands in its clone: `cd C:\build\anaglyfin\FFmpeg-mvc`, fetch the
+  new tag with `--depth 1`, check out `FETCH_HEAD` detached, and rebuild. The copied `msys2/`
+  directory is not part of either tag's tree, so the checkout leaves it where it is and it does not
+  need copying again; a checkout that refuses over the build's own edits to the source is the point
+  at which a fresh clone into a spare directory is easier than arguing with it. Swap
+  `ffmpeg-mvc.exe` the same way, with the service stopped. Do **not** replace `ffprobe.exe` from that
+  build: the file beside the wrapper stays the installer's stock one (§2).
 - **The plugin** — from the catalog, then `Restart-Service JellyfinServer`.
 - **Uninstall** is §3.3's rule in Windows shape, and the same trap: take **every** Anaglyfin entry out
   of `AppEnvironmentExtra`, not just some. If the value carried nothing but Anaglyfin's entries, delete
