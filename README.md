@@ -130,13 +130,15 @@ Optional:
   slot before it refuses the playback with exit code `75`; `0` refuses as soon as
   every slot looks taken. Default `2000` ms, accepted range `0`-`30000`.
 
-Values and the procedure for both server shapes are in
+Values and the procedure for all three server shapes - the container, a Linux
+package install, and a Windows server install - are in
 [docs/install.md](docs/install.md).
 
 ## Documentation
 
 - [docs/install.md](docs/install.md) - installing and updating the plugin and the
-  FFmpeg runtime, on Docker and bare metal
+  FFmpeg runtime: on Docker, on Linux bare metal, and on a Windows server
+  (bare-metal Windows is documented but not runtime-validated by this project)
 - [docs/architecture.md](docs/architecture.md) - plugin and wrapper design, and the
   known follow-ups
 - [docs/validation.md](docs/validation.md) - runtime validation checklist and the
