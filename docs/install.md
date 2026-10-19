@@ -1,12 +1,19 @@
 # Installing Anaglyfin
 
+> **Scope:** This page installs Anaglyfin and its FFmpeg runtime files on a server where
+> **Jellyfin 12 is already installed and running**. It is not a guide to installing Windows,
+> Debian/Ubuntu, Docker, or Jellyfin itself. Install and configure the server and Jellyfin first
+> through their own official documentation, then return here.
+
 Install the plugin from one repository URL, get three FFmpeg runtime files onto the server,
 and point Jellyfin's FFmpeg at the wrapper. On Docker the commands in §3 run inside the running
-container and build both halves there. Target: Jellyfin **12.x**, on any of the three server
-shapes this page documents — the official container `jellyfin/jellyfin:12.2` (§3), which is the
-image this flow currently targets; the Debian/Ubuntu package (§4.1); and the official Windows
-server installer (§4.2). The plugin's `targetAbi 12.0.0` is a minimum-version floor rather than
-an exact match, so `v0.2.2` loads on Jellyfin 12.0 or later.
+container and build both halves there. Target: Jellyfin **12.x** already installed on one of the
+three server shapes this page documents — the official container `jellyfin/jellyfin:12.2` (§3),
+which is the image this flow currently targets; the Debian/Ubuntu **package already installed**
+(§4.1); and the official Windows server installer's service **already installed** (§4.2). Nothing
+below installs Jellyfin; this page only configures Anaglyfin and its runtime files on top of it.
+The plugin's `targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.2`
+loads on Jellyfin 12.0 or later.
 
 Which of those three this project has actually *run* is a separate question from which three it
 documents, and the answer is in §4.2 rather than buried: every runtime result behind
@@ -412,22 +419,28 @@ Plugins too if it should go with it.
 
 ## 4. Bare-metal server
 
-**Choose your platform first.** Both shapes below install the same three runtime files (§2) and name
-the same five variables to the server; what differs is where the files live, who is allowed to write
-them, and how a service is handed an environment at all.
+**Choose your platform first.** Both shapes below start from a server where Jellyfin's own package or
+service is **already installed and running** — the Debian/Ubuntu package, or the `JellyfinServer`
+service from the official Windows installer — and neither shape installs it. What this section does
+on both is install the same three runtime files (§2) and name the same five variables to the server;
+what differs is where the files live, who is allowed to write them, and how a service is handed an
+environment at all.
 
 | Server shape | The service | Runtime files live in | The five variables go in | § |
 | --- | --- | --- | --- | --- |
-| Debian/Ubuntu package | `jellyfin`, a systemd unit | `/opt/anaglyfin/ffmpeg`, with `lock` and `wrapper` under `/var/lib/jellyfin/anaglyfin` | a systemd drop-in of `Environment=` lines | §4.1 |
-| Official Windows installer | `JellyfinServer`, hosted by the NSSM the installer ships | `C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg`, with `lock` and `wrapper` beside it | the service's `AppEnvironmentExtra` registry value (a `REG_MULTI_SZ` of `NAME=VALUE` lines) | §4.2 |
+| Debian/Ubuntu package, already installed | `jellyfin`, a systemd unit | `/opt/anaglyfin/ffmpeg`, with `lock` and `wrapper` under `/var/lib/jellyfin/anaglyfin` | a systemd drop-in of `Environment=` lines | §4.1 |
+| Official Windows installer, already installed | `JellyfinServer`, hosted by the NSSM the installer ships | `C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg`, with `lock` and `wrapper` beside it | the service's `AppEnvironmentExtra` registry value (a `REG_MULTI_SZ` of `NAME=VALUE` lines) | §4.2 |
 
 If the server is a container, this section is the wrong one — §3 fills the same three slots from
-inside the running image.
+inside the running image. If Jellyfin is not installed and running yet on either platform, that is a
+job for Jellyfin's own documentation before anything here.
 
-### 4.1 Linux (Debian/Ubuntu package)
+### 4.1 Linux server — Debian/Ubuntu package already installed
 
-Same grouping under `/opt/anaglyfin/ffmpeg`; `lock` and `wrapper` under the server data directory,
-everything owned by the `jellyfin` user:
+Assumes the `jellyfin` package is installed and its service running; this section hands Anaglyfin's
+runtime files to that service, it does not install the package. Same grouping under
+`/opt/anaglyfin/ffmpeg`; `lock` and `wrapper` under the server data directory, everything owned by
+the `jellyfin` user:
 
 ```sh
 sudo install -d -m 0755 /opt/anaglyfin/ffmpeg
@@ -471,82 +484,50 @@ alias may sit in some other drop-in, not this one — then `sudo systemctl daemo
 Jellyfin, and remove the `/opt/anaglyfin` runtime files and the `/var/lib/jellyfin/anaglyfin` `lock`
 and `wrapper` directories those variables pointed at.
 
-### 4.2 Windows server (official installer)
+### 4.2 Windows server — Jellyfin already installed
 
-This is the same runtime as §4.1 in every respect that matters to the plugin — the same wrapper from
-the same tag, an FFmpeg-mvc build of the same branch, the server's own stock `ffprobe`, the same five
-variables — arranged the way the official Windows installer arranges a server: everything the service
-needs under `C:\ProgramData\Jellyfin\Server`, and the environment handed to the `JellyfinServer`
-service itself rather than to a shell. The plugin install of §1 is the same catalog install as
-everywhere else; only the fallback directory and the restart command differ.
+These steps assume the official Windows installer has **already run** here and its `JellyfinServer` service
+starts. **This section does not install Jellyfin:** if `Get-Service JellyfinServer` finds nothing, install
+and configure the server through [Jellyfin's own documentation](https://jellyfin.org/docs/) first — a
+portable zip or a hand-run `jellyfin.exe` is not the shape anything here configures. What it does is §4.1 on
+Windows: the same three runtime files (§2) and the same five variables under
+`C:\ProgramData\Jellyfin\Server`, handed to the service instead of to a systemd drop-in, with the plugin of
+§1 coming from the same catalog. Everything below is PowerShell (5.1 or 7) **elevated to Administrator** —
+steps 2 and 6–7 touch ACLs, `HKLM` and the service — except step 4, which runs in MSYS2 CLANG64.
 
-**Not runtime-validated by this project.** Every runtime result recorded in `docs/validation.md`
-was observed on Linux — inside `jellyfin/jellyfin:12.2`, and on the Debian/Ubuntu package. Neither
-the wrapper nor FFmpeg-mvc has ever been executed on Windows by this project's CI or by its
-validation runs, so what this route carries is documentation, not evidence. Keep the design apart
-from the test evidence here, because they are not the same claim: the wrapper is **written** for
-Windows and all three of its Windows-specific behaviours are present in the code — it offers the
-`ffmpeg.exe` candidate when it searches `PATH`, compares its own path case-insensitively so it
-cannot be talked into launching itself, and refuses POSIX signal registration on Windows. None of
-the three is *executed* by this project's CI, which runs only on Linux: the first two sit behind
-`OperatingSystem.IsWindows()` branches a Linux run never takes, and the refusal rule, though visible
-in `PosixSignalForwarder` and tested around that platform gate, is exercised on the POSIX side of the
-gate — the Windows no-op branch is not. And no runtime result on any Windows host exists for any of
-them. What nobody has shown is the rest: that this wrapper, in front of a Windows FFmpeg-mvc build,
-on a Windows `JellyfinServer`, plays a movie. Two facts also make this the longest of the three
-flows, and neither is a documentation gap:
-
-- **there is no `win-x64` wrapper release asset.** The published `anaglyfin-ffmpeg` is a linux-x64
-  binary, so step 3 publishes the same tag for `win-x64` on your machine.
-- **FFmpeg-mvc publishes no binaries at all** — Windows or otherwise. That is equally true of the
-  Linux flows, which compile it; on Windows the build in step 4 is an advanced local build, ported
-  from the parent `jellyfin-ffmpeg` project's MSYS2 CLANG64 pipeline, and this project has not run
-  it either.
-
-Run it as written, and treat step 8 as part of the install rather than as a formality. Everything
-below runs in PowerShell — step 4 alone runs in MSYS2 — in a session **elevated to Administrator**,
-because step 2 changes access control under `C:\ProgramData` and steps 6–7 write under `HKLM` and
-control a service.
+**Status: documented, but not runtime-validated by this project.** Every runtime result recorded in
+`docs/validation.md` was observed on Linux, inside `jellyfin/jellyfin:12.2` and on the Debian/Ubuntu
+package; neither the wrapper nor FFmpeg-mvc has ever executed on Windows in this project's CI or validation
+runs, so this route is documentation and not evidence. The wrapper is *written* for Windows — an
+`ffmpeg.exe` candidate on `PATH`, a case-insensitive self-comparison so it cannot launch itself, no POSIX
+signal registration — but Linux CI never takes those branches, and no runtime result on any Windows host
+exists for any of them. Two facts force local builds: **there is no `win-x64` wrapper release asset**, so
+step 3 publishes the same tag for `win-x64`; and **FFmpeg-mvc publishes no binaries for any platform**, so
+step 4 builds one. Nobody has shown the whole thing working, so step 8 is part of the install rather than a
+formality: there, your own server is the evidence.
 
 **1. Prerequisites** — check these before building anything.
 
-The server itself is the **official Windows installer**, not the portable zip: the installer is what
-creates the `JellyfinServer` service, points it at `C:\ProgramData\Jellyfin\Server` as its data
-directory, and registers it with the NSSM binary the installer ships.
-
 ```powershell
 Get-Service JellyfinServer
-```
-
-Its program directory has to carry the stock FFmpeg pair, because both halves of it are used below —
-`ffmpeg.exe` is the binary ordinary playback and the server's own capability probes run on
-(`ANAGLYFIN_SERVER_FFMPEG`), and `ffprobe.exe` is one of the three runtime files:
-
-```powershell
 Get-ChildItem "C:\Program Files\Jellyfin\Server\ffmpeg.exe",
               "C:\Program Files\Jellyfin\Server\ffprobe.exe"
+git --version
+dotnet --version
 ```
 
-If either is missing, this server has no stock FFmpeg to hand ordinary playback to; install one
-before continuing rather than pointing `ANAGLYFIN_SERVER_FFMPEG` at the FFmpeg-mvc build and calling
-the result a two-binary deployment.
-
-Then what you build with — every one of these is build-time only, and none of what they produce
-needs them at run time — plus the shell the rest of this section runs in:
-
-- **Git**, for the two clones below.
-- **.NET 10 SDK** — the SDK from [dotnet.microsoft.com/download/dotnet/10.0](https://dotnet.microsoft.com/download/dotnet/10.0),
-  not just the runtime — for step 3. The wrapper publishes *self-contained*, so nothing about this
-  changes what the server itself needs: no .NET runtime is required on the server to run the wrapper
-  afterwards.
-- **MSYS2** ([msys2.org](https://www.msys2.org/)) for step 4, and with it the **CLANG64** environment —
-  the build below is a clang/MinGW build, not a Visual Studio one, and the parent project's own
-  official Windows FFmpeg binaries are produced exactly that way.
-- **PowerShell**, in the elevated session above: Windows PowerShell 5.1 and PowerShell 7 both run
-  every snippet here as written.
+- **`JellyfinServer` exists and is running.** Only the official installer creates that service, points it at
+  `C:\ProgramData\Jellyfin\Server` and registers it with the bundled NSSM; absent, Jellyfin's own
+  documentation is the next step, not this page.
+- **Both stock FFmpeg files are present:** `ffmpeg.exe` runs ordinary playback and the capability probes
+  (`ANAGLYFIN_SERVER_FFMPEG`) and `ffprobe.exe` is one of the three runtime files. Get a missing one from
+  Jellyfin — never point `ANAGLYFIN_SERVER_FFMPEG` at the FFmpeg-mvc build instead.
+- **Git, the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (the SDK, not the runtime) and
+  MSYS2 with its [CLANG64](https://www.msys2.org/) environment** serve steps 3 and 4, and all three are
+  build-time only: the wrapper publishes self-contained, so the server needs no .NET runtime to run it.
 
 **2. Directories, and the right to write them** — one directory for the three files, two for what
-the server writes into, and one access-rights grant covering all three.
+the server writes into, one grant covering all three.
 
 ```powershell
 $anaglyfinRoot = "C:\ProgramData\Jellyfin\Server\anaglyfin"
@@ -560,32 +541,15 @@ New-Item -ItemType Directory -Force -Path `
 icacls $anaglyfinRoot /grant "NT AUTHORITY\NETWORK SERVICE:(OI)(CI)M" /T
 ```
 
-`ffmpeg` holds the three runtime files; `lock` is where a running wrapper creates the file slots
-behind the concurrency limit, and `wrapper` holds the settings document the plugin writes for the
-wrappers. Those two are written *while the service runs*, which is what the `icacls` line is for:
-`M` (modify — create, write, delete; `F` would be more than this needs) with `(OI)(CI)` so files and
-directories created inside inherit it, and `/T` to push that onto anything already in the tree.
+`ffmpeg` takes the three runtime files; `lock` and `wrapper` are written **while the service runs** — the
+wrapper's concurrency slots and the plugin's settings document — which is what the grant is for: `M` with
+`(OI)(CI)` so new files inherit it and `/T` to push it onto anything already in the tree. The installer runs
+`JellyfinServer` as **Network Service**, the account named above; if this service got a different one, grant
+to that account instead of guessing — read it with
+`Get-CimInstance Win32_Service -Filter "Name='JellyfinServer'" | Select-Object -ExpandProperty StartName`.
 
-The installer runs `JellyfinServer` as **Network Service** by default, and that is the account named
-above. If the service was given a different account, grant to that account instead of guessing at it
-— read it back:
-
-```powershell
-Get-CimInstance Win32_Service -Filter "Name='JellyfinServer'" |
-  Select-Object -ExpandProperty StartName
-```
-
-and use whatever it answers (`NT AUTHORITY\LOCAL SERVICE`, `NT AUTHORITY\SYSTEM`, or a named account)
-in place of `NT AUTHORITY\NETWORK SERVICE`.
-
-*Optional:* with `IncludeNativeLibrariesForSelfExtract` the single-file wrapper unpacks its native
-runtime into the service account's temp directory on first run (`C:\Windows\Temp` for Network
-Service, where the default rights are enough). To put those files somewhere else instead, create a
-directory of your own under `$anaglyfinRoot`, give it the same grant step 2 gave the rest of the
-tree, and add one more entry to step 6's list naming it:
-`DOTNET_BUNDLE_EXTRACT_BASE_DIR=C:\ProgramData\Jellyfin\Server\anaglyfin\bundle`.
-
-**3. The wrapper: build it for `win-x64`** — there is nothing to download, so build the tag.
+**3. Build the Anaglyfin wrapper for `win-x64`** — there is no Windows release asset to download, so
+build the tag.
 
 ```powershell
 git clone --depth 1 --branch v0.2.2 `
@@ -604,35 +568,25 @@ dotnet publish .\src\Anaglyfin.FFmpegWrapper\Anaglyfin.FFmpegWrapper.csproj `
 Rename-Item C:\build\anaglyfin-wrapper\Anaglyfin.FFmpegWrapper.exe anaglyfin-ffmpeg.exe
 ```
 
-`v0.2.2` is the version this page installs from the catalog in §1, and a release bumps the plugin and
-the wrapper together, so the tag to clone is the version the server has installed — use the tag, not a
-branch tip. `--self-contained` is what keeps the server free of a .NET runtime, and
-`PublishSingleFile` is what leaves one file to install — `anaglyfin-ffmpeg.exe`. Renaming it is safe
-and is the only renaming allowed here: the native apphost carries the location of its own managed
-entry point from build time rather than deriving it from its filename, so Jellyfin is free to see any
-name, and `Environment.ProcessPath` simply reports the new one. The managed
-`Anaglyfin.FFmpegWrapper.dll` and `Anaglyfin.FFmpegWrapper.runtimeconfig.json` are a different matter
-— a publish **without** `PublishSingleFile` leaves that pair beside the exe and the apphost loads them
-*by name*, so those two are never renamed. If the output above looks like a DLL pair rather than one
-exe, the single-file switch did not apply; fix that rather than renaming around it.
+Clone the **tag** the server has installed — `v0.2.2` is what §1's catalog installs, and a release bumps
+the plugin and the wrapper together — not a branch tip. Git and the SDK are build-time tools;
+`--self-contained` is what keeps the server free of a .NET runtime. Rename **only**
+`Anaglyfin.FFmpegWrapper.exe` → `anaglyfin-ffmpeg.exe`: the apphost knows its own managed entry point's
+location from build time rather than from its filename, so Jellyfin may see any name, whereas a publish
+without single-file leaves `Anaglyfin.FFmpegWrapper.dll` and its `.runtimeconfig.json` beside the exe and
+the apphost loads those **by name** — never rename them, and if the output above is a DLL pair rather than
+one exe, the single-file switch did not apply.
 
-**4. FFmpeg-mvc: the Windows build** *(advanced; not run by this project)*.
+**4. Build FFmpeg-mvc** *(MSYS2 CLANG64; advanced; not run by this project)*
 
-FFmpeg-mvc publishes no binaries, so this half of the runtime is always a build: §3.1 compiles it
-inside the container, §4.1 asks you to arrive with one, and here you build it yourself. The route
-below is the parent project's own: `jellyfin-ffmpeg` builds its official Windows binaries on MSYS2
-with the `mingw-w64-clang-x86_64` toolchain — the CLANG64 environment — and its `msys2/` scripts are
-what produces the portable `win64-clang` zips. FFmpeg-mvc carries no Windows build scripts of its
-own, so the parent's are copied in beside its source and run against the product tag. **This project
-has never run this build**: it is the parent pipeline with FFmpeg-mvc's source in place of the
-parent's, ported rather than executed here, and it has no Windows runtime evidence behind it either
-(§4.2's opening warning). If it fails, do not invent `configure` flags — start again from the
-parent's published `msys2/build.sh` and its dependencies, or take the question to the FFmpeg-mvc
-maintainer, because a hand-rolled flag set is how you end up with a binary that advertises an encoder
-it cannot run.
-
-Open **MSYS2 CLANG64** — the clang64 environment, *not* the plain `MSYS` shell and *not* `MINGW64`;
-the toolchain below installs into CLANG64 and the build cannot see it from the other two.
+FFmpeg-mvc publishes no binaries for any platform (§2) and carries no Windows build scripts, so this half
+of the runtime is a local build on the parent project's route: `jellyfin-ffmpeg` produces its own official
+Windows binaries on MSYS2 with the CLANG64 (`mingw-w64-clang-x86_64`) toolchain, and its `msys2/` scripts
+are copied in beside the FFmpeg-mvc source and run there. Open **MSYS2 CLANG64** — *not* the plain `MSYS`
+shell and *not* `MINGW64`: the toolchain installs into CLANG64 and the build cannot see it from the other
+two. The two tags below belong together (`n8.1.3-mvc9-jf1` drops in against `jellyfin-ffmpeg v8.1.3-1`) and
+the parent checkout supplies only its `msys2/` scripts, never an installed binary; `/c/build/anaglyfin` is
+scratch space for this build alone.
 
 ```bash
 pacman -Syu --noconfirm
@@ -641,53 +595,33 @@ pacman -S --needed --noconfirm \
   quilt diffstat \
   mingw-w64-clang-x86_64-toolchain \
   mingw-w64-clang-x86_64-nasm
-```
 
-Then the two sources: the parent, for its build scripts, and the FFmpeg-mvc product tag, for the
-code. The two tags belong together — `n8.1.3-mvc9-jf1` is the Jellyfin-line FFmpeg-mvc tag that drops
-in against `jellyfin-ffmpeg v8.1.3-1` — and the parent tag is only ever the supplier of the `msys2/`
-scripts, never a binary that gets installed.
-
-```bash
 mkdir -p /c/build/anaglyfin
 cd /c/build/anaglyfin
 git clone --depth 1 --branch v8.1.3-1 https://github.com/jellyfin/jellyfin-ffmpeg.git
 git clone --depth 1 --branch n8.1.3-mvc9-jf1 https://github.com/tthayer93/FFmpeg-mvc.git
 cp -r jellyfin-ffmpeg/msys2 FFmpeg-mvc/
-```
-
-and build:
-
-```bash
 cd FFmpeg-mvc
 bash msys2/build.sh
 ```
 
-`/c/build/anaglyfin` is scratch space for this build alone — the wrapper's own build tree from step 3
-is elsewhere (`C:\build\anaglyfin-wrapper-src`), and none of it is needed once step 5 has the files.
-`build.sh` configures and compiles in the source tree, so the file this build is for is sitting there
-the moment `make` finishes: **`/c/build/anaglyfin/FFmpeg-mvc/ffmpeg.exe`**, which is
-`C:\build\anaglyfin\FFmpeg-mvc\ffmpeg.exe` in step 5's spelling. Treat that as the artifact.
-Everything in the script after `make` is the parent project's packaging and not the compile: it reads
-`debian/changelog` to name the portable zip and then *moves* `ffmpeg.exe` and `ffprobe.exe` into its
-own `msys2/` directory, and a FFmpeg-mvc product tag carries no `debian/changelog` at all — so the
-script can exit non-zero on that read **after a build that succeeded**. That is a packaging-step
-mismatch and not a compiler failure; the binary it is arguing about is already built, and it is
-still in the source root. Only a script that ran to its end has moved the file out of there, and then
-it is at `C:\build\anaglyfin\FFmpeg-mvc\msys2\ffmpeg.exe` instead. Step 5 installs the source-root
-**`ffmpeg.exe`** as `ffmpeg-mvc.exe` and deliberately leaves the `ffprobe.exe` beside it behind: the
-probe beside the wrapper is the server's own (§2), always. The parent's Windows configuration is a
-full hardware set (`dxva2`, `d3d11va`, `d3d12va`, `mediafoundation`, `libvpl` for Quick Sync, AMF,
-NVENC), so a build through this route should carry more encoders than the documented Linux build
-carries — "should" being exactly the strength of that claim, so run the `-encoders` check in step 8
-against your own two binaries if the server has hardware encoding switched on. It also enables
-`libfdk_aac`, which means the one capability inversion this project has a fix for is live here: on a
-server with **Enable audio VBR** on, the stock probe advertises fdk, the server writes that selection
-and its private `-vbr` option into a marker command, and the `v0.2.1`-and-later wrapper maps it to
-native AAC with a notice (see §3 step 9 for what that log line looks like, and why a wrapper older
-than `v0.2.1` dies on it).
+**The artifact is the source-root `/c/build/anaglyfin/FFmpeg-mvc/ffmpeg.exe`** —
+`C:\build\anaglyfin\FFmpeg-mvc\ffmpeg.exe` in step 5's spelling — because `build.sh` configures and compiles
+in the source tree, so that file exists the moment `make` finishes. Everything the script does *after*
+`make` is the parent's packaging: it reads `debian/changelog` to name the portable zip and then *moves*
+`ffmpeg.exe` and `ffprobe.exe` into its own `msys2/` directory, and an FFmpeg-mvc product tag has no
+`debian/changelog` at all — so the script can exit non-zero on that read **after a build that succeeded**.
+That is a packaging mismatch, not a compiler failure, arguing about a binary that is already built and
+still in the source root; only a script that ran to its end has moved it, to
+`C:\build\anaglyfin\FFmpeg-mvc\msys2\ffmpeg.exe`. Step 5 installs the source-root **`ffmpeg.exe`** as
+`ffmpeg-mvc.exe` and leaves the `ffprobe.exe` beside it behind: the probe beside the wrapper is the
+server's own (§2), always.
 
-**5. The three runtime files** — one copy of each into the directory from step 2.
+This project has never run this build, so if it fails, do not invent `configure` flags — start again from
+the parent's published `msys2/build.sh` and its dependencies, or take the question to the FFmpeg-mvc
+maintainer, because a hand-rolled flag set is how you get a binary that advertises an encoder it cannot run.
+
+**5. Copy the three runtime files** — one copy of each into the directory from step 2.
 
 ```powershell
 $ffmpegDir = "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg"
@@ -696,9 +630,8 @@ $ffmpegDir = "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg"
 Copy-Item C:\build\anaglyfin-wrapper\anaglyfin-ffmpeg.exe `
   "$ffmpegDir\anaglyfin-ffmpeg.exe" -Force
 
-# FFmpeg-mvc, as built by step 4: its ffmpeg.exe, installed under the name this page uses.
-# The source root is where the compile leaves it. Only if step 4's packaging step ran to
-# its end has the file been moved, and then it is under msys2\ instead of beside it.
+# FFmpeg-mvc's own ffmpeg.exe, from the build's source root, under the name this page
+# uses; only if step 4's packaging ran to its end did it move under msys2\ instead.
 Copy-Item C:\build\anaglyfin\FFmpeg-mvc\ffmpeg.exe `
   "$ffmpegDir\ffmpeg-mvc.exe" -Force
 
@@ -707,34 +640,22 @@ Copy-Item "C:\Program Files\Jellyfin\Server\ffprobe.exe" `
   "$ffmpegDir\ffprobe.exe" -Force
 ```
 
-`Get-ChildItem $ffmpegDir` should now show exactly those three `.exe` files, the wrapper one tens of
-megabytes across because it is self-contained. Files created inside the directories of step 2 inherit
-the right the service needs; if you replace a file with one copied from a location that carries its
-own ACL, `Get-Acl` on it (or a re-run of step 2's `icacls`) is the check.
+`Get-ChildItem $ffmpegDir` now shows exactly those three `.exe` files, the wrapper one tens of megabytes
+across because it is self-contained. Files copied into step 2's directories inherit the modify right the
+service needs there.
 
-**6. Environment: the service's own, not your shell's.**
+**6. Service environment — the service's own, not your shell's.**
 
-Jellyfin starts the wrapper as a child process, so these five variables must be in the environment of
-**the service** — six if you took the optional bundle-directory entry in step 2 — because what Jellyfin
-passes to a started helper is what the service itself was started with. A variable set in your own
-PowerShell session reaches your session only, and `setx` writes the boot-time environment a service
-inherits at machine start — neither is the environment of a service that is already running. The
-installer manages `JellyfinServer` through the NSSM it ships, and NSSM keeps the settings it launches
-the app with under the service's own registry key. Look before writing:
+Jellyfin hands a started helper the environment **the service** was started with, so the five variables
+belong there: your shell's variables reach only your session and `setx` writes the boot-time environment, so
+neither reaches a service that is already running. NSSM — how the installer manages `JellyfinServer` — keeps
+what it launches the app with under the service's own registry key, and this block inspects that value, keeps
+whatever is neither empty nor one of the names it states again, adds the five, and writes the union:
 
 ```powershell
-Get-ItemProperty `
-  "HKLM:\SYSTEM\CurrentControlSet\Services\JellyfinServer\Parameters" `
-  -Name AppEnvironmentExtra -ErrorAction SilentlyContinue
-```
-
-A server that has never been configured this way reports nothing: `AppEnvironmentExtra` does not
-exist until something creates it. With nothing there, write the five:
-
-```powershell
-$ffmpegDir = "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg"
+$parameters = "HKLM:\SYSTEM\CurrentControlSet\Services\JellyfinServer\Parameters"
 $anaglyfinRoot = "C:\ProgramData\Jellyfin\Server\anaglyfin"
-
+$ffmpegDir = "$anaglyfinRoot\ffmpeg"
 $anaglyfinEnvironment = @(
   "JELLYFIN_FFMPEG=$ffmpegDir\anaglyfin-ffmpeg.exe"
   "ANAGLYFIN_REAL_FFMPEG=$ffmpegDir\ffmpeg-mvc.exe"
@@ -742,177 +663,106 @@ $anaglyfinEnvironment = @(
   "ANAGLYFIN_LOCK_DIR=$anaglyfinRoot\lock"
   "ANAGLYFIN_WRAPPER_SETTINGS=$anaglyfinRoot\wrapper\anaglyfin-wrapper-settings.json"
 )
-
-Set-ItemProperty `
-  -Path "HKLM:\SYSTEM\CurrentControlSet\Services\JellyfinServer\Parameters" `
-  -Name AppEnvironmentExtra `
-  -Value $anaglyfinEnvironment `
-  -Type MultiString
-```
-
-If that first command came back with entries already in it — a proxy setting, a `JELLYFIN_DATA_DIR`,
-anything somebody put there before Anaglyfin — **merge instead of replacing**: keep what is not
-Anaglyfin's, and write the union. (This block assumes `$anaglyfinEnvironment` from the block above is
-still in the session; re-run that one first if it is not.)
-
-```powershell
-$parameters = "HKLM:\SYSTEM\CurrentControlSet\Services\JellyfinServer\Parameters"
-
+# Inspect first: on a server never configured this way AppEnvironmentExtra does not exist
+# yet, the read reports nothing, and $kept is empty.
 $existing = @(
   (Get-ItemProperty -Path $parameters -Name AppEnvironmentExtra `
      -ErrorAction SilentlyContinue).AppEnvironmentExtra
 )
-
-# What is already there, minus empty entries and the names being stated again.
 $kept = @($existing | Where-Object { $_ -and $_ -notmatch '^(JELLYFIN_FFMPEG=|ANAGLYFIN_)' })
-
-Set-ItemProperty `
-  -Path $parameters `
-  -Name AppEnvironmentExtra `
-  -Value ($kept + $anaglyfinEnvironment) `
-  -Type MultiString
+# Write the union back as REG_MULTI_SZ, one NAME=VALUE per entry.
+Set-ItemProperty -Path $parameters -Name AppEnvironmentExtra `
+  -Value ($kept + $anaglyfinEnvironment) -Type MultiString
 ```
 
 Three rules about this value, each of them load-bearing:
 
-- **`AppEnvironmentExtra`, never `AppEnvironment`.** The one written above is *appended* to the
-  environment the service starts with. `AppEnvironment` replaces the entire environment of the
-  process — writing the five variables into it would leave Jellyfin with no `PATH`, no `SystemRoot`
-  and nothing else it needs to start.
-- **`REG_MULTI_SZ`, one `NAME=VALUE` per entry.** `-Type MultiString` is what writes that shape, and
-  it is the same value the bundled `nssm.exe` writes when you use
-  `nssm set JellyfinServer AppEnvironmentExtra NAME=VALUE …`, so either tool is fine and neither is
-  a second configuration to keep in sync. Do not pack several assignments into one entry.
-- **No quotes around a path.** These values go to the process as they stand, and Jellyfin starts its
-  FFmpeg by handing the path straight to the operating system rather than through a shell. A path
-  containing a space (`C:\Program Files\Jellyfin\Server\ffmpeg.exe`, above) is correct exactly as
-  written; a path wrapped in literal `"` characters names a file that cannot be found, and the
-  server's answer is a version-check failure or "path … is invalid" in the log.
+- **`AppEnvironmentExtra`, never `AppEnvironment`:** the value above is *appended* to the environment the
+  service starts with, while `AppEnvironment` **replaces** that environment — the five variables written
+  into it would leave Jellyfin with no `PATH`, no `SystemRoot`, and nothing else it needs to start.
+- **`REG_MULTI_SZ`, one `NAME=VALUE` per entry:** `-Type MultiString` writes exactly the shape the bundled
+  `nssm.exe set JellyfinServer AppEnvironmentExtra NAME=VALUE …` writes, so either tool is fine and
+  neither is a second configuration to keep in sync. Never pack several assignments into one entry.
+- **No quotes around a path:** these values reach the process as written, and Jellyfin starts its FFmpeg by
+  handing the path to the operating system rather than to a shell. `ANAGLYFIN_SERVER_FFMPEG` above points
+  into `C:\Program Files\...` and is correct exactly as it stands; that path wrapped in literal `"`
+  characters names a file that cannot be found, and the log then reports a failed version check or a path
+  that is invalid.
 
-`ANAGLYFIN_WRAPPER_SETTINGS` is in that list because it is not optional in practice: the plugin writes
-its subtitle-depth and concurrency document to the absolute path this variable names, and a wrapper
-can only read that document from a path it is *told*. Unset, the plugin falls back to writing it
-under its own `plugins\configurations` directory, where no wrapper has any way of knowing to look, and
-subtitle depth quietly stays flat with nothing logged as an error. The rest of the five are as in
-§3 step 9 and `docs/architecture.md`: `JELLYFIN_FFMPEG` is the server's FFmpeg path pointed at the
-wrapper; `ANAGLYFIN_REAL_FFMPEG` is the FFmpeg-mvc build that runs marker/profile jobs;
-`ANAGLYFIN_SERVER_FFMPEG` is the stock FFmpeg that runs everything else, including the startup
-capability probes, so that what the server believes about its FFmpeg is true of the binary those
-commands run on; `ANAGLYFIN_LOCK_DIR` is where the concurrency slots live.
+These are the five of §3 step 9, and `ANAGLYFIN_WRAPPER_SETTINGS` is not one to skip: the plugin writes its
+subtitle-depth and concurrency document to exactly that path and a wrapper can only read a document it is
+*told* about, so unset it the file sits under `plugins\configurations` where no wrapper looks and subtitle
+depth quietly stays flat with nothing logged as an error.
 
-**7. Restart the service** — and a restart is the whole of the wait:
+**7. Restart the service** — a restart is the whole of the wait:
 
 ```powershell
 Restart-Service JellyfinServer
 ```
 
-NSSM reads `Parameters` when it launches the server, so the new environment belongs to processes
-started after this command — a client reconnect, or a plugin reload, carries no new environment with
-it. This is also the restart that loads a plugin installed or updated through §1.
+NSSM reads `Parameters` when it launches the server, so the new environment belongs only to processes
+started after this command — and this is also the restart that loads a plugin installed through §1.
 
-**8. Verify** — because this route is documented and not validated, this step is the evidence.
+**8. Verify** — because this route is documented and not validated, this step is the evidence. The log
+directory for this shape is `C:\ProgramData\Jellyfin\Server\log`.
 
-- **The log names the wrapper.** The line that identifies the wrapper as the server's FFmpeg is the
-  same one §5 quotes for the other shapes, and the server's log directory for this install shape is
-  `C:\ProgramData\Jellyfin\Server\log`:
+- **The startup log names the Windows wrapper**, on the line §5 quotes for every shape:
 
   ```text
   MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg\anaglyfin-ffmpeg.exe
   ```
 
-  The startup block that lists environment variables echoes only the server's own prefixes —
-  `JELLYFIN_`, `DOTNET_` and `ASPNETCORE_` — so `JELLYFIN_FFMPEG` naming the wrapper is visible
-  there, while the `ANAGLYFIN_*` names are not. The checks below, and not that line, are the proof of
-  them.
+  The startup environment dump echoes only `JELLYFIN_`, `DOTNET_` and `ASPNETCORE_` names, so it proves
+  `JELLYFIN_FFMPEG` and not the `ANAGLYFIN_*` entries — the commands below are their proof.
 
-- **`ffprobe.exe` is beside the wrapper, and it is the stock one.** The server derives its probe path
-  from the FFmpeg path above, so a missing sidecar is visible at startup as a probe failure naming
-  `C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg\ffprobe.exe`, and a library that never fills. That
-  it is the *official* build is the part a copy-paste gets wrong: the banner tells you which one is
-  there, because the FFmpeg-mvc build's banner names the mvc tag.
+- **The stock `ffprobe.exe` sits beside the wrapper.** Two matching first lines are the answer wanted, since
+  an FFmpeg-mvc `ffprobe` names the mvc tag in its banner. A missing sidecar shows up at startup as a probe
+  failure naming `…\anaglyfin\ffmpeg\ffprobe.exe` and a library that never fills.
+- **The wrapper dispatches to FFmpeg-mvc.** With `ANAGLYFIN_SERVER_FFMPEG` unset for one invocation (a blank
+  value counts as unset) an ordinary `-version` takes the marker route, so the banner that comes back is
+  FFmpeg-mvc's — the check §5 runs with `env`. It runs as **your** account, so it proves dispatch and the
+  binaries and not the service account's rights.
+- **One real Anaglyfin transcode plays**, from a client, with an MVC item and a profile enabled. It leaves a
+  `transcode_<n>.log` in that log directory; the wrapper's command line carries the marker URL and its
+  `ffmpeg-mvc.exe` child's carries the real source path and the profile's filters with no marker in it
+  (`docs/validation.md` V6/V7). With hardware encoding on, the encoder Jellyfin selects for an Anaglyfin job
+  (read `-codec:v` off that log) also has to be in `ffmpeg-mvc.exe -encoders`, as §3 step 9 asks.
 
-  ```powershell
-  & "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg\ffprobe.exe" -version | Select-Object -First 1
-  & "C:\Program Files\Jellyfin\Server\ffprobe.exe" -version | Select-Object -First 1
-  ```
-
-  Two matching first lines is the answer wanted. Saving the path in **Dashboard → Playback → FFmpeg
-  path** is a second way to have the server prove it: that control probes the path it is given and
-  refuses it unless the `ffprobe.exe` beside it runs.
-
-- **The wrapper answers `-version`, and dispatches.** Blanking `ANAGLYFIN_SERVER_FFMPEG` for one
-  invocation (a blank value counts as unset) sends this ordinary command down the marker route, so the
-  banner that comes back is FFmpeg-mvc's — the same check §5 runs with `env`:
+  The three command checks above, in one block — the last of them only while a transcode is running:
 
   ```powershell
   $ffmpegDir = "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg"
+  & "$ffmpegDir\ffprobe.exe" -version | Select-Object -First 1   # must match the line below
+  & "C:\Program Files\Jellyfin\Server\ffprobe.exe" -version | Select-Object -First 1
   $env:ANAGLYFIN_REAL_FFMPEG = "$ffmpegDir\ffmpeg-mvc.exe"
   Remove-Item Env:ANAGLYFIN_SERVER_FFMPEG -ErrorAction SilentlyContinue
-  & "$ffmpegDir\anaglyfin-ffmpeg.exe" -version
+  & "$ffmpegDir\anaglyfin-ffmpeg.exe" -version                   # banner must name FFmpeg-mvc
+  Get-CimInstance Win32_Process -Filter "Name='anaglyfin-ffmpeg.exe' OR Name='ffmpeg-mvc.exe'" |
+    Select-Object ProcessId, Name, CommandLine
   ```
 
-  Note what this does and does not prove: it runs the wrapper as **your** account, so it tests
-  dispatch and the binaries, not the service account's rights — those are step 2's grant and the
-  working transcode below.
-- **The two binaries' encoder lists**, if the server has hardware encoding switched on: the same diff
-  §3 step 9 asks for, since the probes the server reads are the stock binary's while marker jobs run
-  on the other. The two lists are not expected to match — they are different builds — so what is being
-  looked for is one-directional: the encoder Jellyfin actually selects for an Anaglyfin job (read it
-  off the transcode log's `-codec:v`) has to be in the **FFmpeg-mvc** list.
+- **Stopping is the caveat specific to Windows.** There are no POSIX signals there and the wrapper registers
+  no stop-signal handler at all, so a stop rests entirely on the `q` the server writes to FFmpeg's stdin,
+  which reaches the FFmpeg-mvc child through the stdin the wrapper inherits. When a transcode ignores that
+  `q`, the server waits five seconds and terminates the process it owns — the **wrapper** — and Windows kills
+  no process tree with that call, so an FFmpeg-mvc child can be left orphaned behind a restarted service.
+  `Get-Process ffmpeg-mvc` after a stopped playback tells you, and `Stop-Process` by that name or another
+  service restart clears it. The concurrency slot does not go with the orphan: a slot file is opened
+  `DeleteOnClose`, so the OS releases it the moment the wrapper is gone and the next Anaglyfin playback is not
+  locked out. A stop that hangs *is* worth writing up, because no run of this project has measured the `q`
+  path on Windows.
 
-  ```powershell
-  & "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg\ffmpeg-mvc.exe" -hide_banner -encoders > "$env:TEMP\mvc-encoders.txt"
-  & "C:\Program Files\Jellyfin\Server\ffmpeg.exe" -hide_banner -encoders > "$env:TEMP\stock-encoders.txt"
-  Compare-Object (Get-Content "$env:TEMP\mvc-encoders.txt") (Get-Content "$env:TEMP\stock-encoders.txt")
-  Select-String -Path "$env:TEMP\mvc-encoders.txt" -Pattern "h264_qsv", "h264_nvenc", "h264_amf", "libx264"
-  ```
-
-- **One real Anaglyfin transcode**, from a client, with an MVC item and a profile enabled: the job
-  appears as a `transcode_<n>.log` in `C:\ProgramData\Jellyfin\Server\log`, and while it runs the
-  process tree is visible in PowerShell rather than in `ps`:
-
-  ```powershell
-  Get-CimInstance Win32_Process -Filter "Name='anaglyfin-ffmpeg.exe'" |
-    Select-Object ProcessId, CommandLine
-  Get-CimInstance Win32_Process -Filter "Name='ffmpeg-mvc.exe'" |
-    Select-Object ProcessId, CommandLine
-  ```
-
-  The wrapper's command line carries the marker URL; the child's carries the real source path and the
-  profile's filters, and no marker (see `docs/validation.md` V6/V7 for what those commands should
-  contain).
-- **Stopping a transcode — the caveat that is specific to Windows.** There are no POSIX signals on
-  Windows, and the wrapper knows it: it registers no stop-signal handler here at all, so a stop that
-  would have been forwarded on Linux rests entirely on the path the server already uses to stop any
-  transcode — writing `q` to FFmpeg's stdin, which reaches the FFmpeg-mvc child through the stdin the
-  wrapper inherits. When that works, the encoder finishes its segment, the wrapper relays its exit
-  code, and the slot is released. When it does not — a transcode that ignores the `q` — the server
-  waits five seconds and then terminates the process it owns, and the process it owns is the
-  **wrapper**: Windows does not kill a process tree with that call, so the FFmpeg-mvc child can be
-  left to finish its job on its own, and a `Restart-Service JellyfinServer` taken while that is
-  happening can leave it running behind the new one. `Get-Process ffmpeg-mvc` after a stopped playback
-  is how to tell. This is a caveat and not a blocker: the concurrency slot does not go with the
-  orphan, because a slot file is opened `DeleteOnClose` and the operating system releases it the
-  moment the wrapper process is gone, so the next Anaglyfin playback is not locked out by a leftover
-  encoder. If the leftover itself bothers you, `Stop-Process -Name ffmpeg-mvc` is the blunt fix — and
-  the observation that a stop hangs *is* worth recording, because no run of this project has measured
-  the `q` path on Windows.
-
-The full checklist stays where it is: `docs/validation.md`. Its rows are Linux results, so a Windows
-run that passes them is new evidence and should be written up as such rather than assumed to have
-been shown already.
+`docs/validation.md` keeps the full checklist, and its rows are Linux results: a Windows run that passes
+them is new evidence and should be written up as such rather than assumed to have been shown already.
 
 **9. Upgrade and uninstall.**
 
-Both halves install over themselves, and neither records anything the other depends on; the one
-Windows-specific wrinkle is that a running `.exe` cannot be overwritten, so a replacement is done with
-the service stopped.
+Both halves install over themselves; the one Windows-specific wrinkle is that a running `.exe` cannot be
+overwritten, so a file is swapped with the service stopped.
 
-- **The wrapper** — the tag changes, the clone does not. Step 3 left a checkout at
-  `C:\build\anaglyfin-wrapper-src` and `git clone` refuses an existing directory, so move that
-  checkout onto the new tag rather than cloning over it. `--depth 1` keeps it as shallow as step 3
-  made it, and `--detach` is how you land on the new tag from the detached HEAD the old one left you
-  on:
+- **The wrapper** — the tag changes, the clone does not: `git clone` refuses an existing directory, so move
+  step 3's checkout onto the new tag (`--depth 1` keeps it shallow, `--detach` lands on it from the detached
+  HEAD the old tag left):
 
   ```powershell
   cd C:\build\anaglyfin-wrapper-src
@@ -920,11 +770,8 @@ the service stopped.
   git checkout --detach FETCH_HEAD
   ```
 
-  Then run step 3's `dotnet publish` block again, unchanged — the same project, the same
-  `win-x64` / self-contained / single-file switches, the same
-  `--output C:\build\anaglyfin-wrapper` — and rename the published
-  `Anaglyfin.FFmpegWrapper.exe` to `anaglyfin-ffmpeg.exe` as step 3 does. Then, with the service
-  stopped, replace the file and start it again:
+  Then re-run step 3's publish block unchanged, rename its output as step 3 does, and swap the file with the
+  service stopped:
 
   ```powershell
   Stop-Service JellyfinServer
@@ -933,19 +780,17 @@ the service stopped.
   Start-Service JellyfinServer
   ```
 
-- **FFmpeg-mvc** — the same two commands in its clone: `cd C:\build\anaglyfin\FFmpeg-mvc`, fetch the
-  new tag with `--depth 1`, check out `FETCH_HEAD` detached, and rebuild. The copied `msys2/`
-  directory is not part of either tag's tree, so the checkout leaves it where it is and it does not
-  need copying again; a checkout that refuses over the build's own edits to the source is the point
-  at which a fresh clone into a spare directory is easier than arguing with it. Swap
-  `ffmpeg-mvc.exe` the same way, with the service stopped. Do **not** replace `ffprobe.exe` from that
-  build: the file beside the wrapper stays the installer's stock one (§2).
+- **FFmpeg-mvc** — the same two git commands in its clone at `C:\build\anaglyfin\FFmpeg-mvc`, rebuild, and
+  swap `ffmpeg-mvc.exe` the same way. The copied `msys2/` belongs to neither tag, so the checkout leaves it
+  where it is. Do **not** replace `ffprobe.exe` from that build (§2).
 - **The plugin** — from the catalog, then `Restart-Service JellyfinServer`.
-- **Uninstall** is §3.3's rule in Windows shape, and the same trap: take **every** Anaglyfin entry out
-  of `AppEnvironmentExtra`, not just some. If the value carried nothing but Anaglyfin's entries, delete
-  the value; if it carried anything else, re-run step 6's merge and write back only what was not
-  Anaglyfin's — by hand this time, because step 6's filter matches `JELLYFIN_FFMPEG` and `ANAGLYFIN_*`
-  by name and so leaves a step 2 `DOTNET_BUNDLE_EXTRACT_BASE_DIR` where it is.
+- **Uninstall** removes **Anaglyfin's** service-environment entries and its runtime directory. It does **not
+  uninstall Jellyfin** and leaves every stock Jellyfin file alone: everything under
+  `C:\Program Files\Jellyfin\Server` — the server, its `ffmpeg.exe` and `ffprobe.exe`, its NSSM — stays as
+  Jellyfin installed it, and the plugin goes only when you take it out of Dashboard → Plugins. As in §3.3,
+  **every** Anaglyfin entry has to leave `AppEnvironmentExtra`: delete the value if it carried nothing else,
+  or write it back by hand with only the non-Anaglyfin entries (step 6's filter matches `JELLYFIN_FFMPEG`
+  and `ANAGLYFIN_` by name, so it leaves anything else in place).
 
   ```powershell
   Remove-ItemProperty `
@@ -955,12 +800,10 @@ the service stopped.
   Restart-Service JellyfinServer
   ```
 
-  `JELLYFIN_FFMPEG` left naming the wrapper that was just deleted is what bites: the server looks for
-  its FFmpeg where the wrapper used to be. With the value gone it is back to the FFmpeg in its own
-  program directory — unless a path was ever saved in **Dashboard → Playback → FFmpeg path**, because
-  that saved value outranks the default and is where the same correction belongs. Take the plugin out
-  of Dashboard → Plugins too if it should go with it, and leave step 2's grant behind with the
-  directory it was applied to.
+  `JELLYFIN_FFMPEG` left naming the wrapper that was just deleted is what bites: the server looks for its
+  FFmpeg where the wrapper used to be. With the value gone it is back to the FFmpeg in its own program
+  directory — unless a path was saved in **Dashboard → Playback → FFmpeg path**, which outranks the default
+  and is where the same correction belongs. Step 2's grant goes with the directory it was applied to.
 
 ## 5. Verify and update
 
