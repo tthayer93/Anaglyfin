@@ -132,8 +132,9 @@ whatever `:latest` has since become; `HARNESS_IMAGE` in `.env` overrides it. The
 server does.
 
 Retargeting the pin is a change of target, not a result: no formal run against 12.3 is recorded in
-`docs/validation.md` until this harness is actually run and its evidence logged there. The prior
-runs behind that log were observed on 12.2, and they stay 12.2 results.
+`docs/validation.md` until this harness is actually run and its evidence logged there. The runs
+behind that log are Linux results, observed inside `jellyfin/jellyfin:12.2` and on the
+Debian/Ubuntu package, and they stay those results.
 
 Two overlays, as switches:
 
