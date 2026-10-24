@@ -8,7 +8,7 @@
 Install the plugin from one repository URL, get three FFmpeg runtime files onto the server,
 and point Jellyfin's FFmpeg at the wrapper. On Docker the commands in §3 run inside the running
 container and build both halves there. Target: Jellyfin **12.x** already installed on one of the
-three server shapes this page documents — the official container `jellyfin/jellyfin:12.2` (§3),
+three server shapes this page documents — the official container `jellyfin/jellyfin:12.3` (§3),
 which is the image this flow currently targets; the Debian/Ubuntu **package already installed**
 (§4.1); and the official Windows server installer's service **already installed** (§4.2). Nothing
 below installs Jellyfin; this page only configures Anaglyfin and its runtime files on top of it.
@@ -102,7 +102,7 @@ The three server shapes differ only in who fills that directory:
 
 Every command below runs **inside the running container**. Nothing is installed on the Docker host
 and nothing extra is mounted for the runtime. Assumes the service is named `jellyfin`, the image is
-`jellyfin/jellyfin:12.2`, and `./jellyfin/config` is mounted at `/config`. Every command below
+`jellyfin/jellyfin:12.3`, and `./jellyfin/config` is mounted at `/config`. Every command below
 execs as **root** with `-u root` — that is what the package install and the writes under `/config`
 need — rather than trusting the user the container happens to run its own process as, which the
 image can be configured to change. This flow targets `linux-x64`, because the wrapper publish
@@ -406,7 +406,7 @@ all five step 9 added — `JELLYFIN_FFMPEG`, `ANAGLYFIN_REAL_FFMPEG`, `ANAGLYFIN
 as `ANAGLYFIN_SLOT_WAIT_MS` or the `ANAGLYFIN_OFFICIAL_FFMPEG` alias, if present. `JELLYFIN_FFMPEG`
 is the one that bites: leave it pointing at the wrapper just deleted and Jellyfin looks for its
 FFmpeg at a path that no longer exists and fails to find it. Then recreate with
-`jellyfin/jellyfin:12.2`:
+`jellyfin/jellyfin:12.3`:
 
 ```sh
 docker compose up -d --force-recreate jellyfin

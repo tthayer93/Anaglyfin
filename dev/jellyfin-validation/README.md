@@ -1,8 +1,8 @@
 # Anaglyfin runtime validation harness
 
 A disposable Docker stack that runs the packaged plugin and the packaged FFmpeg wrapper
-inside the image the real test server runs in - `jellyfin/jellyfin:12.2`, Jellyfin
-`12.2` at whatever patch that tag currently publishes, Debian 13 - with the same mount
+inside the image the real test server runs in - `jellyfin/jellyfin:12.3`, Jellyfin
+`12.3` at whatever patch that tag currently publishes, Debian 13 - with the same mount
 shape the real server uses:
 
 ```text
@@ -88,7 +88,7 @@ which is this, spelled out:
 docker compose -f compose.jellyfin.yml run --rm wrapper-check
 ```
 
-The service starts `jellyfin/jellyfin:12.2` with only the wrapper mounted and runs
+The service starts `jellyfin/jellyfin:12.3` with only the wrapper mounted and runs
 `wrapper-check.sh`, which answers one question: does the CI artifact actually run - and
 actually decide - inside the image Jellyfin runs in? Its real FFmpeg is the image's own
 `/bin/echo`, which prints the arguments it was started with, so the three wrapper
@@ -125,11 +125,15 @@ sh harness.sh up
 mount whose source does not exist is created for you as an empty root-owned *directory* -
 and a server that finds a directory where an assembly belongs is a confusing afternoon.
 
-It pulls `jellyfin/jellyfin:12.2` on first use, which is a few hundred MB. That tag is the pinned
-current target rather than a floating `:latest`, so a run recorded against 12.2 cannot drift into
+It pulls `jellyfin/jellyfin:12.3` on first use, which is a few hundred MB. That tag is the pinned
+current target rather than a floating `:latest`, so a run recorded against 12.3 cannot drift into
 whatever `:latest` has since become; `HARNESS_IMAGE` in `.env` overrides it. The plugin's
 `targetAbi 12.0.0` is a minimum-version floor, so this image loads the assembly exactly as a 12.0
 server does.
+
+Retargeting the pin is a change of target, not a result: no formal run against 12.3 is recorded in
+`docs/validation.md` until this harness is actually run and its evidence logged there. The prior
+runs behind that log were observed on 12.2, and they stay 12.2 results.
 
 Two overlays, as switches:
 
