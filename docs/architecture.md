@@ -316,11 +316,11 @@ therefore select an encoder or a tone-mapping filter for a marker job — `libx2
 `libopus`, `tonemap_opencl` — that a minimal FFmpeg-mvc build does not carry, and that job then runs
 on the build whose `SupportsEncoder` was never consulted. For that video surface the mitigation
 stays what it always was: build-flag parity plus a diff of `ffmpeg-mvc -encoders` against the
-official `-encoders` (see `docs/install.md` §3.1 step 9); the documented `jellyfin-8.1` build
-provides build-flag parity for the documented QSV/VA-API H.264 flow, not observed proof of the
-server's selection against this build's encoder list. The wrapper does not learn to
-probe encoders there either — the rewrite has no business second-guessing the server's video codec
-choice.
+official `-encoders` (see the encoder check in the **Verify** section of `docs/install.md`). The
+documented `jellyfin-8.1` build provides build-flag parity for the documented QSV/VA-API H.264
+flow, not observed proof of the server's selection against this build's encoder list. The wrapper
+does not learn to probe encoders there either — the rewrite has no business second-guessing the
+server's video codec choice.
 
 The **audio** surface is answered in code instead, because there the inversion is not a missing
 preference but a guaranteed death, and it is one the manual parity check could never catch in time:
