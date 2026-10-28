@@ -129,8 +129,9 @@ It pulls `jellyfin/jellyfin:12.4` on first use, which is a few hundred MB. That 
 current target rather than a floating `:latest`, so a run recorded against 12.4 cannot drift into
 whatever `:latest` has since become; `HARNESS_IMAGE` in `.env` overrides it. The plugin's
 `targetAbi 12.0.0` is a minimum-version floor, so this image loads the assembly exactly as a 12.0
-server does. That image runs .NET `10.0.14`, which is inside the `net10.0` band the artifacts this
-harness mounts were built against, so the 10.0.x toolchain that produced them is still the right one.
+server does. Jellyfin 12.4 updated its own .NET baseline to `10.0.14`, inside the `net10.0` band the
+artifacts this harness mounts were built against, so the 10.0.x toolchain that produced them is still
+the right one.
 
 Retargeting the pin is a change of target, not a result: no formal run against 12.4 is recorded in
 `docs/validation.md` until this harness is actually run and its evidence logged there. The runs

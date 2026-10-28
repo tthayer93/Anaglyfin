@@ -94,9 +94,10 @@ Notes:
 - `targetAbi` is a minimum-version floor, not an exact match: a server enables a plugin it finds
   when its own version is at or above that value, so the `12.0.0` manifest above loads on a 12.0
   server or any later 12.x server. The current supported runtime is Jellyfin **12.x**, with
-  `jellyfin/jellyfin:12.4` as the targeted container. That image runs .NET `10.0.14` and the
-  manifest above is a `net10.0` assembly, so the 10.0.x SDK and toolchain the CI gate uses remain
-  valid and nothing here is retargeted for 12.4.
+  `jellyfin/jellyfin:12.4` as the targeted container. The 12.4 release updated Jellyfin's .NET
+  baseline to `10.0.14`, and the manifest above is a `net10.0` assembly, so the 10.0.x SDK and
+  toolchain the CI gate uses remain valid and nothing here is retargeted for 12.4. That version is
+  what the 12.4 release note records; the image's own installed patch was not inspected here.
 - The CI job packages the plugin archive, the install record, and the linux-x64 wrapper binary
   into `artifacts/`, and verifies all three. Where they go on a server is `docs/install.md`: the
   release workflow publishes the packaged archive and the wrapper as GitHub release assets, the

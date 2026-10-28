@@ -77,7 +77,7 @@ upgrading changes nothing about what it offers.
 
 | Item | Need |
 | --- | --- |
-| Jellyfin | 12.x - the currently targeted container is `jellyfin/jellyfin:12.4`; the manifest's `targetAbi 12.0.0` is a minimum-version floor, not an exact match, so this build loads on 12.0 or later. The plugin targets `net10.0` and that image runs .NET `10.0.14`, still inside the same band, so the existing 10.0.x toolchain builds it and nothing is retargeted for 12.4 |
+| Jellyfin | 12.x - the currently targeted container is `jellyfin/jellyfin:12.4`; the manifest's `targetAbi 12.0.0` is a minimum-version floor, not an exact match, so this build loads on 12.0 or later. Jellyfin 12.4 updated its .NET baseline to `10.0.14`; Anaglyfin still targets `net10.0`, inside that same band, so the existing 10.0.x toolchain builds it and nothing is retargeted for 12.4 |
 | FFmpeg runtime | `anaglyfin-ffmpeg` (the wrapper), an [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build for the marker/profile commands, and the `ffprobe` from the **official** Jellyfin FFmpeg placed beside the wrapper (not the FFmpeg-mvc one), placed by [docs/install.md](docs/install.md) - the plugin never bundles or installs them. Ordinary playback and the server's capability probes run on the stock FFmpeg the server would otherwise use, named by `ANAGLYFIN_SERVER_FFMPEG` |
 | Docker + Intel QSV/VA-API hardware encode | the host GPU mapped into the container (`/dev/dri`); software encoding needs no device mapping |
 

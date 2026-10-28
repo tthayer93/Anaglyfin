@@ -13,9 +13,9 @@ which is the image this flow currently targets; the Debian/Ubuntu **package alre
 (§4.1); and the official Windows server installer's service **already installed** (§4.2). Nothing
 below installs Jellyfin; this page only configures Anaglyfin and its runtime files on top of it.
 The plugin's `targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.2`
-loads on Jellyfin 12.0 or later. That image moved itself to .NET `10.0.14`; the plugin targets
-`net10.0` and the wrapper publishes against the same band, so the 10.0.x SDK this page installs
-still builds both and neither is retargeted for 12.4.
+loads on Jellyfin 12.0 or later. Jellyfin 12.4 updated its own .NET baseline to `10.0.14`; the plugin
+targets `net10.0` and the wrapper publishes against the same band, so the 10.0.x SDK this page
+installs still builds both and neither is retargeted for 12.4.
 
 Which of those three this project has actually *run* is a separate question from which three it
 documents, and the answer is in §4.2 rather than buried: every runtime result behind
