@@ -8,12 +8,14 @@
 Install the plugin from one repository URL, get three FFmpeg runtime files onto the server,
 and point Jellyfin's FFmpeg at the wrapper. On Docker the commands in §3 run inside the running
 container and build both halves there. Target: Jellyfin **12.x** already installed on one of the
-three server shapes this page documents — the official container `jellyfin/jellyfin:12.3` (§3),
+three server shapes this page documents — the official container `jellyfin/jellyfin:12.4` (§3),
 which is the image this flow currently targets; the Debian/Ubuntu **package already installed**
 (§4.1); and the official Windows server installer's service **already installed** (§4.2). Nothing
 below installs Jellyfin; this page only configures Anaglyfin and its runtime files on top of it.
 The plugin's `targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.2`
-loads on Jellyfin 12.0 or later.
+loads on Jellyfin 12.0 or later. Jellyfin 12.4 updated its own .NET baseline to `10.0.14`; the plugin
+targets `net10.0` and the wrapper publishes against the same band, so the 10.0.x SDK this page
+installs still builds both and neither is retargeted for 12.4.
 
 Which of those three this project has actually *run* is a separate question from which three it
 documents, and the answer is in §4.2 rather than buried: every runtime result behind
@@ -60,7 +62,7 @@ exactly:
   and a Windows server has nothing to download, so the same tag is published for `win-x64` with
   `dotnet publish` on your own machine (§4.2 step 3).
 - `ffmpeg-mvc` — a [FFmpeg-mvc](https://github.com/tthayer93/FFmpeg-mvc) build from the
-  `jellyfin-8.1` branch; latest tag `n8.1.3-mvc9-jf1`. This is the binary the wrapper dispatches
+  `jellyfin-8.1` branch; latest tag `n8.1.3-mvc10-jf1`. This is the binary the wrapper dispatches
   marker/profile commands to. That project publishes no binaries of any kind, Windows or otherwise,
   so on every shape below this one is either compiled by the commands given or built by you before
   you start.
@@ -102,7 +104,7 @@ The three server shapes differ only in who fills that directory:
 
 Every command below runs **inside the running container**. Nothing is installed on the Docker host
 and nothing extra is mounted for the runtime. Assumes the service is named `jellyfin`, the image is
-`jellyfin/jellyfin:12.3`, and `./jellyfin/config` is mounted at `/config`. Every command below
+`jellyfin/jellyfin:12.4`, and `./jellyfin/config` is mounted at `/config`. Every command below
 execs as **root** with `-u root` — that is what the package install and the writes under `/config`
 need — rather than trusting the user the container happens to run its own process as, which the
 image can be configured to change. This flow targets `linux-x64`, because the wrapper publish
@@ -181,7 +183,7 @@ needed once the three files are in place, and none of it survives a recreate.
 
 ```sh
 docker compose exec -u root jellyfin curl -fsSL \
-  https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.3-mvc9-jf1.tar.gz \
+  https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.3-mvc10-jf1.tar.gz \
   -o /tmp/ffmpeg-mvc.tar.gz
 
 docker compose exec -u root jellyfin sh -c '
@@ -406,7 +408,7 @@ all five step 9 added — `JELLYFIN_FFMPEG`, `ANAGLYFIN_REAL_FFMPEG`, `ANAGLYFIN
 as `ANAGLYFIN_SLOT_WAIT_MS` or the `ANAGLYFIN_OFFICIAL_FFMPEG` alias, if present. `JELLYFIN_FFMPEG`
 is the one that bites: leave it pointing at the wrapper just deleted and Jellyfin looks for its
 FFmpeg at a path that no longer exists and fails to find it. Then recreate with
-`jellyfin/jellyfin:12.3`:
+`jellyfin/jellyfin:12.4`:
 
 ```sh
 docker compose up -d --force-recreate jellyfin
@@ -584,7 +586,7 @@ of the runtime is a local build on the parent project's route: `jellyfin-ffmpeg`
 Windows binaries on MSYS2 with the CLANG64 (`mingw-w64-clang-x86_64`) toolchain, and its `msys2/` scripts
 are copied in beside the FFmpeg-mvc source and run there. Open **MSYS2 CLANG64** — *not* the plain `MSYS`
 shell and *not* `MINGW64`: the toolchain installs into CLANG64 and the build cannot see it from the other
-two. The two tags below belong together (`n8.1.3-mvc9-jf1` drops in against `jellyfin-ffmpeg v8.1.3-1`) and
+two. The two tags below belong together (`n8.1.3-mvc10-jf1` drops in against `jellyfin-ffmpeg v8.1.3-1`) and
 the parent checkout supplies only its `msys2/` scripts, never an installed binary; `/c/build/anaglyfin` is
 scratch space for this build alone.
 
@@ -599,7 +601,7 @@ pacman -S --needed --noconfirm \
 mkdir -p /c/build/anaglyfin
 cd /c/build/anaglyfin
 git clone --depth 1 --branch v8.1.3-1 https://github.com/jellyfin/jellyfin-ffmpeg.git
-git clone --depth 1 --branch n8.1.3-mvc9-jf1 https://github.com/tthayer93/FFmpeg-mvc.git
+git clone --depth 1 --branch n8.1.3-mvc10-jf1 https://github.com/tthayer93/FFmpeg-mvc.git
 cp -r jellyfin-ffmpeg/msys2 FFmpeg-mvc/
 cd FFmpeg-mvc
 bash msys2/build.sh

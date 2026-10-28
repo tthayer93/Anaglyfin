@@ -50,7 +50,7 @@ include:
 Two places, and they are not interchangeable.
 
 `dev/jellyfin-validation/` is a disposable Docker stack that runs these artifacts inside
-`jellyfin/jellyfin:12.3` - the pinned current target image, overridable with `HARNESS_IMAGE` -
+`jellyfin/jellyfin:12.4` - the pinned current target image, overridable with `HARNESS_IMAGE` -
 with the mount shape of the real target
 (`./jellyfin/config` -> `/config`, `./jellyfin/cache` -> `/cache`, media -> `/media`). It
 answers, on your own machine and repeatably: whether the packaged plugin is discovered by
@@ -94,7 +94,10 @@ Notes:
 - `targetAbi` is a minimum-version floor, not an exact match: a server enables a plugin it finds
   when its own version is at or above that value, so the `12.0.0` manifest above loads on a 12.0
   server or any later 12.x server. The current supported runtime is Jellyfin **12.x**, with
-  `jellyfin/jellyfin:12.3` as the targeted container.
+  `jellyfin/jellyfin:12.4` as the targeted container. The 12.4 release updated Jellyfin's .NET
+  baseline to `10.0.14`, and the manifest above is a `net10.0` assembly, so the 10.0.x SDK and
+  toolchain the CI gate uses remain valid and nothing here is retargeted for 12.4. That version is
+  what the 12.4 release note records; the image's own installed patch was not inspected here.
 - The CI job packages the plugin archive, the install record, and the linux-x64 wrapper binary
   into `artifacts/`, and verifies all three. Where they go on a server is `docs/install.md`: the
   release workflow publishes the packaged archive and the wrapper as GitHub release assets, the
@@ -239,7 +242,7 @@ signature of getting this wrong is one line at startup and a library that never 
 ```
 
 - [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
-  latest tag is `n8.1.3-mvc9-jf1`. An older FFmpeg-mvc may run ordinary commands but cannot honour
+  latest tag is `n8.1.3-mvc10-jf1`. An older FFmpeg-mvc may run ordinary commands but cannot honour
   a depth request if it does not carry `mvcsubdepth`.
 - [x] `FFmpeg -filters` on the **FFmpeg-mvc** binary names `mvcsubdepth` (the filter a depth request
   needs; it is not loaded when subtitle depth is `Flat`). Note that the server's startup probe reads
