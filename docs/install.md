@@ -216,27 +216,32 @@ that can move underneath this is a new image carrying different FFmpeg libraries
 
 Take the plugin update from the catalog first (§2); it waits for the one restart at the end of this section. Then replace
 the runtime file you are updating — the wrapper, `ffmpeg-mvc`, or both. **Every file operation of an update runs inside the
-running container**, exactly as every install command does: the host downloads, checksums, copies, and deletes nothing, and
-supplies only compose control (plus the compose-file edit of §4.3). No swap needs the container stopped either. A running
+running container**, exactly as every install command does: the host downloads, checksums, copies, and deletes nothing,
+and supplies only compose control — editing the compose file belongs to the moments its configuration itself changes,
+§4.1 and §4.3, and is never an update step. No swap needs the container stopped either. A running
 binary cannot be written over — the write fails `ETXTBSY` — but a rename disturbs no running process, so each file is
 staged: written in its own runtime directory beside the target at a dot-name and mode `0755`, then `mv -f`'d over the
 target, a same-filesystem rename the filesystem performs atomically. A transcode running through the swap keeps its old
 binary until it exits, and every process started after the rename already runs the new file.
 
-**The wrapper** — download the new tag's pair of assets inside the container, verify the wrapper's checksum line, and
-stage the result over the running file:
+**The wrapper** — run step 1's dependency block first if the container has been recreated since that block last ran:
+the download below execs `curl` inside the container, and `curl` with its CA trust are exactly what step 1 installs and
+what step 8's recreate discards — fetch-time tools, never runtime dependencies, but the normal post-install state is
+already without them. Then download the new tag's pair of assets inside the container, verify the wrapper's checksum
+line, and stage the result over the running file:
 ```sh
 docker compose exec -u root jellyfin sh -c '
   set -e
   runtime=/config/anaglyfin/ffmpeg
   staged="$runtime/.anaglyfin-ffmpeg.new"
+  rm -rf /tmp/anaglyfin-update
   mkdir -p /tmp/anaglyfin-update
   cd /tmp/anaglyfin-update
   curl -fsSL \
-    https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/anaglyfin-ffmpeg \
+    "https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/anaglyfin-ffmpeg" \
     -o anaglyfin-ffmpeg
   curl -fsSL \
-    https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/SHA256SUMS.txt \
+    "https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/SHA256SUMS.txt" \
     -o SHA256SUMS.txt
   grep " anaglyfin-ffmpeg$" SHA256SUMS.txt > anaglyfin-ffmpeg.sha256
   sha256sum -c anaglyfin-ffmpeg.sha256
@@ -276,8 +281,9 @@ the slots or the settings document.
 ```sh
 docker compose restart jellyfin
 ```
-That one restart loads the plugin from §2 and activates the updated binaries; a plain `restart` is enough, because no
-environment entry and no image changed.
+Every newly started process already runs the new files, so this restart primarily loads the plugin from §2 and refreshes
+the existing Jellyfin and FFmpeg processes; a plain `restart` is enough, because no environment entry and no image
+changed.
 
 ### 4.3 Uninstall
 
@@ -295,6 +301,9 @@ environment entry and no image changed.
    ```sh
    docker compose exec -u root jellyfin rm -rf /config/anaglyfin
    ```
+
+   From this moment until the recreate in step 4, the live server's own environment still names the deleted wrapper and
+   every playback attempt fails: recreate immediately, and start no playback in that window.
 
 4. Recreate with `jellyfin/jellyfin:12.4` — the stock container again, its own FFmpeg, its build packages discarded with
    the container that held them:
