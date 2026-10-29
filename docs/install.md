@@ -84,8 +84,8 @@ Pick **one** and follow it end to end; none of them installs Jellyfin. The five 
 who hands them to the service differs. **Every platform section uses one lifecycle order;** do not read an update step into an initial
 install, or the reverse.
 
-- **Initial install:** prerequisites → directories → wrapper → FFmpeg-mvc → official `ffprobe` → ownership → the five variables →
-  **one** restart or recreate, which also loads the plugin → verify.
+- **Initial install:** prerequisites → directories → wrapper → FFmpeg-mvc → official `ffprobe` → ownership → the five variables
+  (plus Docker's optional GPU mapping when used) → **one** restart or recreate → verify.
 - **Update** — plugin and wrapper ship under one tag, so move them as a pair: (1) take the plugin update from the catalog, which waits
   for the restart in step 4; (2) stop the service or container; (3) replace the runtime file you are updating — wrapper, `ffmpeg-mvc`,
   or both; (4) start, recreate, or `daemon-reload` + start, **once**, which loads the plugin update too; (5) verify.
@@ -127,9 +127,14 @@ docker compose exec -u root jellyfin install -d \
 **3. The wrapper**, from the released linux-x64 asset, verified before it is installed:
 ```sh
 docker compose exec -u root jellyfin sh -c '
-  curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/anaglyfin-ffmpeg -o /tmp/anaglyfin-ffmpeg
-  curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/SHA256SUMS.txt -o /tmp/SHA256SUMS.txt
-  cd /tmp && grep " anaglyfin-ffmpeg$" SHA256SUMS.txt | sha256sum -c -
+  set -e
+  curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/anaglyfin-ffmpeg \
+    -o /tmp/anaglyfin-ffmpeg
+  curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/SHA256SUMS.txt \
+    -o /tmp/SHA256SUMS.txt
+  cd /tmp
+  grep " anaglyfin-ffmpeg$" SHA256SUMS.txt > anaglyfin-ffmpeg.sha256
+  sha256sum -c anaglyfin-ffmpeg.sha256
   install -m 0755 /tmp/anaglyfin-ffmpeg /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 '
 ```
@@ -538,7 +543,8 @@ stays where it is. Do **not** replace `ffprobe.exe` from that build.
      Set-ItemProperty -Path $parameters -Name AppEnvironmentExtra `
        -Value $kept -Type MultiString
    } elseif ($existing.Count -gt 0) {
-     Remove-ItemProperty -Path $parameters -Name AppEnvironmentExtra
+     Remove-ItemProperty -Path $parameters -Name AppEnvironmentExtra `
+       -ErrorAction SilentlyContinue
    }
    Remove-Item -Recurse -Force "C:\ProgramData\Jellyfin\Server\anaglyfin"
    Restart-Service JellyfinServer
@@ -570,11 +576,14 @@ wrapper as Jellyfin's FFmpeg; no server-reported FFmpeg version is part of the c
 ```sh
 docker compose logs jellyfin 2>&1 | grep 'MediaEncoder: FFmpeg:'        # Docker
 sudo journalctl -u jellyfin --no-pager | grep 'MediaEncoder: FFmpeg:'   # Linux package
+```
+```powershell
 # Windows service; its log directory is C:\ProgramData\Jellyfin\Server\log
 Select-String -Path "C:\ProgramData\Jellyfin\Server\log\*.log" -Pattern 'MediaEncoder: FFmpeg:' | Select-Object -Last 3
 ```
 The Windows startup environment dump echoes only `JELLYFIN_`, `DOTNET_` and `ASPNETCORE_` names, so it proves `JELLYFIN_FFMPEG` and nothing
-else — the two checks below are the proof for the rest.
+else — the checks below prove the binaries and the dispatch, and check 5's real transcode proves the service-written `lock` and `wrapper`
+paths.
 
 **3. The stock `ffprobe` is the sidecar.** Two matching first lines are the answer wanted, because an FFmpeg-mvc `ffprobe`
 names the mvc tag in its banner.
@@ -587,7 +596,8 @@ docker compose exec -u root jellyfin sh -c '
 # Linux package
 /opt/anaglyfin/ffmpeg/ffprobe -version | head -1
 /usr/lib/jellyfin-ffmpeg/ffprobe     -version | head -1
-
+```
+```powershell
 # Windows service
 & "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg\ffprobe.exe" -version | Select-Object -First 1
 & "C:\Program Files\Jellyfin\Server\ffprobe.exe"                -version | Select-Object -First 1
@@ -605,7 +615,8 @@ docker compose exec -u root jellyfin \
 # Linux package
 sudo -u jellyfin env ANAGLYFIN_SERVER_FFMPEG= ANAGLYFIN_REAL_FFMPEG=/opt/anaglyfin/ffmpeg/ffmpeg-mvc \
   /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg -version
-
+```
+```powershell
 # Windows service
 $env:ANAGLYFIN_REAL_FFMPEG = "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg\ffmpeg-mvc.exe"
 Remove-Item Env:ANAGLYFIN_SERVER_FFMPEG -ErrorAction SilentlyContinue
