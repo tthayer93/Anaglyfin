@@ -22,8 +22,8 @@ two bare-metal shapes, the build tools that section lists (only Windows needs a 
 
 **Runtime evidence.** Every result in `docs/validation.md` was observed on Linux — the official container and the Debian/Ubuntu
 package. The Windows route in §6 is written from published installer and service behaviour and has never been executed by this
-project, so its verify step is evidence *you* collect. The Docker wrapper download in §4 is new in this rewrite: the shape it
-produces was runtime-validated, the download itself was not.
+project, so its verify step is evidence *you* collect. The container and package shapes have recorded Linux validation; the
+release-asset wrapper download itself is not separately runtime-validated.
 
 ### 1.1 The three runtime files
 
@@ -124,15 +124,17 @@ docker compose exec -u root jellyfin sh -c '
 docker compose exec -u root jellyfin install -d \
   /config/anaglyfin/ffmpeg /config/anaglyfin/lock /config/anaglyfin/wrapper
 ```
-**3. The wrapper**, from the released linux-x64 asset rather than a source build:
+**3. The wrapper**, from the released linux-x64 asset, verified before it is installed:
 ```sh
-docker compose exec -u root jellyfin curl -fsSL \
-  https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/anaglyfin-ffmpeg \
-  -o /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
-docker compose exec -u root jellyfin chmod 0755 /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
+docker compose exec -u root jellyfin sh -c '
+  curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/anaglyfin-ffmpeg -o /tmp/anaglyfin-ffmpeg
+  curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/SHA256SUMS.txt -o /tmp/SHA256SUMS.txt
+  cd /tmp && grep " anaglyfin-ffmpeg$" SHA256SUMS.txt | sha256sum -c -
+  install -m 0755 /tmp/anaglyfin-ffmpeg /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
+'
 ```
-To check the download before it becomes executable, fetch `SHA256SUMS.txt` from the same release beside it and run the
-digest check given in the Linux package section — the checksum file is the same on both shapes.
+The same `SHA256SUMS.txt` names both release assets, so check the wrapper line rather than the whole file unless you also downloaded the
+plugin archive.
 
 **4. FFmpeg-mvc: fetch the tag and compile it** in `/tmp`, build space nothing needs later. The last two `configure` lines are what makes
 the result outlive the container that built it: they bake `/usr/lib/jellyfin-ffmpeg/lib` — where the official image keeps its FFmpeg runtime
@@ -513,26 +515,36 @@ Copy-Item C:\build\anaglyfin-wrapper\anaglyfin-ffmpeg.exe `
   "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg\anaglyfin-ffmpeg.exe" -Force
 Start-Service JellyfinServer
 ```
-**FFmpeg-mvc:** the same two git commands in its clone at `C:\build\anaglyfin\FFmpeg-mvc`, rebuild, and swap `ffmpeg-mvc.exe` the same way. The
-copied `msys2\` belongs to neither tag, so it stays where it is. Do **not** replace `ffprobe.exe` from that build.
+**FFmpeg-mvc:** the same two git commands in its clone at `C:\build\anaglyfin\FFmpeg-mvc`, rebuild, and swap `ffmpeg-mvc.exe` the same way
+(use the build's source-root `ffmpeg.exe` unless the copied `msys2\` packaging moved it). The copied `msys2\` belongs to neither tag, so it
+stays where it is. Do **not** replace `ffprobe.exe` from that build.
 
 ### 6.3 Uninstall
 
 1. Take **Anaglyfin** out of **Dashboard → Plugins**, then `Stop-Service JellyfinServer`.
-2. Take Anaglyfin's entries out of `AppEnvironmentExtra` — **all** of them, preserving whatever else the value carries: delete it if it held
-   nothing else, or write it back with only the non-Anaglyfin entries. Step 6's filter matches `JELLYFIN_FFMPEG` and `ANAGLYFIN_` by name, so
-   anything else survives it.
-3. Remove the runtime data — step 2's grant goes with the directory it was applied to — and start the service again:
+2. Take Anaglyfin's entries out of `AppEnvironmentExtra` by reading the current value, keeping entries that are not `JELLYFIN_FFMPEG=` or
+   `ANAGLYFIN_`, writing the survivors back as `REG_MULTI_SZ` when any remain, and deleting the value only when it held entries but none
+   survive; then remove the runtime directory — §6.1 step 2's `icacls` grant goes with the directory it was applied to — and restart the
+   service:
 
    ```powershell
-   Remove-ItemProperty `
-     -Path "HKLM:\SYSTEM\CurrentControlSet\Services\JellyfinServer\Parameters" `
-     -Name AppEnvironmentExtra
+   $parameters = "HKLM:\SYSTEM\CurrentControlSet\Services\JellyfinServer\Parameters"
+   $existing = @(
+     (Get-ItemProperty -Path $parameters -Name AppEnvironmentExtra `
+        -ErrorAction SilentlyContinue).AppEnvironmentExtra
+   )
+   $kept = @($existing | Where-Object { $_ -and $_ -notmatch '^(JELLYFIN_FFMPEG=|ANAGLYFIN_)' })
+   if ($kept.Count -gt 0) {
+     Set-ItemProperty -Path $parameters -Name AppEnvironmentExtra `
+       -Value $kept -Type MultiString
+   } elseif ($existing.Count -gt 0) {
+     Remove-ItemProperty -Path $parameters -Name AppEnvironmentExtra
+   }
    Remove-Item -Recurse -Force "C:\ProgramData\Jellyfin\Server\anaglyfin"
    Restart-Service JellyfinServer
    ```
 
-4. Clear any path saved in **Dashboard → Playback → FFmpeg path**, which is used in preference to the server's own program directory and so is
+3. Clear any path saved in **Dashboard → Playback → FFmpeg path**, which is used in preference to the server's own program directory and so is
    where that correction belongs.
 
 `JELLYFIN_FFMPEG` left naming the deleted wrapper is what bites: the server looks for its FFmpeg where the wrapper used to be. This does not
