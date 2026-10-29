@@ -213,9 +213,13 @@ nothing is removed first — but a running binary cannot be replaced, so every s
 
 **The wrapper** — download the new tag's asset on the host, verify it, copy it in while stopped:
 ```sh
+set -e
 curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/anaglyfin-ffmpeg -o /tmp/anaglyfin-ffmpeg
 curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/SHA256SUMS.txt -o /tmp/SHA256SUMS.txt
-( cd /tmp && grep ' anaglyfin-ffmpeg$' SHA256SUMS.txt | sha256sum -c - )
+cd /tmp
+grep " anaglyfin-ffmpeg$" SHA256SUMS.txt > anaglyfin-ffmpeg.sha256
+sha256sum -c anaglyfin-ffmpeg.sha256
+cd -
 chmod 0755 /tmp/anaglyfin-ffmpeg
 docker compose stop jellyfin
 docker compose cp /tmp/anaglyfin-ffmpeg jellyfin:/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
@@ -279,9 +283,12 @@ sudo install -d -m 0755 -o jellyfin -g jellyfin \
 **3. The wrapper**, from the released linux-x64 asset, verified before it is installed. `SHA256SUMS.txt` names both release
 assets, so check the wrapper line rather than the file unless you also downloaded the plugin archive:
 ```sh
+set -e
 curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/anaglyfin-ffmpeg -o /tmp/anaglyfin-ffmpeg
 curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/SHA256SUMS.txt -o /tmp/SHA256SUMS.txt
-( cd /tmp && grep ' anaglyfin-ffmpeg$' SHA256SUMS.txt | sha256sum -c - )
+cd /tmp
+grep " anaglyfin-ffmpeg$" SHA256SUMS.txt > anaglyfin-ffmpeg.sha256
+sha256sum -c anaglyfin-ffmpeg.sha256
 sudo install -m 0755 -o jellyfin -g jellyfin /tmp/anaglyfin-ffmpeg /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 ```
 
@@ -342,10 +349,13 @@ sudo systemctl restart jellyfin
 Take the plugin update from the catalog first (§2); plugin and wrapper are one release and move together. Stop the service
 before replacing either file, and start it once at the end.
 ```sh
+set -e
 sudo systemctl stop jellyfin
 curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/anaglyfin-ffmpeg -o /tmp/anaglyfin-ffmpeg
 curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/SHA256SUMS.txt -o /tmp/SHA256SUMS.txt
-( cd /tmp && grep ' anaglyfin-ffmpeg$' SHA256SUMS.txt | sha256sum -c - )
+cd /tmp
+grep " anaglyfin-ffmpeg$" SHA256SUMS.txt > anaglyfin-ffmpeg.sha256
+sha256sum -c anaglyfin-ffmpeg.sha256
 sudo install -m 0755 -o jellyfin -g jellyfin /tmp/anaglyfin-ffmpeg /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 sudo systemctl start jellyfin
 ```
@@ -577,6 +587,7 @@ wrapper as Jellyfin's FFmpeg; no server-reported FFmpeg version is part of the c
 docker compose logs jellyfin 2>&1 | grep 'MediaEncoder: FFmpeg:'        # Docker
 sudo journalctl -u jellyfin --no-pager | grep 'MediaEncoder: FFmpeg:'   # Linux package
 ```
+
 ```powershell
 # Windows service; its log directory is C:\ProgramData\Jellyfin\Server\log
 Select-String -Path "C:\ProgramData\Jellyfin\Server\log\*.log" -Pattern 'MediaEncoder: FFmpeg:' | Select-Object -Last 3
@@ -597,6 +608,7 @@ docker compose exec -u root jellyfin sh -c '
 /opt/anaglyfin/ffmpeg/ffprobe -version | head -1
 /usr/lib/jellyfin-ffmpeg/ffprobe     -version | head -1
 ```
+
 ```powershell
 # Windows service
 & "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg\ffprobe.exe" -version | Select-Object -First 1
@@ -616,6 +628,7 @@ docker compose exec -u root jellyfin \
 sudo -u jellyfin env ANAGLYFIN_SERVER_FFMPEG= ANAGLYFIN_REAL_FFMPEG=/opt/anaglyfin/ffmpeg/ffmpeg-mvc \
   /opt/anaglyfin/ffmpeg/anaglyfin-ffmpeg -version
 ```
+
 ```powershell
 # Windows service
 $env:ANAGLYFIN_REAL_FFMPEG = "C:\ProgramData\Jellyfin\Server\anaglyfin\ffmpeg\ffmpeg-mvc.exe"
