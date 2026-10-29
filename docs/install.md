@@ -172,7 +172,8 @@ docker compose exec -u root jellyfin sh -c '
   chown -R "$(stat -c "%u:%g" /config)" /config/anaglyfin
 '
 ```
-**6. Environment** — add to the service:
+**6. Environment** — add to the service, in its compose file on the host — the one edit of this install made outside the
+running container, because the container is started *from* that file and cannot carry or rewrite it:
 ```yaml
 environment:
   JELLYFIN_FFMPEG: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
@@ -208,56 +209,94 @@ that can move underneath this is a new image carrying different FFmpeg libraries
 
 ### 4.2 Update
 
-Take the plugin update from the catalog first (§2), then move the runtime file you are updating. Both install over the same filename, so
-nothing is removed first — but a running binary cannot be replaced, so every swap happens with the container stopped.
+Take the plugin update from the catalog first (§2); it waits for the one restart at the end of this section. Then replace
+the runtime file you are updating — the wrapper, `ffmpeg-mvc`, or both. **Every file operation of an update runs inside the
+running container**, exactly as every install command does: the host downloads, checksums, copies, and deletes nothing, and
+supplies only compose control (plus the compose-file edit of §4.3). No swap needs the container stopped either. A running
+binary cannot be written over — the write fails `ETXTBSY` — but a rename disturbs no running process, so each file is
+staged: written in its own runtime directory beside the target at a dot-name and mode `0755`, then `mv -f`'d over the
+target, a same-filesystem rename the filesystem performs atomically. A transcode running through the swap keeps its old
+binary until it exits, and every process started after the rename already runs the new file.
 
-**The wrapper** — download the new tag's asset on the host, verify it, copy it in while stopped:
+**The wrapper** — download the new tag's pair of assets inside the container, verify the wrapper's checksum line, and
+stage the result over the running file:
 ```sh
-set -e
-curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/anaglyfin-ffmpeg -o /tmp/anaglyfin-ffmpeg
-curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/SHA256SUMS.txt -o /tmp/SHA256SUMS.txt
-cd /tmp
-grep " anaglyfin-ffmpeg$" SHA256SUMS.txt > anaglyfin-ffmpeg.sha256
-sha256sum -c anaglyfin-ffmpeg.sha256
-cd -
-chmod 0755 /tmp/anaglyfin-ffmpeg
-docker compose stop jellyfin
-docker compose cp /tmp/anaglyfin-ffmpeg jellyfin:/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
-docker compose start jellyfin
+docker compose exec -u root jellyfin sh -c '
+  set -e
+  runtime=/config/anaglyfin/ffmpeg
+  staged="$runtime/.anaglyfin-ffmpeg.new"
+  mkdir -p /tmp/anaglyfin-update
+  cd /tmp/anaglyfin-update
+  curl -fsSL \
+    https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/anaglyfin-ffmpeg \
+    -o anaglyfin-ffmpeg
+  curl -fsSL \
+    https://github.com/tthayer93/Anaglyfin/releases/download/<new-tag>/SHA256SUMS.txt \
+    -o SHA256SUMS.txt
+  grep " anaglyfin-ffmpeg$" SHA256SUMS.txt > anaglyfin-ffmpeg.sha256
+  sha256sum -c anaglyfin-ffmpeg.sha256
+  install -m 0755 anaglyfin-ffmpeg "$staged"
+  mv -f "$staged" "$runtime/anaglyfin-ffmpeg"
+'
 ```
-`docker compose cp` works against the stopped container and preserves the mode; if your compose is too old for it, the same
-directory is on the host at `./jellyfin/config/anaglyfin/ffmpeg/`.
+`set -e` keeps that gate fail-closed: a failed download, a missing wrapper line, or a mismatched hash aborts the block
+before anything reaches `/config`.
 
-**FFmpeg-mvc** — repeat step 4 with the new tag in the download URL (the source arrives as a tarball, so moving to a new tag means a new
-tarball, not a `git` command in `/tmp`), and run step 1's dependency block first if the container has been recreated since the last build —
-the only case in which that block ever runs twice. Keep both `-rpath` lines, and keep the sidecar the image's official `ffprobe`. Then
-install with the container stopped:
+**FFmpeg-mvc** — repeat step 4's fetch and compile inside the container with the new tag in the download URL (the source
+arrives as a tarball, so moving to a new tag means a new tarball, not a `git` command in `/tmp`), and run step 1's
+dependency block first if the container has been recreated since the last build — the only case in which that block ever
+runs twice. Keep both `-rpath` lines: they bake `/usr/lib/jellyfin-ffmpeg/lib`, the image's own FFmpeg libraries and
+VA-API drivers, into the binary, which is what lets the result keep running after a recreate discards the build packages.
+When `make` finishes, install the compiled `ffmpeg` through a staged rename of its own, and refresh the sidecar from the
+image's **official** `ffprobe` the same way — that build's own `ffprobe` is still never installed:
 ```sh
-docker compose stop jellyfin
-docker compose cp jellyfin:/tmp/ffmpeg-mvc-src/ffmpeg /tmp/ffmpeg-mvc-new
-docker compose cp /tmp/ffmpeg-mvc-new jellyfin:/config/anaglyfin/ffmpeg/ffmpeg-mvc
-docker compose start jellyfin
+docker compose exec -u root jellyfin sh -c '
+  set -e
+  runtime=/config/anaglyfin/ffmpeg
+  staged="$runtime/.ffmpeg-mvc.new"
+  install -m 0755 /tmp/ffmpeg-mvc-src/ffmpeg "$staged"
+  mv -f "$staged" "$runtime/ffmpeg-mvc"
+  staged_probe="$runtime/.ffprobe.new"
+  install -m 0755 /usr/lib/jellyfin-ffmpeg/ffprobe "$staged_probe"
+  mv -f "$staged_probe" "$runtime/ffprobe"
+'
 ```
-**Ownership is not part of a routine update:** it overwrites executable files at mode `0755` and leaves the `lock` and `wrapper` directories
-alone. Re-run step 5's `chown` only for a reason you can point at — the UID/GID arrangement changed, something outside this flow recreated
-those directories root-owned, or the log reports permission errors writing the slots or the settings document.
+
+**Ownership is not part of a routine update:** the blocks above write executable files at mode `0755` and leave the `lock`
+and `wrapper` directories alone. Re-run step 5's `chown` only for a reason you can point at — the UID/GID arrangement
+changed, something outside this flow recreated those directories root-owned, or the log reports permission errors writing
+the slots or the settings document.
+
+**If the catalog update and/or either file update ran, restart once now:**
+```sh
+docker compose restart jellyfin
+```
+That one restart loads the plugin from §2 and activates the updated binaries; a plain `restart` is enough, because no
+environment entry and no image changed.
 
 ### 4.3 Uninstall
 
-1. Take **Anaglyfin** out of **Dashboard → Plugins**, then `docker compose stop jellyfin`.
-2. Take **every** Anaglyfin entry out of the compose file — all five of step 6 plus any optional one added beside them, such
-   as `ANAGLYFIN_SLOT_WAIT_MS` or the `ANAGLYFIN_OFFICIAL_FFMPEG` alias. `JELLYFIN_FFMPEG` is the one that bites: left naming
-   a wrapper that no longer exists, the server looks for its FFmpeg at a path that is gone.
-3. Delete the runtime and the state beside it, from the host directory compose mounts at `/config`, and recreate with
-   `jellyfin/jellyfin:12.4` — the stock container again, its own FFmpeg, its build packages discarded with the container that
-   held them:
+1. Take **Anaglyfin** out of **Dashboard → Plugins**, leaving the container running: the delete in the next step execs
+   into it, exactly like every install and update command does.
+2. Delete the runtime files and the state beside them from inside the running container:
 
    ```sh
-   sudo rm -rf ./jellyfin/config/anaglyfin
+   docker compose exec -u root jellyfin rm -rf /config/anaglyfin
+   ```
+
+3. Take **every** Anaglyfin entry out of the compose file — all five of step 6 plus any optional one added beside them,
+   such as `ANAGLYFIN_SLOT_WAIT_MS` or the `ANAGLYFIN_OFFICIAL_FFMPEG` alias. That edit is inherently host work: the
+   environment lives in the compose file rather than in the container, and a container cannot rewrite the config it starts
+   from — this is config control, not a file operation on the host, which deleted nothing. `JELLYFIN_FFMPEG` is the one
+   that bites: left naming a wrapper that no longer exists, the server looks for its FFmpeg at a path that is gone.
+4. Recreate with `jellyfin/jellyfin:12.4` — the stock container again, its own FFmpeg, its build packages discarded with
+   the container that held them:
+
+   ```sh
    docker compose up -d --force-recreate jellyfin
    ```
 
-4. Clear any path saved in **Dashboard → Playback → FFmpeg path**.
+5. Clear any path saved in **Dashboard → Playback → FFmpeg path**.
 
 This does not uninstall Jellyfin and leaves the image's own `/usr/lib/jellyfin-ffmpeg` files alone.
 
