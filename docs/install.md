@@ -86,14 +86,19 @@ install, or the reverse.
 
 - **Initial install:** prerequisites → directories → wrapper → FFmpeg-mvc → official `ffprobe` → ownership → the five variables
   (plus Docker's optional GPU mapping when used) → **one** restart or recreate → verify.
-- **Update** — plugin and wrapper ship under one tag, so move them as a pair: (1) take the plugin update from the catalog, which waits
-  for the restart in step 4; (2) stop the service or container; (3) replace the runtime file you are updating — wrapper, `ffmpeg-mvc`,
-  or both; (4) start, recreate, or `daemon-reload` + start, **once**, which loads the plugin update too; (5) verify.
-- **Uninstall:** (1) take the plugin out of **Dashboard → Plugins** first — either order survives, this one is clearer; (2) stop the
-  service or container; (3) remove **every** Anaglyfin environment entry, from every place you added one; (4) delete the Anaglyfin
-  runtime directory and the `lock` / `wrapper` state; (5) start or recreate, which puts the server back on its own FFmpeg; (6) clear or
-  correct any path saved in **Dashboard → Playback → FFmpeg path**, which is used in preference to the FFmpeg in the server's own
-  program directory. Uninstalling Anaglyfin **does not uninstall Jellyfin** and modifies no stock Jellyfin FFmpeg file.
+- **Update** — plugin and wrapper ship under one tag, so move them as a pair: (1) take the plugin update from the catalog,
+  which waits for the restart at step 3; (2) replace the runtime file you are updating — wrapper, `ffmpeg-mvc`, or both —
+  with the mechanics each shape makes safe: Docker execs every file operation inside the running container and swaps each
+  file through a staged same-directory rename, stopping nothing; the bare-metal shapes stop the service, replace, and leave
+  it stopped; (3) start, restart, recreate, or `daemon-reload` + start, **once**, which loads the plugin update too;
+  (4) verify.
+- **Uninstall:** (1) take the plugin out of **Dashboard → Plugins** first — either order survives, this one is clearer;
+  (2) remove **every** Anaglyfin environment entry, from every place you added one — the compose file on the host, the
+  systemd drop-ins, or the service's `AppEnvironmentExtra`; (3) delete the Anaglyfin runtime directory and the `lock` /
+  `wrapper` state: Docker execs the delete into the still-running container, bare metal deletes with the service stopped;
+  (4) start, restart, or recreate, which puts the server back on its own FFmpeg; (5) clear or correct any path saved in
+  **Dashboard → Playback → FFmpeg path**, which is used in preference to the FFmpeg in the server's own program directory.
+  Uninstalling Anaglyfin **does not uninstall Jellyfin** and modifies no stock Jellyfin FFmpeg file.
 
 ## 4. Docker server
 
@@ -276,19 +281,21 @@ environment entry and no image changed.
 
 ### 4.3 Uninstall
 
-1. Take **Anaglyfin** out of **Dashboard → Plugins**, leaving the container running: the delete in the next step execs
-   into it, exactly like every install and update command does.
-2. Delete the runtime files and the state beside them from inside the running container:
+1. Take **Anaglyfin** out of **Dashboard → Plugins**, leaving the container running: the delete below execs into it,
+   exactly like every install and update command does.
+2. Take **every** Anaglyfin entry out of the compose file — all five of step 6 plus any optional one added beside them,
+   such as `ANAGLYFIN_SLOT_WAIT_MS` or the `ANAGLYFIN_OFFICIAL_FFMPEG` alias. That edit is inherently host work: the
+   environment lives in the compose file rather than in the container, and a container cannot rewrite the config it starts
+   from — this is config control, not a file operation on the host, which deletes nothing. It is also safe to make with
+   the container still running: the edit reaches only containers created after it, so the one already up keeps its
+   environment and can still be exec'd into for the delete. Completeness is what matters: a recreated server whose
+   compose file still names the deleted wrapper in `JELLYFIN_FFMPEG` looks for its FFmpeg at a path that is gone.
+3. Delete the runtime files and the state beside them from inside the running container:
 
    ```sh
    docker compose exec -u root jellyfin rm -rf /config/anaglyfin
    ```
 
-3. Take **every** Anaglyfin entry out of the compose file — all five of step 6 plus any optional one added beside them,
-   such as `ANAGLYFIN_SLOT_WAIT_MS` or the `ANAGLYFIN_OFFICIAL_FFMPEG` alias. That edit is inherently host work: the
-   environment lives in the compose file rather than in the container, and a container cannot rewrite the config it starts
-   from — this is config control, not a file operation on the host, which deleted nothing. `JELLYFIN_FFMPEG` is the one
-   that bites: left naming a wrapper that no longer exists, the server looks for its FFmpeg at a path that is gone.
 4. Recreate with `jellyfin/jellyfin:12.4` — the stock container again, its own FFmpeg, its build packages discarded with
    the container that held them:
 
