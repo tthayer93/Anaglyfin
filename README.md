@@ -86,19 +86,22 @@ upgrading changes nothing about what it offers.
 ### Plugin
 
 Add the Anaglyfin plugin repository in **Dashboard -> Plugins -> Catalogs ->
-Repositories -> Add plugin repository**, install **Anaglyfin** from the catalog,
-and restart Jellyfin:
+Repositories -> Add plugin repository**, and install **Anaglyfin** from the
+catalog:
 
 | Field | Value |
 | --- | --- |
 | Name | `Anaglyfin` |
 | Url | `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json` |
 
-That installs the plugin only.
+That installs the plugin only, and a plugin is loaded when the server starts. The
+last step of the runtime guide below performs the one restart that loads it.
 
 ### FFmpeg runtime
 
-Install the FFmpeg runtime by following [docs/install.md](docs/install.md).
+Install the FFmpeg runtime by following [docs/install.md](docs/install.md), which
+covers install, verify, update, and uninstall on each server shape - the
+container, the Debian/Ubuntu package, and the Windows service.
 
 ## Environment variables
 
@@ -136,8 +139,9 @@ package install, and a Windows server install - are in
 
 ## Documentation
 
-- [docs/install.md](docs/install.md) - installing and updating the plugin and the
-  FFmpeg runtime: on Docker, on Linux bare metal, and on a Windows server
+- [docs/install.md](docs/install.md) - the plugin and the FFmpeg runtime through their whole
+  lifecycle on each server shape (the container, a Linux package install, a Windows service):
+  install, verify, update, uninstall
   (bare-metal Windows is documented but not runtime-validated by this project)
 - [docs/architecture.md](docs/architecture.md) - plugin and wrapper design, and the
   known follow-ups
