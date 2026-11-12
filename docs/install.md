@@ -13,7 +13,7 @@ Nothing here installs Jellyfin, replaces the FFmpeg it ships, or touches its dat
 | --- | --- |
 | Anaglyfin | `v0.2.2`. Plugin and wrapper are published under one tag: they are a pair, and an update moves them together |
 | Jellyfin | 12.x; the targeted container image is `jellyfin/jellyfin:12.4`. The manifest's `targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.2` loads on 12.0 or later. Jellyfin 12.4 moved its own .NET baseline to `10.0.14`; Anaglyfin targets `net10.0` inside that band, so nothing is retargeted |
-| FFmpeg-mvc | product tag `n8.1.3-mvc10-jf1` on the `jellyfin-8.1` branch, built to drop in against the parent `jellyfin-ffmpeg v8.1.3-1`. **FFmpeg-mvc publishes no binaries for any platform**, so every `ffmpeg-mvc` below is one you build with the commands given here |
+| FFmpeg-mvc | product tag `n8.1.3-mvc11-jf2` on the `jellyfin-8.1` branch — the current Jellyfin-line tag, and the drop-in companion to the parent `jellyfin-ffmpeg v8.1.3-2`. The `n9.0.2-mvc11`/`n9` line carries no `-jf` parent, is not a Jellyfin product line, and is **not** adopted. Jellyfin's stable target remains 12.4. This `mvc11-jf2` pairing is **not yet runtime-validated** (pending in `docs/validation.md`); earlier `n8.1.3-mvc10-jf1`/`v8.1.3-1` and older evidence stays historical. **FFmpeg-mvc publishes no binaries for any platform**, so every `ffmpeg-mvc` below is one you build with the commands given here |
 | Wrapper release asset | `anaglyfin-ffmpeg`, a self-contained **linux-x64** binary, published with `SHA256SUMS.txt` in the same release. There is **no** `win-x64` asset |
 
 **Before you start.** Jellyfin 12 running as one of the three shapes in §3 and reachable in a browser; permission to stop and start
@@ -32,7 +32,7 @@ All three live in **one** directory and carry **exactly** these names (on Window
 | File | What it is | Where you get it |
 | --- | --- | --- |
 | `anaglyfin-ffmpeg` | the wrapper — the file Jellyfin's FFmpeg path points at | Docker and Linux: the linux-x64 release asset. Windows: published from the same tag |
-| `ffmpeg-mvc` | the FFmpeg-mvc build the wrapper hands Anaglyfin commands to | built from tag `n8.1.3-mvc10-jf1` on every platform |
+| `ffmpeg-mvc` | the FFmpeg-mvc build the wrapper hands Anaglyfin commands to | built from tag `n8.1.3-mvc11-jf2` on every platform |
 | `ffprobe` | the probe the server runs beside the wrapper | the `ffprobe` of the **official** Jellyfin FFmpeg already on the server — **never** the one the FFmpeg-mvc build produces |
 
 | Shape | Runtime files | `lock` and `wrapper` directories |
@@ -153,7 +153,7 @@ container. The compile is the slow part.
 ```sh
 docker compose exec -u root jellyfin sh -c '
   set -e
-  curl -fsSL https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.3-mvc10-jf1.tar.gz \
+  curl -fsSL https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.3-mvc11-jf2.tar.gz \
     -o /tmp/ffmpeg-mvc.tar.gz
   rm -rf /tmp/ffmpeg-mvc-src
   mkdir -p /tmp/ffmpeg-mvc-src
@@ -360,7 +360,7 @@ sudo apt-get install -y --no-install-recommends \
 **5. Build FFmpeg-mvc** in `/tmp`, from the tag the Docker section compiles. The two `-rpath` lines point the result at the FFmpeg runtime
 libraries the package installs beside the stock FFmpeg, which is what lets it run on a host carrying no build packages.
 ```sh
-curl -fsSL https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.3-mvc10-jf1.tar.gz -o /tmp/ffmpeg-mvc.tar.gz
+curl -fsSL https://github.com/tthayer93/FFmpeg-mvc/archive/refs/tags/n8.1.3-mvc11-jf2.tar.gz -o /tmp/ffmpeg-mvc.tar.gz
 rm -rf /tmp/ffmpeg-mvc-src
 mkdir -p /tmp/ffmpeg-mvc-src
 tar -xzf /tmp/ffmpeg-mvc.tar.gz -C /tmp/ffmpeg-mvc-src --strip-components=1
@@ -501,8 +501,8 @@ pacman -S --needed --noconfirm \
   mingw-w64-clang-x86_64-nasm
 mkdir -p /c/build/anaglyfin
 cd /c/build/anaglyfin
-git clone --depth 1 --branch v8.1.3-1 https://github.com/jellyfin/jellyfin-ffmpeg.git
-git clone --depth 1 --branch n8.1.3-mvc10-jf1 https://github.com/tthayer93/FFmpeg-mvc.git
+git clone --depth 1 --branch v8.1.3-2 https://github.com/jellyfin/jellyfin-ffmpeg.git
+git clone --depth 1 --branch n8.1.3-mvc11-jf2 https://github.com/tthayer93/FFmpeg-mvc.git
 cp -r jellyfin-ffmpeg/msys2 FFmpeg-mvc/
 cd FFmpeg-mvc
 bash msys2/build.sh

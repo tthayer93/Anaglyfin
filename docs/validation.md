@@ -242,8 +242,13 @@ signature of getting this wrong is one line at startup and a library that never 
 ```
 
 - [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
-  latest tag is `n8.1.3-mvc10-jf1`. An older FFmpeg-mvc may run ordinary commands but cannot honour
-  a depth request if it does not carry `mvcsubdepth`.
+  current Jellyfin-line tag is `n8.1.3-mvc11-jf2` — the drop-in companion to the parent
+  `jellyfin-ffmpeg v8.1.3-2` — running on the pinned `jellyfin/jellyfin:12.4` stable target; the
+  `n9.0.2-mvc11`/`n9` line is not a Jellyfin product line and is not adopted. This
+  Jellyfin 12.4 + `mvc11-jf2` + `v8.1.3-2` combo has **not** been run here, so it is recorded as
+  **pending**; the `n8.1.3-mvc10-jf1`/`v8.1.3-1` and older results below stay historical. An older
+  FFmpeg-mvc may run ordinary commands but cannot honour a depth request if it does not carry
+  `mvcsubdepth`.
 - [x] `FFmpeg -filters` on the **FFmpeg-mvc** binary names `mvcsubdepth` (the filter a depth request
   needs; it is not loaded when subtitle depth is `Flat`). Note that the server's startup probe reads
   the **official** FFmpeg's filters now, so `mvcsubdepth` will not appear there — it is required only
