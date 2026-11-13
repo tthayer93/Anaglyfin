@@ -127,6 +127,64 @@ public sealed class RuntimeStatusCachingTests
     }
 
     [Fact]
+    public async Task ACancellingCallerDoesNotCancelTheSharedProbePassOrPoisonTheCache()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        SetupHealthy(harness, probe);
+
+        var entered = new ManualResetEventSlim(false);
+        var release = new ManualResetEventSlim(false);
+        probe.Entered = entered;
+        probe.Release = release;
+
+        try
+        {
+            var service = new RuntimeStatusService(
+                probe,
+                harness.ReadVariable,
+                harness.Root,
+                PluginVersion,
+                TimeSpan.FromSeconds(30),
+                TimeSpan.FromSeconds(2),
+                () => DateTimeOffset.UnixEpoch);
+
+            using var firstCaller = new CancellationTokenSource();
+            var first = service.GetStatusAsync(firstCaller.Token);
+
+            // Hold the shared pass inside its very first probe, then disconnect the first caller.
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(5)), "the probe pass never started.");
+            Assert.Equal(1, probe.CallCount);
+
+            firstCaller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+
+            // The disconnected caller only stopped its own wait. The shared pass is still running,
+            // still single-flight, and still owed to anybody else asking for the same snapshot.
+            var second = service.GetStatusAsync(CancellationToken.None);
+            Assert.False(second.IsCompleted);
+            Assert.Equal(1, probe.CallCount);
+
+            release.Set();
+            var secondResult = await second;
+            Assert.Equal(RuntimeStatusLevel.Ok, secondResult.OverallStatus);
+            var probesAfterPass = probe.CallCount;
+            Assert.True(probesAfterPass > 1, "the shared pass should have finished its probes.");
+
+            // The cache holds the completed healthy snapshot, not the cancelled caller's view.
+            var cached = await service.GetStatusAsync(CancellationToken.None);
+            Assert.Same(secondResult, cached);
+            Assert.Equal(probesAfterPass, probe.CallCount);
+        }
+        finally
+        {
+            release.Set();
+            entered.Dispose();
+            release.Dispose();
+        }
+    }
+
+    [Fact]
     public void NullDependenciesAreRejectedAtTheDoor()
     {
         Assert.Throws<ArgumentNullException>(() => new RuntimeStatusService(null!, _ => null, "/tmp", "1.0.0"));

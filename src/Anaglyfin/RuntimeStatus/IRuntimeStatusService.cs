@@ -20,7 +20,10 @@ public interface IRuntimeStatusService
     /// Gets the runtime status, taking the cached snapshot when it is still fresh and otherwise
     /// starting — or joining — a probe pass.
     /// </summary>
-    /// <param name="cancellationToken">Stops the wait for a probe pass that has not started yet.</param>
+    /// <param name="cancellationToken">
+    /// Stops this caller from waiting for the snapshot. It does not cancel a probe pass that has
+    /// already started or been joined; that pass completes on its own and may still become the cache.
+    /// </param>
     /// <returns>The snapshot, current to within the service's cache lifetime.</returns>
     Task<RuntimeStatusResponse> GetStatusAsync(CancellationToken cancellationToken);
 
@@ -28,7 +31,10 @@ public interface IRuntimeStatusService
     /// Forces a fresh probe pass, ignoring the cached snapshot. Joins any refresh already running
     /// rather than starting a second one.
     /// </summary>
-    /// <param name="cancellationToken">Stops the wait for a probe pass that has not started yet.</param>
+    /// <param name="cancellationToken">
+    /// Stops this caller from waiting for the snapshot. It does not cancel the shared probe pass;
+    /// that pass completes on its own and may still become the cache.
+    /// </param>
     /// <returns>The snapshot this pass produced.</returns>
     Task<RuntimeStatusResponse> RefreshAsync(CancellationToken cancellationToken);
 }

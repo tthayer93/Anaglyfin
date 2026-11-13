@@ -48,7 +48,10 @@ public sealed class RuntimeStatusController : ControllerBase
     /// <summary>
     /// Gets the current runtime status.
     /// </summary>
-    /// <param name="cancellationToken">Stops the wait for a probe pass that has not started yet.</param>
+    /// <param name="cancellationToken">
+    /// Stops this request from waiting for the snapshot. It does not cancel the service's shared
+    /// probe pass; that pass completes on its own and may still become the cache.
+    /// </param>
     /// <returns>A <see cref="RuntimeStatusResponse"/> describing the installation.</returns>
     /// <response code="200">The runtime status snapshot.</response>
     [HttpGet("RuntimeStatus")]

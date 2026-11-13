@@ -38,7 +38,9 @@ namespace Anaglyfin.RuntimeStatus;
 /// <para>
 /// <b>One pass, cached and single-flight.</b> The complete snapshot is held for
 /// <see cref="DefaultCacheSeconds"/> and refreshed at most one pass at a time, so a page refreshing
-/// does not fork a binary per request.
+/// does not fork a binary per request. A caller's cancellation cancels only that caller's wait; the
+/// pass still runs, and its answer still becomes the cache, so an aborted request cannot poison
+/// the snapshot or cancel a probe other administrators are waiting on.
 /// </para>
 /// </remarks>
 public sealed class RuntimeStatusService : IRuntimeStatusService
@@ -76,15 +78,18 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// <summary>How long a single binary is given to answer a probe, in seconds.</summary>
     public const int DefaultProbeTimeoutSeconds = 2;
 
-    // The variable names this status reads. They mirror the wrapper's own canonical names, but are
-    // spelled here because the plugin assembly must not depend on the wrapper executable assembly -
-    // the wrapper is built from the plugin, not the other way round. The strings are the contract.
-    private const string RealFFmpegVariable = "ANAGLYFIN_REAL_FFMPEG";
-    private const string RealFFmpegAliasVariable = "FFMPEG_MVC_PATH";
-    private const string ServerFFmpegVariable = "ANAGLYFIN_SERVER_FFMPEG";
-    private const string ServerFFmpegAliasVariable = "ANAGLYFIN_OFFICIAL_FFMPEG";
-    private const string FFmpegExecutableName = "ffmpeg";
-    private const string PathEnvironmentVariable = "PATH";
+    // Duplicated wrapper environment names. Source of truth: Anaglyfin.FFmpegWrapper.FFmpegWrapperOptions
+    // (RealFFmpegEnvironmentVariable, RealFFmpegAlternateEnvironmentVariable,
+    // ServerFFmpegEnvironmentVariable, ServerFFmpegAlternateEnvironmentVariable, FFmpegExecutableName,
+    // and PathEnvironmentVariable). The plugin assembly must not depend on the wrapper executable
+    // assembly, so these strings are restated as the contract and must stay synchronized with that
+    // source of truth.
+    private const string RealFFmpegVariable = "ANAGLYFIN_REAL_FFMPEG"; // FFmpegWrapperOptions.RealFFmpegEnvironmentVariable
+    private const string RealFFmpegAliasVariable = "FFMPEG_MVC_PATH"; // FFmpegWrapperOptions.RealFFmpegAlternateEnvironmentVariable
+    private const string ServerFFmpegVariable = "ANAGLYFIN_SERVER_FFMPEG"; // FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable
+    private const string ServerFFmpegAliasVariable = "ANAGLYFIN_OFFICIAL_FFMPEG"; // FFmpegWrapperOptions.ServerFFmpegAlternateEnvironmentVariable
+    private const string FFmpegExecutableName = "ffmpeg"; // FFmpegWrapperOptions.FFmpegExecutableName
+    private const string PathEnvironmentVariable = "PATH"; // FFmpegWrapperOptions.PathEnvironmentVariable
 
     /// <summary>Label used when a binary came from a <c>PATH</c> lookup rather than a variable.</summary>
     public const string PathLookupSource = "PATH lookup";
@@ -168,10 +173,11 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
 
             if (_inFlight is { } running)
             {
-                return running;
+                return WaitForCallerAsync(running, cancellationToken);
             }
 
-            return StartPassLocked(cancellationToken);
+            var pass = StartPassLocked();
+            return WaitForCallerAsync(pass, cancellationToken);
         }
     }
 
@@ -182,10 +188,11 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         {
             if (_inFlight is { } running)
             {
-                return running;
+                return WaitForCallerAsync(running, cancellationToken);
             }
 
-            return StartPassLocked(cancellationToken);
+            var pass = StartPassLocked();
+            return WaitForCallerAsync(pass, cancellationToken);
         }
     }
 
@@ -193,17 +200,23 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// Starts a probe pass off the request thread and remembers it as the single in-flight pass, so
     /// every caller until it finishes joins the same one.
     /// </summary>
-    /// <param name="cancellationToken">Stops the wait before the pass has run.</param>
-    /// <returns>The task the pass will complete.</returns>
     /// <remarks>
+    /// <para>
     /// The pass runs on the thread pool, never on the request thread: a probe is exactly the kind of
     /// bounded, possibly-blocking work an HTTP request must not be pinned to. When it finishes, the
     /// snapshot becomes the cache and the in-flight slot is released under the same lock that handed
     /// it out, so there is no window in which a finished pass is both cached and still running.
+    /// </para>
+    /// <para>
+    /// The request cancellation token is deliberately absent from this pass. A disconnected admin
+    /// request may stop waiting for the snapshot, but it must not cancel the probe pass other
+    /// administrators are waiting on, and it must not be able to cache a cancelled answer. The
+    /// process probe owns the finite timeout bound for each binary it starts.
+    /// </para>
     /// </remarks>
-    private Task<RuntimeStatusResponse> StartPassLocked(CancellationToken cancellationToken)
+    private Task<RuntimeStatusResponse> StartPassLocked()
     {
-        var task = Task.Run(() => Build(cancellationToken));
+        var task = Task.Run(Build);
         _inFlight = task;
 
         task.ContinueWith(
@@ -231,14 +244,51 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     }
 
     /// <summary>
+    /// Gives the caller a task that stops waiting when its own token does, without ever handing that
+    /// token to the shared probe pass.
+    /// </summary>
+    private static Task<RuntimeStatusResponse> WaitForCallerAsync(
+        Task<RuntimeStatusResponse> pass,
+        CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.CanBeCanceled || pass.IsCompleted)
+        {
+            return pass;
+        }
+
+        return WaitWithCallerCancellationAsync(pass, cancellationToken);
+    }
+
+    private static async Task<RuntimeStatusResponse> WaitWithCallerCancellationAsync(
+        Task<RuntimeStatusResponse> pass,
+        CancellationToken cancellationToken)
+    {
+        var waiter = new TaskCompletionSource<RuntimeStatusResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var registration = cancellationToken.Register(
+            state => ((TaskCompletionSource<RuntimeStatusResponse>)state!).TrySetCanceled(),
+            waiter,
+            useSynchronizationContext: false);
+
+        var completed = await Task.WhenAny(pass, waiter.Task).ConfigureAwait(false);
+
+        if (completed == pass)
+        {
+            return await pass.ConfigureAwait(false);
+        }
+
+        return await waiter.Task.ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Runs one full probe pass and assembles the snapshot. Never throws: a check that cannot be made
     /// is a warning or an error in the snapshot, never an exception the request would carry.
     /// </summary>
-    private RuntimeStatusResponse Build(CancellationToken cancellationToken)
+    private RuntimeStatusResponse Build()
     {
         try
         {
-            return BuildCore(cancellationToken);
+            return BuildCore();
         }
         catch (Exception exception) when (IsProbePathFailure(exception))
         {
@@ -264,7 +314,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         }
     }
 
-    private RuntimeStatusResponse BuildCore(CancellationToken cancellationToken)
+    private RuntimeStatusResponse BuildCore()
     {
         var (realPath, realSource) = ResolveRealFFmpeg(_readEnvironmentVariable);
         var (serverPath, serverSource) = ResolveServerFFmpeg(_readEnvironmentVariable);
@@ -283,7 +333,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         }
 
         var wrapperConfigured = ReadNonBlank(_readEnvironmentVariable(JellyfinFFmpegEnvironmentVariable));
-        var (wrapperBinary, wrapperLevel) = BuildWrapper(wrapperConfigured, cancellationToken);
+        var (wrapperBinary, wrapperLevel) = BuildWrapper(wrapperConfigured);
         binaries.Add(wrapperBinary);
         Raise(wrapperLevel);
         environment.Add(new RuntimeEnvironmentStatus(
@@ -296,7 +346,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             State: wrapperBinary.State,
             Detail: wrapperBinary.Detail));
 
-        var (ffmpegMvcBinary, ffmpegMvcLevel) = BuildFfmpegMvc(realPath, cancellationToken);
+        var (ffmpegMvcBinary, ffmpegMvcLevel) = BuildFfmpegMvc(realPath);
         binaries.Add(ffmpegMvcBinary);
         Raise(ffmpegMvcLevel);
         environment.Add(new RuntimeEnvironmentStatus(
@@ -311,7 +361,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             State: ffmpegMvcBinary.State,
             Detail: ffmpegMvcBinary.Detail));
 
-        var (officialBinary, officialLevel) = BuildOfficial(serverPath, hasServerFFmpeg, ffmpegMvcBinary, cancellationToken);
+        var (officialBinary, officialLevel) = BuildOfficial(serverPath, hasServerFFmpeg, ffmpegMvcBinary);
         binaries.Add(officialBinary);
         Raise(officialLevel);
         environment.Add(new RuntimeEnvironmentStatus(
@@ -324,7 +374,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             State: officialBinary.State,
             Detail: officialBinary.Detail));
 
-        var (sidecarBinary, sidecarLevel) = BuildSidecar(wrapperConfigured, ffmpegMvcBinary, cancellationToken);
+        var (sidecarBinary, sidecarLevel) = BuildSidecar(wrapperConfigured, ffmpegMvcBinary);
         binaries.Add(sidecarBinary);
         Raise(sidecarLevel);
 
@@ -348,7 +398,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// The wrapper binary: asked only <c>--anaglyfin-version</c>, and only accepted as the wrapper if
     /// that one line comes back exactly.
     /// </summary>
-    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildWrapper(string? configuredPath, CancellationToken cancellationToken)
+    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildWrapper(string? configuredPath)
     {
         const string Label = "Anaglyfin FFmpeg wrapper";
 
@@ -366,7 +416,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
                 LevelForPresence(blocked, true));
         }
 
-        var result = _probe.Probe(configuredPath, WrapperProbeArguments, _probeTimeout, cancellationToken);
+        var result = _probe.Probe(configuredPath, WrapperProbeArguments, _probeTimeout, CancellationToken.None);
 
         if (result.TimedOut)
         {
@@ -411,7 +461,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// The FFmpeg-mvc binary the Anaglyfin commands go to, resolved through the wrapper's own
     /// canonical order (real variable, then its alias, then <c>PATH</c>).
     /// </summary>
-    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildFfmpegMvc(string realPath, CancellationToken cancellationToken)
+    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildFfmpegMvc(string realPath)
     {
         const string Label = "FFmpeg-mvc (Anaglyfin)";
 
@@ -420,8 +470,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             Label,
             realPath,
             realPath,
-            true,
-            cancellationToken);
+            true);
     }
 
     /// <summary>
@@ -431,8 +480,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildOfficial(
         string? serverPath,
         bool hasServer,
-        RuntimeBinaryStatus ffmpegMvc,
-        CancellationToken cancellationToken)
+        RuntimeBinaryStatus ffmpegMvc)
     {
         const string Label = "Official/server FFmpeg";
 
@@ -461,8 +509,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             Label,
             serverPath,
             serverPath,
-            false,
-            cancellationToken);
+            false);
     }
 
     /// <summary>
@@ -476,8 +523,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// </remarks>
     private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildSidecar(
         string? wrapperConfiguredPath,
-        RuntimeBinaryStatus ffmpegMvc,
-        CancellationToken cancellationToken)
+        RuntimeBinaryStatus ffmpegMvc)
     {
         const string Label = "Derived ffprobe sidecar";
 
@@ -503,8 +549,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             Label,
             wrapperConfiguredPath,
             derived,
-            true,
-            cancellationToken);
+            true);
     }
 
     /// <summary>
@@ -517,8 +562,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         string label,
         string? configuredPath,
         string? resolvedPath,
-        bool required,
-        CancellationToken cancellationToken)
+        bool required)
     {
         if (resolvedPath is null)
         {
@@ -534,7 +578,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
                 LevelForPresence(blocked, required));
         }
 
-        var result = _probe.Probe(resolvedPath, VersionProbeArguments, _probeTimeout, cancellationToken);
+        var result = _probe.Probe(resolvedPath, VersionProbeArguments, _probeTimeout, CancellationToken.None);
 
         if (result.TimedOut)
         {
