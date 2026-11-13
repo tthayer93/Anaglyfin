@@ -451,7 +451,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         {
             return (new RuntimeBinaryStatus(OfficialFfmpegKey, Label, serverPath, serverPath, null, false,
                 RuntimeItemState.Warning,
-                $"The official FFmpeg is the same file as the FFmpeg-mvc build; {ServerFFmpegVariable} "
+                $"The official FFmpeg is the same file as the FFmpeg-mvc build (a capability inversion); {ServerFFmpegVariable} "
                 + "should name a different FFmpeg so the server probes the build it is really talking to."),
                 RuntimeStatusLevel.Warning);
         }

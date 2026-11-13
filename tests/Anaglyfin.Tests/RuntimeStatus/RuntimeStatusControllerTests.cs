@@ -51,7 +51,6 @@ public sealed class RuntimeStatusControllerTests
         Assert.Equal(Policies.RequiresElevation, authorize.Policy);
         Assert.Null(authorize.Roles);
         Assert.Null(authorize.AuthenticationSchemes);
-        Assert.Null(authorize.ActiveAuthenticationSchemes);
 
         // Nothing lets a non-administrator, or an anonymous caller, through.
         Assert.Empty(ControllerType.GetCustomAttributes<AllowAnonymousAttribute>());
@@ -76,7 +75,10 @@ public sealed class RuntimeStatusControllerTests
 
         Assert.Equal(
             "/Anaglyfin/RuntimeStatus",
-            "/" + string.Join('/', new[] { route.Template, httpGet.Template }.Select(part => part.Trim('/'))));
+            "/" + string.Join(
+                '/',
+                new[] { route.Template ?? string.Empty, httpGet.Template ?? string.Empty }
+                    .Select(part => part.Trim('/'))));
     }
 
     [Fact]
@@ -86,7 +88,7 @@ public sealed class RuntimeStatusControllerTests
     }
 
     [Fact]
-    public void TheActionReturnsTheServiceSnapshotWithStatusOk()
+    public async Task TheActionReturnsTheServiceSnapshotWithStatusOk()
     {
         var response = new RuntimeStatusResponse(
             RuntimeStatusLevel.Ok,
@@ -97,10 +99,13 @@ public sealed class RuntimeStatusControllerTests
         var service = new FakeRuntimeStatusService(response);
 
         var controller = new RuntimeStatusController(service);
-        var result = controller.GetRuntimeStatus(CancellationToken.None).GetAwaiter().GetResult();
+        var result = await controller.GetRuntimeStatus(CancellationToken.None);
 
-        // The action answers with the service's snapshot itself; Ok carries it as the model value.
-        Assert.Same(response, result.Value);
+        // The action answers with the service's snapshot itself. Ok carries it either as the model
+        // value or as an OkObjectResult's value, depending on how the result was constructed; the
+        // snapshot has to be reachable either way, and exactly the one the service handed back.
+        var payload = result.Value ?? Assert.IsType<OkObjectResult>(result.Result).Value;
+        Assert.Same(response, payload);
         Assert.Equal(1, service.CallCount);
     }
 

@@ -1,6 +1,6 @@
 using System;
-using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.RuntimeStatus;
 using Xunit;
@@ -17,7 +17,7 @@ public sealed class RuntimeStatusCachingTests
     private const string PluginVersion = "1.2.3";
 
     [Fact]
-    public void TheSnapshotIsReusedUntilItExpires()
+    public async Task TheSnapshotIsReusedUntilItExpires()
     {
         var harness = new RuntimeStatusHarness();
         var probe = new FakeRuntimeVersionProbe();
@@ -33,26 +33,26 @@ public sealed class RuntimeStatusCachingTests
             TimeSpan.FromSeconds(2),
             () => now);
 
-        var first = service.GetStatusAsync(CancellationToken.None).GetAwaiter().GetResult();
+        var first = await service.GetStatusAsync(CancellationToken.None);
         var probesAfterFirst = probe.CallCount;
         Assert.True(probesAfterFirst > 0, "the first pass should have probed the binaries.");
         Assert.Equal(now, first.CheckedAtUtc);
 
         // A second request inside the window returns the very same snapshot and asks no binary.
-        var second = service.GetStatusAsync(CancellationToken.None).GetAwaiter().GetResult();
+        var second = await service.GetStatusAsync(CancellationToken.None);
         Assert.Same(first, second);
         Assert.Equal(probesAfterFirst, probe.CallCount);
 
         // Past the window, a fresh pass runs and restamps the snapshot.
         now = now.AddSeconds(31);
-        var third = service.GetStatusAsync(CancellationToken.None).GetAwaiter().GetResult();
+        var third = await service.GetStatusAsync(CancellationToken.None);
         Assert.NotSame(first, third);
         Assert.True(probe.CallCount > probesAfterFirst, "an expired snapshot should re-probe.");
         Assert.Equal(now, third.CheckedAtUtc);
     }
 
     [Fact]
-    public void ARefreshIgnoresTheCacheAndTakesAFreshPass()
+    public async Task ARefreshIgnoresTheCacheAndTakesAFreshPass()
     {
         var harness = new RuntimeStatusHarness();
         var probe = new FakeRuntimeVersionProbe();
@@ -68,19 +68,19 @@ public sealed class RuntimeStatusCachingTests
             TimeSpan.FromSeconds(2),
             () => now);
 
-        var cached = service.GetStatusAsync(CancellationToken.None).GetAwaiter().GetResult();
+        var cached = await service.GetStatusAsync(CancellationToken.None);
         var probesAfterCached = probe.CallCount;
 
-        service.GetStatusAsync(CancellationToken.None).GetAwaiter().GetResult();
+        await service.GetStatusAsync(CancellationToken.None);
         Assert.Equal(probesAfterCached, probe.CallCount);
 
-        var refreshed = service.RefreshAsync(CancellationToken.None).GetAwaiter().GetResult();
+        var refreshed = await service.RefreshAsync(CancellationToken.None);
         Assert.True(probe.CallCount > probesAfterCached, "a refresh must re-probe despite the cache.");
         Assert.NotSame(cached, refreshed);
     }
 
     [Fact]
-    public void ConcurrentRequestsJoinOneProbePassRatherThanForkAnother()
+    public async Task ConcurrentRequestsJoinOneProbePassRatherThanForkAnother()
     {
         var harness = new RuntimeStatusHarness();
         var probe = new FakeRuntimeVersionProbe();
@@ -112,8 +112,8 @@ public sealed class RuntimeStatusCachingTests
             Assert.Equal(1, probe.CallCount);
 
             release.Set();
-            var firstResult = first.GetAwaiter().GetResult();
-            var secondResult = second.GetAwaiter().GetResult();
+            var firstResult = await first;
+            var secondResult = await second;
 
             // Both callers got the one snapshot the single pass produced.
             Assert.Same(firstResult, secondResult);
@@ -124,6 +124,13 @@ public sealed class RuntimeStatusCachingTests
             entered.Dispose();
             release.Dispose();
         }
+    }
+
+    [Fact]
+    public void NullDependenciesAreRejectedAtTheDoor()
+    {
+        Assert.Throws<ArgumentNullException>(() => new RuntimeStatusService(null!, _ => null, "/tmp", "1.0.0"));
+        Assert.Throws<ArgumentNullException>(() => new RuntimeStatusService(new FakeRuntimeVersionProbe(), null!, "/tmp", "1.0.0"));
     }
 
     private static void SetupHealthy(RuntimeStatusHarness harness, FakeRuntimeVersionProbe probe)
@@ -143,12 +150,5 @@ public sealed class RuntimeStatusCachingTests
 
         probe.Default = RuntimeVersionProbeResult.Ran(0, "ffmpeg version 6.1.1-mvc11-jf2 Copyright");
         probe.ByPath[wrapper] = RuntimeVersionProbeResult.Ran(0, "anaglyfin-wrapper " + PluginVersion);
-    }
-
-    [Fact]
-    public void NullDependenciesAreRejectedAtTheDoor()
-    {
-        Assert.Throws<ArgumentNullException>(() => new RuntimeStatusService(null!, _ => null, "/tmp", "1.0.0"));
-        Assert.Throws<ArgumentNullException>(() => new RuntimeStatusService(new FakeRuntimeVersionProbe(), null!, "/tmp", "1.0.0"));
     }
 }

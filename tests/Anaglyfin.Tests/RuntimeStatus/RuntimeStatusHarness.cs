@@ -168,6 +168,11 @@ internal sealed class RuntimeStatusHarness : IDisposable
 
     private static void TryMakeWritable(string directory)
     {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         try
         {
             File.SetUnixFileMode(
