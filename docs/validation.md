@@ -172,10 +172,43 @@ Check the rendered page against the shipped defaults:
 - [ ] The page states the deployment requirement once: it asks for a Jellyfin-compatible
   FFmpeg-mvc build and the Anaglyfin FFmpeg entry point, then sends the reader to the
   Anaglyfin documentation.
-- [ ] The page does not carry deployment internals: no word `wrapper`, `environment`, or
-  `variable`; and no `ANAGLYFIN_REAL_FFMPEG`, `FFMPEG_MVC_PATH`, `ANAGLYFIN_LOCK_DIR`,
-  `ANAGLYFIN_WRAPPER_SETTINGS`, `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES`, `JELLYFIN_FFMPEG`,
-  or `FFMPEG_PATH`.
+- [ ] The settings half of the page carries no deployment internals: no word `wrapper`,
+  `environment`, or `variable`; and no `ANAGLYFIN_REAL_FFMPEG`, `FFMPEG_MVC_PATH`,
+  `ANAGLYFIN_LOCK_DIR`, `ANAGLYFIN_WRAPPER_SETTINGS`, `ANAGLYFIN_MAX_CONCURRENT_TRANSCODES`,
+  `JELLYFIN_FFMPEG`, or `FFMPEG_PATH`. The **Runtime status** section below the deployment blurb
+  is the one approved exception to that rule: it names what the deployment named, read-only, and
+  only the variables the status endpoint itself reports.
+
+The runtime status section, checked on the same visit:
+
+- [ ] It sits directly below the deployment blurb and above Save, and it says what it shows without
+  repeating the blurb.
+- [ ] The summary answers with one of **Installation complete**, **Needs attention** or
+  **Installation incomplete**, with the plugin version and the time the snapshot was taken.
+- [ ] The binary table lists the Anaglyfin FFmpeg wrapper, the FFmpeg-mvc build, the
+  official/server FFmpeg and the derived `ffprobe` sidecar - each with its state, whether Anaglyfin
+  playback needs it, the path it was given or resolved, the version it answered with, and the
+  detail the check gave.
+- [ ] The variable table lists `JELLYFIN_FFMPEG`, `ANAGLYFIN_REAL_FFMPEG`,
+  `ANAGLYFIN_SERVER_FFMPEG`, `ANAGLYFIN_LOCK_DIR` and `ANAGLYFIN_WRAPPER_SETTINGS` - each with its
+  state, whether the deployment has to set it, the value it was set to, the path that resolved from
+  it, which variable supplied that value, and the detail the check gave. No other variable appears.
+- [ ] `ANAGLYFIN_LOCK_DIR` and the directory of `ANAGLYFIN_WRAPPER_SETTINGS` are reported writable.
+  This is the half the command-line checks in V3 cannot show, because they run as the
+  administrator's own account and the page probes as the service account: make one of them
+  unwritable and that row reads **Not writable** while the summary drops to
+  **Installation incomplete**.
+- [ ] **Refresh** asks the endpoint for a fresh pass rather than the answer it already holds, the
+  button is disabled for the duration of the request, and it comes back whether the request
+  succeeded or failed.
+- [ ] Nothing re-probes by itself: the page reads the status once when it is opened, and after that
+  only when the administrator presses Refresh.
+- [ ] The section is display-only - no box, dropdown or switch in it, nothing bound to the settings
+  model - and saving afterwards changes no status. Make the endpoint fail and the section says the
+  status was not read, in one line, while the settings above still load and save.
+- [ ] A state is read as the page's own words (**OK**, **Missing**, **Not executable**, **Not
+  writable**, **Version mismatch**, **Warning**, **Probe failed**, **Unknown**) and never as the
+  server's enumeration spelling.
 - [x] When `ANAGLYFIN_WRAPPER_SETTINGS` is configured, changing **Maximum concurrent Anaglyfin
   transcodes** and saving writes that number to the shared settings document; a wrapper started after
   the save sees it without another deployment step.
@@ -294,6 +327,9 @@ signature of getting this wrong is one line at startup and a library that never 
   limit sees the same lock directory.
 - [x] For container deployments, every wrapper process that should see one admin-settings request
   reads the same settings document.
+- [ ] The admin page's runtime status section (V2) reports these same binaries and versions, these
+  same variables, and both directories writable - the same facts, seen as the service account sees
+  them rather than as whoever ran the shell.
 
 Example environment block, adjusted to your deployment:
 
