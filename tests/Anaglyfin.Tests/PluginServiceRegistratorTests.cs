@@ -9,6 +9,7 @@ using Anaglyfin.Detection;
 using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
+using Anaglyfin.RuntimeStatus;
 using Anaglyfin.Tests.Stubs;
 using Anaglyfin.Tests.VersionItems;
 using Anaglyfin.VersionItems;
@@ -24,6 +25,7 @@ using MediaBrowser.Controller.Session;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -69,14 +71,16 @@ public class PluginServiceRegistratorTests
         // runs on, the settings seam, the seven members of the version-item subsystem (its store,
         // its event source, its reconciler, the queue, the narrow request interface over it, and the
         // hosted service that drains it), the hosted service that publishes the wrapper settings
-        // document at startup, and the hosted service that sweeps the transcode slots the previous
-        // run left behind. A new service must be added here on purpose - this count is the review
-        // gate against silent registrations.
+        // document at startup, the hosted service that sweeps the transcode slots the previous run
+        // left behind, and the read-only runtime-status service the administration page reads. The
+        // controller in front of that service is discovered, not registered, so it is not on this
+        // count. A new service must be added here on purpose - this count is the review gate against
+        // silent registrations.
         var services = new FakeServiceCollection();
 
         new PluginServiceRegistrator().RegisterServices(services, null!);
 
-        Assert.Equal(11, services.Count);
+        Assert.Equal(12, services.Count);
     }
 
     [Fact]
@@ -276,6 +280,39 @@ public class PluginServiceRegistratorTests
             d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(TranscodeSlotCleanupService));
 
         Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void RegisterServicesRegistersTheRuntimeStatusServiceAsASingleton()
+    {
+        // The runtime-status surface is a process-wide snapshot behind one cached pass, so a second
+        // instance would probe the binaries again rather than reuse the one pass. It is registered as
+        // a factory - its real process probe is composed inside, not registered beside it - which is
+        // why it has no implementation type to name.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IRuntimeStatusService));
+        Assert.Null(descriptor.ImplementationType);
+        Assert.NotNull(descriptor.ImplementationFactory);
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void RegisterServicesDoesNotRegisterTheRuntimeStatusController()
+    {
+        // The controller is discovered by the server as an application part, the same way the media
+        // source provider is. Registering it would answer one of the server's own controller services
+        // with a plugin object, which is the shadow the registrator refuses everywhere else.
+        var services = new FakeServiceCollection();
+
+        new PluginServiceRegistrator().RegisterServices(services, null!);
+
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(RuntimeStatusController));
+        Assert.DoesNotContain(
+            services,
+            descriptor => descriptor.ServiceType.Name.Contains("Controller", StringComparison.Ordinal));
     }
 
     [Fact]
