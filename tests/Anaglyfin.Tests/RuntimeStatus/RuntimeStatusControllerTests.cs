@@ -89,10 +89,12 @@ public sealed class RuntimeStatusControllerTests
             action.GetParameters(),
             parameter => parameter.Name == "refresh");
 
-        Assert.Equal(typeof(bool?), refresh.ParameterType);
+        Assert.Equal(typeof(string), refresh.ParameterType);
         Assert.True(refresh.HasDefaultValue);
         Assert.Null(refresh.DefaultValue);
-        Assert.Single(refresh.GetCustomAttributes<FromQueryAttribute>());
+
+        var fromQuery = Assert.Single(refresh.GetCustomAttributes<FromQueryAttribute>());
+        Assert.Equal("refresh", fromQuery.Name);
     }
 
     [Fact]
@@ -124,8 +126,15 @@ public sealed class RuntimeStatusControllerTests
         Assert.Equal(0, service.RefreshCallCount);
     }
 
-    [Fact]
-    public async Task TheActionRefreshesWhenRefreshIsTrue()
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("True", true)]
+    [InlineData("TrUe", true)]
+    [InlineData("1", false)]
+    [InlineData("abc", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public async Task TheActionRefreshesOnlyForCaseInsensitiveTrue(string? refresh, bool shouldRefresh)
     {
         var response = new RuntimeStatusResponse(
             RuntimeStatusLevel.Ok,
@@ -136,32 +145,21 @@ public sealed class RuntimeStatusControllerTests
         var service = new FakeRuntimeStatusService(response);
 
         var controller = new RuntimeStatusController(service);
-        var result = await controller.GetRuntimeStatus(true, CancellationToken.None);
+        var result = await controller.GetRuntimeStatus(refresh, CancellationToken.None);
 
         var payload = result.Value ?? Assert.IsType<OkObjectResult>(result.Result).Value;
         Assert.Same(response, payload);
-        Assert.Equal(0, service.GetCallCount);
-        Assert.Equal(1, service.RefreshCallCount);
-    }
 
-    [Fact]
-    public async Task TheActionDoesNotRefreshWhenRefreshIsFalse()
-    {
-        var response = new RuntimeStatusResponse(
-            RuntimeStatusLevel.Ok,
-            "1.2.3",
-            DateTimeOffset.UnixEpoch,
-            Array.Empty<RuntimeBinaryStatus>(),
-            Array.Empty<RuntimeEnvironmentStatus>());
-        var service = new FakeRuntimeStatusService(response);
-
-        var controller = new RuntimeStatusController(service);
-        var result = await controller.GetRuntimeStatus(false, CancellationToken.None);
-
-        var payload = result.Value ?? Assert.IsType<OkObjectResult>(result.Result).Value;
-        Assert.Same(response, payload);
-        Assert.Equal(1, service.GetCallCount);
-        Assert.Equal(0, service.RefreshCallCount);
+        if (shouldRefresh)
+        {
+            Assert.Equal(0, service.GetCallCount);
+            Assert.Equal(1, service.RefreshCallCount);
+        }
+        else
+        {
+            Assert.Equal(1, service.GetCallCount);
+            Assert.Equal(0, service.RefreshCallCount);
+        }
     }
 
     [Fact]

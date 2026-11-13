@@ -508,7 +508,7 @@ public sealed class RuntimeStatusServiceTests
     }
 
     [Fact]
-    public void TheOfficialFfmpegPathSourceNamesPathAsItsSource()
+    public void TheOfficialFfmpegBareConfiguredValueKeepsItsVariableAndMentionsPath()
     {
         var harness = new RuntimeStatusHarness();
         var probe = new FakeRuntimeVersionProbe();
@@ -523,7 +523,49 @@ public sealed class RuntimeStatusServiceTests
         Assert.True(server.IsSet);
         Assert.Equal("ffmpeg", server.Value);
         Assert.Equal("ffmpeg", server.ResolvedPath);
-        Assert.Equal("PATH", server.SourceVariable);
+        Assert.Null(server.SourceVariable);
+        Assert.Contains("PATH", server.Detail, StringComparison.Ordinal);
+        Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.OfficialFfmpegKey).State);
+    }
+
+    [Fact]
+    public void TheFfmpegMvcBareConfiguredValueKeepsItsVariableAndMentionsPath()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        SetupHealthy(harness, probe);
+
+        harness.Env[FFmpegWrapperOptions.RealFFmpegEnvironmentVariable] = "ffmpeg";
+        harness.Env[FFmpegWrapperOptions.RealFFmpegAlternateEnvironmentVariable] = null;
+
+        var status = Status(Create(harness, probe));
+
+        var real = Env(status, FFmpegWrapperOptions.RealFFmpegEnvironmentVariable);
+        Assert.True(real.IsSet);
+        Assert.Equal("ffmpeg", real.Value);
+        Assert.Equal("ffmpeg", real.ResolvedPath);
+        Assert.Null(real.SourceVariable);
+        Assert.Contains("PATH", real.Detail, StringComparison.Ordinal);
+        Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.FfmpegMvcKey).State);
+    }
+
+    [Fact]
+    public void TheOfficialFfmpegBareAliasKeepsItsAliasAndMentionsPath()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        SetupHealthy(harness, probe);
+
+        harness.Env[FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable] = null;
+        harness.Env[FFmpegWrapperOptions.ServerFFmpegAlternateEnvironmentVariable] = "ffmpeg";
+
+        var status = Status(Create(harness, probe));
+
+        var server = Env(status, FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable);
+        Assert.True(server.IsSet);
+        Assert.Equal("ffmpeg", server.Value);
+        Assert.Equal(FFmpegWrapperOptions.ServerFFmpegAlternateEnvironmentVariable, server.SourceVariable);
+        Assert.Contains("PATH", server.Detail, StringComparison.Ordinal);
         Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.OfficialFfmpegKey).State);
     }
 

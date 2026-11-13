@@ -27,13 +27,15 @@ namespace Anaglyfin.RuntimeStatus;
 /// blocks and would otherwise hang the request that is waiting on it.
 /// </para>
 /// <para>
-/// <b>A hard timeout that kills, and a bounded drain.</b> A probe that has not answered within the
-/// time it was given is killed — the process tree, not just its root — and reported as timed out.
-/// The post-exit wait for the redirected streams is bounded too: if the process has exited but a
-/// grandchild holds a stdout/stderr handle open, this probe kills the tree and answers bounded
-/// rather than waiting forever for an end-of-stream that may never arrive. An administrator's page
-/// refresh must never be held open by a hung binary; the caller caches the answer so a refresh is
-/// not a fresh fork either.
+/// <b>A hard timeout that kills, and a bounded stdout answer.</b> A probe that has not answered within
+/// the time it was given is killed — the process tree, not just its root — and reported as timed out.
+/// After the direct process exits, the probe waits only for stdout evidence — a first line or stdout
+/// EOF — with a bounded grace. If stdout has answered and only stderr remains open because a
+/// descendant inherited that handle, the valid stdout answer is kept rather than discarded. A
+/// best-effort kill is then attempted for any remaining process tree; when the direct process has
+/// already exited, that kill may fail and is ignored because the answer is already bounded. An
+/// administrator's page refresh must never be held open by a hung binary; the caller caches the answer
+/// so a refresh is not a fresh fork either.
 /// </para>
 /// <para>
 /// <b>It runs as the service account.</b> This is the server's own process asking, so the probe
@@ -51,12 +53,13 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
     public const int MaxCapturedLineCharacters = 4096;
 
     /// <summary>
-    /// How long the probe is allowed to wait after the process has already exited for the redirected
-    /// streams to report end-of-stream. The wait exists so a normal FFmpeg banner is not lost when its
-    /// last line races the process exit; it is bounded so a surviving grandchild holding a handle open
-    /// cannot pin the status pass.
+    /// How long the probe is allowed to wait after the process has already exited for stdout evidence:
+    /// either a first line, or end-of-stream. The wait exists so a normal FFmpeg banner is not lost when
+    /// its last line races the process exit; it is bounded so a surviving grandchild holding a handle
+    /// open cannot pin the status pass. Stderr is drained to keep the child from blocking, but delayed
+    /// stderr EOF alone must not turn a valid stdout answer into a timeout.
     /// </summary>
-    public const int DefaultFinalWaitGraceMilliseconds = 5000;
+    public const int DefaultFinalWaitGraceMilliseconds = 2000;
 
     /// <inheritdoc />
     /// <remarks>
@@ -74,6 +77,11 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentNullException.ThrowIfNull(arguments);
 
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return RuntimeVersionProbeResult.TimedOutResult();
+        }
+
         using var process = new Process
         {
             StartInfo = BuildStartInfo(executablePath, arguments)
@@ -81,17 +89,18 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
 
         var firstLine = (string?)null;
 
-        // EOF from the redirected streams, not just process exit, is what makes the captured first
-        // line trustworthy. A surviving grandchild can hold a pipe open after the direct child exits,
-        // so these are waited on with a bounded grace below and killed out of if they never close.
-        var outputDrained = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var errorDrained = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Stdout, not stderr, carries the version answer. After the direct process exits, the probe
+        // needs stdout evidence within the bounded grace: either the first line arrived, or stdout
+        // reached EOF. Stderr is still drained to keep the child from blocking, but delayed stderr
+        // EOF must not discard a stdout answer.
+        var stdoutEof = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stdoutLineCaptured = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         process.OutputDataReceived += (_, eventArgs) =>
         {
             if (eventArgs.Data is null)
             {
-                outputDrained.TrySetResult(true);
+                stdoutEof.TrySetResult(true);
                 return;
             }
 
@@ -102,17 +111,14 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
                 firstLine = eventArgs.Data.Length > MaxCapturedLineCharacters
                     ? eventArgs.Data.Substring(0, MaxCapturedLineCharacters)
                     : eventArgs.Data;
+                stdoutLineCaptured.TrySetResult(true);
             }
         };
 
         // Stderr is drained into nothing. If it were left unread, a chatty binary would fill the
         // pipe and block in its own write, and the wait below would then only end on the timeout.
-        process.ErrorDataReceived += (_, eventArgs) =>
+        process.ErrorDataReceived += (_, _) =>
         {
-            if (eventArgs.Data is null)
-            {
-                errorDrained.TrySetResult(true);
-            }
         };
 
         try
@@ -161,17 +167,8 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
         }
 
         var finalWait = (int)Math.Clamp(DefaultFinalWaitGraceMilliseconds, 1, int.MaxValue);
-        var outputRead = WaitDrained(outputDrained, finalWait);
-        var errorRead = WaitDrained(errorDrained, finalWait);
-
-        if (!outputRead || !errorRead)
-        {
-            // The direct process exited, but at least one redirected stream still has a writer —
-            // conventionally a grandchild that inherited the handle. Kill the tree so it cannot
-            // survive this probe, and report the bounded answer rather than the unbounded wait.
-            TryKill(process);
-            return RuntimeVersionProbeResult.TimedOutResult();
-        }
+        var stdoutEvidence = Task.WhenAny(stdoutLineCaptured.Task, stdoutEof.Task);
+        var sawStdoutEvidence = WaitCompleted(stdoutEvidence, finalWait);
 
         if (cancellationToken.IsCancellationRequested || cancelled)
         {
@@ -179,7 +176,14 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
             return RuntimeVersionProbeResult.TimedOutResult();
         }
 
-        return RuntimeVersionProbeResult.Ran(process.ExitCode, firstLine);
+        // Best effort. If the direct process already exited, Kill may fail even with the whole-tree
+        // option; a surviving grandchild that still holds a stderr handle is allowed to run out its
+        // own life because the caller's answer is already bounded.
+        TryKill(process);
+
+        return sawStdoutEvidence
+            ? RuntimeVersionProbeResult.Ran(process.ExitCode, firstLine)
+            : RuntimeVersionProbeResult.TimedOutResult();
     }
 
     /// <summary>
@@ -213,7 +217,9 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
     }
 
     /// <summary>
-    /// Kills the process tree, ignoring the case where it already exited between the wait and here.
+    /// Best-effort kill of the process tree. When the direct process has already exited, the whole-tree
+    /// kill can still fail because there is no live root to enumerate; the probe's answer is already
+    /// bounded at that point, so this is allowed to do nothing.
     /// </summary>
     private static void TryKill(Process process)
     {
@@ -231,11 +237,11 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
         }
     }
 
-    private static bool WaitDrained(TaskCompletionSource<bool> drained, int milliseconds)
+    private static bool WaitCompleted(Task task, int milliseconds)
     {
         try
         {
-            return drained.Task.Wait(milliseconds, CancellationToken.None);
+            return task.Wait(milliseconds, CancellationToken.None);
         }
         catch (Exception exception) when (IsDrainFailure(exception))
         {
@@ -244,8 +250,8 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
     }
 
     /// <summary>
-    /// Whether waiting on an EOF signal can be answered by "the drain did not happen" instead of
-    /// letting a status probe throw at the caller.
+    /// Whether waiting on an EOF/first-line signal can be answered by "the signal did not arrive"
+    /// instead of letting a status probe throw at the caller.
     /// </summary>
     private static bool IsDrainFailure(Exception exception)
         => exception is AggregateException

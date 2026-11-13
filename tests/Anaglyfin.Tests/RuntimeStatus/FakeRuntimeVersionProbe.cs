@@ -46,6 +46,12 @@ public sealed class FakeRuntimeVersionProbe : IRuntimeVersionProbe
     /// </summary>
     public ManualResetEventSlim? Release { get; set; }
 
+    /// <summary>
+    /// Gets a value indicating whether a blocked probe observed its cancellation token. This lets a
+    /// watchdog test prove the service actually handed its own pass token to the probe seam.
+    /// </summary>
+    public bool CancellationSeen { get; private set; }
+
     /// <summary>Gets every vector the service asked the probe to run, in order.</summary>
     public IReadOnlyList<ProbeCall> Calls
     {
@@ -75,7 +81,16 @@ public sealed class FakeRuntimeVersionProbe : IRuntimeVersionProbe
         }
 
         Entered?.Set();
-        Release?.Wait(cancellationToken);
+
+        try
+        {
+            Release?.Wait(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            CancellationSeen = true;
+            throw;
+        }
 
         if (Responder is { } responder)
         {

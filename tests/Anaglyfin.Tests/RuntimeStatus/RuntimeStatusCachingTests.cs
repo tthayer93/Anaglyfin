@@ -185,7 +185,7 @@ public sealed class RuntimeStatusCachingTests
     }
 
     [Fact]
-    public async Task AStuckProbePassDoesNotOccupyTheSingleFlightSlotForever()
+    public async Task AStuckProbePassIsCancelledReleasedAndDoesNotPoisonTheCache()
     {
         var harness = new RuntimeStatusHarness();
         var probe = new FakeRuntimeVersionProbe();
@@ -195,6 +195,7 @@ public sealed class RuntimeStatusCachingTests
         var release = new ManualResetEventSlim(false);
         probe.Entered = entered;
         probe.Release = release;
+        var now = DateTimeOffset.UnixEpoch;
 
         try
         {
@@ -205,13 +206,13 @@ public sealed class RuntimeStatusCachingTests
                 PluginVersion,
                 TimeSpan.FromSeconds(30),
                 TimeSpan.FromMilliseconds(20),
-                () => DateTimeOffset.UnixEpoch,
-                TimeSpan.FromMilliseconds(250));
+                () => now,
+                TimeSpan.FromSeconds(2));
 
             var stuckPass = service.GetStatusAsync(CancellationToken.None);
             Assert.True(entered.Wait(TimeSpan.FromSeconds(5)), "the stuck pass never started.");
 
-            var watchdogTimeout = Task.Delay(TimeSpan.FromSeconds(5));
+            var watchdogTimeout = Task.Delay(TimeSpan.FromSeconds(10));
             var completedFirst = await Task.WhenAny(stuckPass, watchdogTimeout);
             Assert.True(completedFirst == stuckPass, "the watchdog did not release the stuck pass.");
 
@@ -220,18 +221,26 @@ public sealed class RuntimeStatusCachingTests
             Assert.Empty(stuckResult.Binaries);
             var failed = Assert.Single(stuckResult.Environment);
             Assert.Equal(RuntimeItemState.ProbeFailed, failed.State);
+            Assert.True(probe.CancellationSeen, "the watchdog did not cancel the service-owned pass token.");
 
-            // While the abandoned pass is still blocked in the fake probe, a new request must not join
-            // it forever: it starts a fresh pass instead.
-            var secondPass = service.GetStatusAsync(CancellationToken.None);
+            // A late/abandoned pass must not leave a cached or in-flight result behind. The next
+            // request has to start a fresh pass: call count 1 is the cancelled pass's first probe,
+            // and call count 2 can only come from a fresh pass started after the slot was released.
+            var freshPass = service.GetStatusAsync(CancellationToken.None);
             Assert.True(
                 SpinWait.SpinUntil(() => probe.CallCount == 2, TimeSpan.FromSeconds(5)),
-                "the abandoned pass is still occupying the single-flight slot.");
+                "the abandoned pass left a cached or in-flight result behind.");
 
             release.Set();
-            var secondResult = await secondPass;
-            Assert.Equal(RuntimeStatusLevel.Ok, secondResult.OverallStatus);
-            Assert.NotSame(stuckResult, secondResult);
+            var freshResult = await freshPass;
+            Assert.Equal(RuntimeStatusLevel.Ok, freshResult.OverallStatus);
+            Assert.NotSame(stuckResult, freshResult);
+
+            // The pass slot is not permanently pinned: after cache expiry, a later request can still
+            // complete normally.
+            now = now.AddSeconds(31);
+            var later = await service.GetStatusAsync(CancellationToken.None);
+            Assert.Equal(RuntimeStatusLevel.Ok, later.OverallStatus);
         }
         finally
         {
