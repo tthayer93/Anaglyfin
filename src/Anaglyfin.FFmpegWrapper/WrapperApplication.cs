@@ -32,6 +32,13 @@ namespace Anaglyfin.FFmpegWrapper;
 /// prevent, and it would do it while reporting success.
 /// </para>
 /// <para>
+/// <b>One question that is not about a command at all.</b> <see cref="VersionCommand"/> asks
+/// which build this executable is, and is answered ahead of every decision below: no rewrite,
+/// no binary check, no slot, no child process, and nothing read from the environment. Whoever
+/// asks it is usually checking a deployment that may be broken, so the answer holds even when
+/// everything the three outcomes above depend on is missing.
+/// </para>
+/// <para>
 /// <b>Two binaries, and the rewrite already says which one.</b> A rewritten command is written
 /// in features only the FFmpeg-mvc build has - view selection, the depth filter - so it is
 /// handed to the build the deployment named as the real one. A passed-through command is the
@@ -93,11 +100,47 @@ public sealed class WrapperApplication
     /// <summary>Prefix of every line the wrapper writes, so it is attributable in FFmpeg's own log stream.</summary>
     public const string DiagnosticPrefix = "anaglyfin-wrapper: ";
 
+    /// <summary>
+    /// The argument that asks the wrapper which build it is, rather than asking it to run
+    /// something. It is not an FFmpeg option and is never handed to FFmpeg: a caller that
+    /// wants FFmpeg's own banner asks FFmpeg with <c>-version</c>, which this wrapper passes
+    /// through untouched.
+    /// </summary>
+    public const string VersionCommand = "--anaglyfin-version";
+
+    /// <summary>
+    /// Prefix of the one line <see cref="VersionCommand"/> answers with, without the trailing
+    /// colon <see cref="DiagnosticPrefix"/> carries. The reader of that line is a machine, so
+    /// the prefix is fixed and the version after it is the only variable part.
+    /// </summary>
+    public const string VersionReportPrefix = "anaglyfin-wrapper ";
+
+    /// <summary>
+    /// What the version of an assembly that declared none is reported as. No release build
+    /// reaches this: the identity line always has a version in it, because a reader that
+    /// parses the line expects one.
+    /// </summary>
+    public const string UnknownVersion = "0.0.0";
+
+    /// <summary>
+    /// The release version this wrapper assembly was built as, in the <c>X.Y.Z</c> form a
+    /// release states and the same number <c>PluginManifestTests</c> pins the tag to.
+    /// </summary>
+    /// <remarks>
+    /// Read out of the assembly rather than repeated as a literal here, so the identity an
+    /// administrator reads off a binary is the identity that binary was built with. A literal
+    /// would keep answering after a version bump and misreport the very build the question is
+    /// asked about.
+    /// </remarks>
+    public static string ReleaseVersion { get; } =
+        typeof(WrapperApplication).Assembly.GetName().Version?.ToString(3) ?? UnknownVersion;
+
     private readonly FFmpegWrapperOptions _options;
     private readonly IFFmpegProcessLauncher _launcher;
     private readonly WrapperConcurrencyGuard _guard;
     private readonly IWrapperArgumentRewriter _rewriter;
     private readonly TextWriter _diagnostics;
+    private readonly TextWriter _standardOutput;
 
     /// <summary>
     /// Wires one wrapper invocation.
@@ -112,13 +155,19 @@ public sealed class WrapperApplication
     /// <param name="diagnostics">
     /// Where refusals are written; null uses <see cref="Console.Error"/>.
     /// </param>
+    /// <param name="standardOutput">
+    /// Where the one line of the identity command is written; null uses
+    /// <see cref="Console.Out"/>. Nothing else this class does is ever written there, so a
+    /// caller that must not have an FFmpeg stdout touched can hand it a discarded writer.
+    /// </param>
     /// <exception cref="ArgumentNullException">Any of the first three arguments is null.</exception>
     public WrapperApplication(
         FFmpegWrapperOptions options,
         IFFmpegProcessLauncher launcher,
         WrapperConcurrencyGuard guard,
         IWrapperArgumentRewriter? rewriter = null,
-        TextWriter? diagnostics = null)
+        TextWriter? diagnostics = null,
+        TextWriter? standardOutput = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(launcher);
@@ -129,6 +178,7 @@ public sealed class WrapperApplication
         _guard = guard;
         _rewriter = rewriter ?? WrapperArgumentRewriter.Shared;
         _diagnostics = diagnostics ?? Console.Error;
+        _standardOutput = standardOutput ?? Console.Out;
     }
 
     /// <summary>
@@ -150,6 +200,14 @@ public sealed class WrapperApplication
 
         try
         {
+            // The identity question is answered before anything is decided, because it is not a
+            // question about a command: whoever asks it wants to know which build answered, and
+            // that answer cannot depend on a marker parsing, a binary resolving or a slot freeing.
+            if (TryReportVersion(rawArguments, _standardOutput))
+            {
+                return ExitCodeSuccess;
+            }
+
             return Execute(rawArguments);
         }
         catch (IOException exception)
@@ -160,6 +218,72 @@ public sealed class WrapperApplication
         {
             return RefuseInternally(exception);
         }
+    }
+
+    /// <summary>
+    /// Answers the identity command, when this vector asked for it.
+    /// </summary>
+    /// <param name="rawArguments">The arguments the wrapper was started with.</param>
+    /// <param name="standardOutput">
+    /// Where the line is written; null uses <see cref="Console.Out"/>.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> when <see cref="VersionCommand"/> was among the arguments and the identity line
+    /// has been written - in which case the caller returns <see cref="ExitCodeSuccess"/> and starts
+    /// nothing; <c>false</c> when it was not, leaving the vector to the ordinary dispatch
+    /// untouched.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// This is the one invocation that is not a transcode attempt. A caller asking it wants to tell
+    /// this executable apart from an FFmpeg that happens to answer to the same name, and it asks
+    /// in the one situation where that distinction is worth money: a deployment that may be
+    /// misconfigured. So the answer deliberately depends on nothing that could be missing -
+    /// no configured binary, no slot directory, no settings document, no environment variable, and
+    /// no process started. A wrapper that refused to say what it was because its FFmpeg path was
+    /// wrong would fail to answer exactly the call it exists to answer.
+    /// </para>
+    /// <para>
+    /// The flag is read out of the raw vector and wins over everything alongside it: a vector that
+    /// carries it is somebody's probe, not a playback, and dispatching it would put a marker URL in
+    /// front of FFmpeg to prove a version string. It is matched exactly and case-sensitively, since
+    /// the reader is a machine and FFmpeg's own arguments are read the same way.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="rawArguments"/> is null.</exception>
+    public static bool TryReportVersion(IReadOnlyList<string> rawArguments, TextWriter? standardOutput = null)
+    {
+        ArgumentNullException.ThrowIfNull(rawArguments);
+
+        if (!CarriesVersionCommand(rawArguments))
+        {
+            return false;
+        }
+
+        var writer = standardOutput ?? Console.Out;
+
+        writer.WriteLine(VersionReportPrefix + ReleaseVersion);
+        writer.Flush();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Whether any argument of a received vector is the identity command.
+    /// </summary>
+    /// <param name="rawArguments">The received arguments.</param>
+    /// <returns><c>true</c> when this invocation is a question about the wrapper.</returns>
+    private static bool CarriesVersionCommand(IReadOnlyList<string> rawArguments)
+    {
+        foreach (var argument in rawArguments)
+        {
+            if (string.Equals(argument, VersionCommand, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

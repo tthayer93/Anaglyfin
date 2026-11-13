@@ -10,7 +10,9 @@ namespace Anaglyfin.FFmpegWrapper;
 /// This type is deliberately almost empty: reading the environment, taking the slot and
 /// starting FFmpeg are all behaviour of the types it wires together, so the executable's
 /// build has exactly one behaviour of its own left to test - that an unexpected failure
-/// is a refusal and not a crash.
+/// is a refusal and not a crash. The one decision it does make for itself is to let
+/// <see cref="WrapperApplication.VersionCommand"/> out before any of that wiring runs,
+/// so the identity answer does not depend on a configuration being readable.
 /// </para>
 /// <para>
 /// The wiring is the whole deployment contract: the server's FFmpeg path points at this
@@ -32,6 +34,16 @@ internal static class Program
     /// <returns>The exit code the server should read.</returns>
     private static int Main(string[] args)
     {
+        // The identity question is answered here, ahead of everything else this executable does -
+        // ahead of the environment read below, so that a deployment with no FFmpeg path, no slot
+        // directory and no settings document still gets an answer. It is the one invocation that
+        // asks who the wrapper is rather than asking it to run something, and the caller asking it
+        // is looking at a deployment nobody trusts yet.
+        if (WrapperApplication.TryReportVersion(args, Console.Out))
+        {
+            return WrapperApplication.ExitCodeSuccess;
+        }
+
         var options = FFmpegWrapperOptions.FromEnvironment();
 
         try
