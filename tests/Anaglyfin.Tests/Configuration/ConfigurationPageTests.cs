@@ -9,7 +9,9 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Anaglyfin.Configuration;
+using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.Profiles;
+using Anaglyfin.RuntimeStatus;
 using Anaglyfin.Tests.Stubs;
 using MediaBrowser.Model.Plugins;
 using Xunit;
@@ -57,10 +59,18 @@ public class ConfigurationPageTests
     ];
 
     /// <summary>
-    /// Spellings the page document may not carry at all: the names a deployment is arranged with.
-    /// None of them is editable from this page, so naming one invites an edit that cannot be made -
-    /// and each belongs to the install guide, where the person setting it up actually is.
+    /// Spellings the settings half of the page may not carry at all: the names a deployment is
+    /// arranged with. None of them is editable from this page, so naming one invites an edit that
+    /// cannot be made - and each belongs to the install guide, where the person setting it up
+    /// actually is.
     /// </summary>
+    /// <remarks>
+    /// The runtime status section is the one owner-approved exception, and it is excused by
+    /// marker rather than by loosening this list: what the list forbids everywhere else, it still
+    /// forbids inside the section too unless the name appears on
+    /// <see cref="RuntimeStatusReportedVariables"/>, which is the set the status endpoint itself
+    /// reports.
+    /// </remarks>
     private static readonly string[] ForbiddenPageText =
     [
         "ANAGLYFIN_REAL_FFMPEG",
@@ -71,6 +81,92 @@ public class ConfigurationPageTests
         "JELLYFIN_FFMPEG",
         "FFMPEG_PATH",
         "ANAGLYFIN_"
+    ];
+
+    /// <summary>
+    /// The one part of the page that names the deployment on purpose, written between these two
+    /// markers so the guard above can excuse exactly it - and only it - rather than the whole
+    /// document. The markup and the script each carry their own pair.
+    /// </summary>
+    private const string RuntimeStatusRegionStart = "anaglyfin-runtime-status:begin";
+
+    private const string RuntimeStatusRegionEnd = "anaglyfin-runtime-status:end";
+
+    /// <summary>
+    /// The deployment names the runtime status section is allowed to carry: exactly the variables
+    /// the status endpoint reports, taken from the code that reports them rather than from a copy
+    /// of a document, so the page cannot advertise a variable nothing reads.
+    /// </summary>
+    private static readonly string[] RuntimeStatusReportedVariables =
+    [
+        RuntimeStatusService.JellyfinFFmpegEnvironmentVariable,
+        FFmpegWrapperOptions.RealFFmpegEnvironmentVariable,
+        FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable,
+        TranscodeSlotStore.LockDirectoryEnvironmentVariable,
+        WrapperSettingsFile.EnvironmentVariable
+    ];
+
+    /// <summary>The columns the binary table owes each reported binary, in the order it shows them.</summary>
+    private static readonly string[] RuntimeStatusBinaryColumns =
+    [
+        "Status",
+        "Required",
+        "Label",
+        "Path",
+        "Version",
+        "Detail"
+    ];
+
+    /// <summary>The columns the variable table owes each reported variable, in the order it shows them.</summary>
+    private static readonly string[] RuntimeStatusVariableColumns =
+    [
+        "Status",
+        "Required",
+        "Variable",
+        "Value",
+        "Resolved path",
+        "Source",
+        "Detail"
+    ];
+
+    /// <summary>The words the summary shows for the three overall states, in the endpoint's order.</summary>
+    private static readonly string[] RuntimeStatusOverallTexts =
+    [
+        "Installation complete",
+        "Needs attention",
+        "Installation incomplete"
+    ];
+
+    /// <summary>The words a row shows for each item state, in the endpoint's order.</summary>
+    private static readonly string[] RuntimeStatusItemTexts =
+    [
+        "OK",
+        "Missing",
+        "Not readable",
+        "Not executable",
+        "Not writable",
+        "Probe failed",
+        "Version mismatch",
+        "Warning",
+        "Unknown"
+    ];
+
+    /// <summary>
+    /// Words no setting may be named after, because a setting is a choice the page can make and
+    /// save: the runtime status is read, never stored, so nothing that belongs to it may arrive in
+    /// the bound field set - which is what the settings endpoint would happily persist.
+    /// </summary>
+    private static readonly string[] ForbiddenBoundFieldNameText =
+    [
+        "runtime",
+        "status",
+        "state",
+        "path",
+        "environment",
+        "variable",
+        "binary",
+        "wrapper",
+        "ffmpeg"
     ];
 
     [Fact]
@@ -835,16 +931,274 @@ public class ConfigurationPageTests
         // file carries the settings across the process boundary - is not editable here, was never
         // the administrator's to guess at, and belongs in the install guide. A variable name on this
         // page is a thing an administrator can do nothing about while looking at it.
-        var html = ReadPageHtml();
+        //
+        // The runtime status section is the one exception the owner asked for, and it is a read-only
+        // answer rather than an edit: the page now shows what the deployment named, because an
+        // administrator who cannot tell a missing binary from a wrong one was sent to a shell for it.
+        // The exception is bounded rather than general - it is the marked section and its script,
+        // and the names it may carry are the ones the status endpoint itself reports, which
+        // TheRuntimeStatusSectionNamesOnlyTheVariablesTheStatusEndpointReports pins. Everything the
+        // settings half of the page has to stay free of, it still stays free of.
+        var (outside, regions) = ReadPageWithoutRuntimeStatus();
 
-        Assert.DoesNotContain("wrapper", html, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("environment", html, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("variable", html, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("wrapper", outside, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("environment", outside, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("variable", outside, StringComparison.OrdinalIgnoreCase);
 
         foreach (var internalName in ForbiddenPageText)
         {
-            Assert.DoesNotContain(internalName, html, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(internalName, outside, StringComparison.OrdinalIgnoreCase);
         }
+
+        // And inside the section, every deployment name that does appear is one of those: anything
+        // else an editor pastes into that markup is reported here rather than shipped.
+        foreach (var region in regions)
+        {
+            var scrubbed = region;
+
+            foreach (var reported in RuntimeStatusReportedVariables)
+            {
+                scrubbed = scrubbed.Replace(reported, string.Empty, StringComparison.OrdinalIgnoreCase);
+            }
+
+            foreach (var internalName in ForbiddenPageText)
+            {
+                Assert.DoesNotContain(internalName, scrubbed, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+    }
+
+    [Fact]
+    public void TheAdminPageCarriesTheRuntimeStatusSectionBelowTheDeploymentGuidance()
+    {
+        // The section belongs where the deployment guidance already is: an administrator reading
+        // what the server has to be running is then one glance away from what it is actually
+        // running, with nothing to type and nothing to save in between.
+        var html = ReadPageHtml();
+        var (markup, _) = ReadRuntimeStatusRegions();
+
+        var guidance = html.IndexOf("Requires a Jellyfin-compatible FFmpeg-mvc build", StringComparison.Ordinal);
+        var section = html.IndexOf("<div class=\"section anaglyfin-section\" id=\"AnaglyfinRuntimeStatus\"", StringComparison.Ordinal);
+        var save = html.IndexOf("<button is=\"emby-button\" type=\"submit\"", StringComparison.Ordinal);
+
+        Assert.True(guidance >= 0, "The page no longer states the deployment requirement it sits beside.");
+        Assert.True(section > guidance, "The runtime status section no longer follows the deployment guidance.");
+        Assert.True(save > section, "The runtime status section no longer sits above the Save button.");
+
+        Assert.Contains("<h2 class=\"sectionTitle\">Runtime status</h2>", html, StringComparison.Ordinal);
+        Assert.Contains("<caption>Runtime binaries</caption>", markup, StringComparison.Ordinal);
+        Assert.Contains("<caption>Deployment variables</caption>", markup, StringComparison.Ordinal);
+
+        // One answer the endpoint gives per column the page has, and the page is not asking for a
+        // column the endpoint has nothing for.
+        foreach (var column in RuntimeStatusBinaryColumns)
+        {
+            Assert.Contains($"<th scope=\"col\">{column}</th>", markup, StringComparison.Ordinal);
+        }
+
+        foreach (var column in RuntimeStatusVariableColumns)
+        {
+            Assert.Contains($"<th scope=\"col\">{column}</th>", markup, StringComparison.Ordinal);
+        }
+
+        // The summary, the two tables and the warning are all there before the endpoint has
+        // answered, so an administrator reads "not read yet" rather than a silent half of a page.
+        foreach (var elementId in new[]
+                {
+                    "AnaglyfinRuntimeStatusOverall",
+                    "AnaglyfinRuntimeStatusVersion",
+                    "AnaglyfinRuntimeStatusChecked",
+                    "AnaglyfinRuntimeStatusWarning",
+                    "AnaglyfinRuntimeStatusBinaries",
+                    "AnaglyfinRuntimeStatusEnvironment",
+                    "AnaglyfinRuntimeStatusRefresh"
+                })
+        {
+            Assert.Contains($"id=\"{elementId}\"", markup, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("Runtime status has not been read yet.", markup, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheRuntimeStatusSectionAsksThePluginForItsStatusThroughTheDashboardClient()
+    {
+        // The endpoint is the plugin's own and the transport is the dashboard's own signed-in
+        // client, which is the same rule the settings follow and for the same reason: a copy of this
+        // page opened outside the dashboard has no credential for an admin-only endpoint, and a page
+        // that improvised one would be a page making authenticated calls nobody asked it to make.
+        var html = ReadPageHtml();
+        var (_, script) = ReadRuntimeStatusRegions();
+
+        Assert.Contains("var runtimeStatusEndpoint = '/Anaglyfin/RuntimeStatus';", script, StringComparison.Ordinal);
+        Assert.Contains("window.ApiClient.request({", script, StringComparison.Ordinal);
+        Assert.Contains("typeof window.ApiClient.request === 'function'", script, StringComparison.Ordinal);
+        Assert.Contains("if (!runtimeStatusClientAvailable()) {", script, StringComparison.Ordinal);
+        Assert.Contains("The Anaglyfin runtime status endpoint did not answer.", script, StringComparison.Ordinal);
+
+        // The settings half's own rule still holds over the section's head: no transport of the
+        // page's own anywhere, and no second way to be refused by the absence of a dashboard.
+        Assert.DoesNotContain("fetch(", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("XMLHttpRequest", html, StringComparison.Ordinal);
+        Assert.Contains("function dashboardAvailable()", html, StringComparison.Ordinal);
+        Assert.Equal(2, Regex.Matches(html, "revealDashboardNotice\\(\\);").Count);
+
+        // Asked once when the page opens, and after that only on a click: nothing on this page
+        // re-probes the server on a timer of its own.
+        Assert.DoesNotContain("setInterval", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("setTimeout", html, StringComparison.Ordinal);
+        Assert.Single(Regex.Matches(html, "requestRuntimeStatus\\(false\\);"));
+        Assert.Single(Regex.Matches(html, "requestRuntimeStatus\\(true\\);"));
+    }
+
+    [Fact]
+    public void TheRuntimeStatusRefreshButtonAsksForAFreshPassAndGivesItselfBack()
+    {
+        // Refresh is the only way a second pass happens, and it has to be legible while it is
+        // under way: the button goes out for the duration of the request and comes back whether the
+        // endpoint answered, answered with nothing, refused, or could not be asked at all.
+        var html = ReadPageHtml();
+        var (markup, _) = ReadRuntimeStatusRegions();
+
+        var refreshButton = Assert.Single(Regex.Matches(markup, @"<button\b[^>]*>")).Value;
+        Assert.Contains("id=\"AnaglyfinRuntimeStatusRefresh\"", refreshButton, StringComparison.Ordinal);
+        Assert.Contains(@"type=""button""", refreshButton, StringComparison.Ordinal);
+        Assert.DoesNotContain("type=\"submit\"", refreshButton, StringComparison.Ordinal);
+        Assert.Contains("<span>Refresh</span>", markup, StringComparison.Ordinal);
+
+        var request = FunctionBody(html, "requestRuntimeStatus");
+
+        Assert.Contains("var runtimeStatusRefreshQuery = '?refresh=true';", html, StringComparison.Ordinal);
+        Assert.Contains("url: runtimeStatusEndpoint + (refresh ? runtimeStatusRefreshQuery : ''),", request, StringComparison.Ordinal);
+        Assert.Contains("setRuntimeStatusRefreshEnabled(nodes, false);", request, StringComparison.Ordinal);
+        Assert.Contains("setRuntimeStatusRefreshEnabled(nodes, true);", request, StringComparison.Ordinal);
+        Assert.Contains("if (runtimeStatusLoading) {", request, StringComparison.Ordinal);
+
+        // Every way out of the request gives the button back: no dashboard client, a client that
+        // would not answer, an answer with nothing in it, and a refusal.
+        Assert.Equal(4, Regex.Matches(request, "finished\\(\\);").Count);
+
+        var refresh = FunctionBody(html, "refreshRuntimeStatus");
+        Assert.Contains("requestRuntimeStatus(true);", refresh, StringComparison.Ordinal);
+        Assert.Contains("event.preventDefault();", refresh, StringComparison.Ordinal);
+        Assert.Single(Regex.Matches(html, "addEventListener\\('click', refreshRuntimeStatus\\)"));
+    }
+
+    [Fact]
+    public void TheRuntimeStatusSectionIsBuiltOutOfTextAndNothingElse()
+    {
+        // Nothing in the section is editable, and nothing the server said is ever put into the
+        // document as markup. Paths, labels and variable values are deployment choices the page
+        // cannot vouch for, so they arrive as text and stay text: read, never run, never submitted.
+        var (markup, script) = ReadRuntimeStatusRegions();
+
+        foreach (var region in new[] { markup, script })
+        {
+            foreach (var editable in new[] { "<input", "<select", "<textarea", "data-anaglyfin-field", "data-anaglyfin-kind" })
+            {
+                Assert.DoesNotContain(editable, region, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        Assert.DoesNotContain("innerHTML", script, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("insertAdjacentHTML", script, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("document.write", script, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("outerHTML", script, StringComparison.OrdinalIgnoreCase);
+
+        // Cells are made one element at a time and filled through textContent, so there is no road
+        // from an endpoint answer to the document other than text.
+        Assert.Contains("document.createElement('td')", script, StringComparison.Ordinal);
+        Assert.Contains("document.createElement('tr')", script, StringComparison.Ordinal);
+        Assert.Contains("cell.textContent = text;", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheRuntimeStatusSectionShowsItsOwnWordsForEveryState()
+    {
+        // The states are the endpoint's enumerations and the page never repeats them back: what an
+        // administrator reads is this page's wording for that state, chosen by position out of the
+        // list beside the names, with Unknown as the answer for a state this build has no words for.
+        var html = ReadPageHtml();
+        var (_, script) = ReadRuntimeStatusRegions();
+
+        Assert.Equal(RuntimeStatusOverallTexts, ReadScriptList(script, "runtimeStatusOverallTexts"));
+        Assert.Equal(RuntimeStatusItemTexts, ReadScriptList(script, "runtimeStatusItemTexts"));
+
+        Assert.Equal(RuntimeStatusOverallTexts.Length, ReadScriptList(script, "runtimeStatusOverallNames").Length);
+        Assert.Equal(RuntimeStatusItemTexts.Length, ReadScriptList(script, "runtimeStatusItemNames").Length);
+        Assert.Equal(RuntimeStatusOverallTexts.Length, ReadScriptList(script, "runtimeStatusOverallClasses").Length);
+
+        // The state is only ever shown through the mapping. A row that dropped the raw answer into
+        // a cell would show an administrator a word they were never meant to read.
+        var binaryRow = FunctionBody(html, "runtimeStatusBinaryRow");
+        var variableRow = FunctionBody(html, "runtimeStatusEnvironmentRow");
+
+        Assert.Contains("runtimeStatusItemText(readProperty(binary, 'State'))", binaryRow, StringComparison.Ordinal);
+        Assert.Contains("runtimeStatusItemText(readProperty(entry, 'State'))", variableRow, StringComparison.Ordinal);
+        Assert.DoesNotContain("readProperty(binary, 'State')]", binaryRow, StringComparison.Ordinal);
+        Assert.DoesNotContain("readProperty(entry, 'State')]", variableRow, StringComparison.Ordinal);
+
+        // And the words themselves, so a state cannot quietly lose its sentence.
+        foreach (var text in RuntimeStatusOverallTexts.Concat(RuntimeStatusItemTexts))
+        {
+            Assert.Contains($"'{text}'", script, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void TheRuntimeStatusSectionNamesOnlyTheVariablesTheStatusEndpointReports()
+    {
+        // The section is allowed to name deployment variables, which is exactly why the set it names
+        // is pinned here against the code that reports them: a page advertising a variable nothing
+        // reads is a page an administrator will go and set, and a variable the endpoint reports that
+        // the page never mentions is a check nobody explained.
+        var (markup, _) = ReadRuntimeStatusRegions();
+
+        var advertised = Regex.Matches(markup, @"\b(?:ANAGLYFIN|FFMPEG|JELLYFIN)_[A-Z0-9_]+\b")
+            .Cast<Match>()
+            .Select(match => match.Value)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            RuntimeStatusReportedVariables.OrderBy(name => name, StringComparer.Ordinal).ToArray(),
+            advertised);
+    }
+
+    [Fact]
+    public void TheRuntimeStatusSectionLeavesTheSettingsExactlyAsTheyWere()
+    {
+        // The section reads. The proof is that nothing about the settings half moved: the same
+        // transport, the same save path, and no field a save could persist. A status value that
+        // looked like a setting would be written to the server by the next Save and read back as one
+        // forever, which is the mistake this page has a standing guard against.
+        var html = ReadPageHtml();
+        var (markup, script) = ReadRuntimeStatusRegions();
+
+        Assert.DoesNotContain("data-anaglyfin-field", markup, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-anaglyfin-field", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-anaglyfin-kind", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("updatePluginConfiguration", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("getPluginConfiguration", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("writeConfiguration", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("writeProperty", script, StringComparison.Ordinal);
+
+        foreach (var fieldName in ReadBoundFieldNames())
+        {
+            foreach (var forbidden in ForbiddenBoundFieldNameText)
+            {
+                Assert.False(
+                    fieldName.Contains(forbidden, StringComparison.OrdinalIgnoreCase),
+                    $"The settings model gained a bound field named {fieldName}, which is runtime status vocabulary and must stay read-only.");
+            }
+        }
+
+        // The shipped defaults, the round-trip and the layout of the form are the tests above; what
+        // is checked here is that the section did not disturb the page's own boot order.
+        Assert.Contains("applyShippedDefaults();", html, StringComparison.Ordinal);
+        Assert.Contains("form.addEventListener('submit', saveConfiguration);", html, StringComparison.Ordinal);
+        Assert.Contains("page.addEventListener('pageshow', loadConfiguration);", html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -885,6 +1239,68 @@ public class ConfigurationPageTests
             using var reader = new StreamReader(stream);
             return reader.ReadToEnd();
         }
+    }
+
+    /// <summary>
+    /// Reads the two marked runtime status regions out of the page: the markup, then the script.
+    /// </summary>
+    /// <remarks>
+    /// There have to be exactly two, because the guard against the deployment's names is applied to
+    /// everything outside them: a section that lost its markers would be excused from that guard
+    /// while still carrying the names, which is the one way this arrangement could fail quietly.
+    /// </remarks>
+    private static (string Markup, string Script) ReadRuntimeStatusRegions()
+    {
+        var regions = RuntimeStatusRegions(ReadPageHtml());
+
+        Assert.Equal(2, regions.Count);
+
+        return (regions[0], regions[1]);
+    }
+
+    /// <summary>
+    /// Reads the page with the runtime status regions taken out: the settings half of the document,
+    /// which still has to carry none of the names a deployment is arranged with.
+    /// </summary>
+    private static (string Outside, List<string> Regions) ReadPageWithoutRuntimeStatus()
+    {
+        var html = ReadPageHtml();
+        var regions = RuntimeStatusRegions(html);
+
+        Assert.Equal(2, regions.Count);
+
+        var outside = Regex.Replace(
+            html,
+            Regex.Escape(RuntimeStatusRegionStart) + @"[\s\S]*?" + Regex.Escape(RuntimeStatusRegionEnd),
+            string.Empty);
+
+        return (outside, regions);
+    }
+
+    private static List<string> RuntimeStatusRegions(string html)
+        => Regex.Matches(
+                html,
+                Regex.Escape(RuntimeStatusRegionStart) + @"(?<region>[\s\S]*?)" + Regex.Escape(RuntimeStatusRegionEnd))
+            .Cast<Match>()
+            .Select(match => match.Groups["region"].Value)
+            .ToList();
+
+    /// <summary>
+    /// Reads one of the page script's own string lists, so a test can compare what the page shows
+    /// against what it owes the administrator without matching a declaration character for character.
+    /// </summary>
+    private static string[] ReadScriptList(string script, string name)
+    {
+        var declaration = Regex.Match(
+            script,
+            @"var " + Regex.Escape(name) + @" = \[(?<entries>[^\]]*)\];");
+
+        Assert.True(declaration.Success, $"The runtime status script no longer declares {name}.");
+
+        return Regex.Matches(declaration.Groups["entries"].Value, "'(?<entry>[^']*)'")
+            .Cast<Match>()
+            .Select(match => match.Groups["entry"].Value)
+            .ToArray();
     }
 
     private static List<(string Id, string DisplayName, bool EnabledByDefault)> ReadProfileList()

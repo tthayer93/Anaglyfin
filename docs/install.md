@@ -632,6 +632,23 @@ Linux result, and Windows has none.
 
 **1. The plugin page.** `Dashboard → Plugins` lists **Anaglyfin** and its settings page opens.
 
+The page's **Runtime status** section, just below the deployment blurb, says what the plugin itself can see of the
+installation — read it before reading the server log. It confirms:
+
+- the binaries an Anaglyfin command can reach — the Anaglyfin FFmpeg wrapper, the FFmpeg-mvc build, the official/server
+  FFmpeg and the derived `ffprobe` sidecar — each with the state its checks turned out to be, the path it resolved, and
+  the version it answered with;
+- the five deployment variables it reports — `JELLYFIN_FFMPEG`, `ANAGLYFIN_REAL_FFMPEG`, `ANAGLYFIN_SERVER_FFMPEG`,
+  `ANAGLYFIN_LOCK_DIR` and `ANAGLYFIN_WRAPPER_SETTINGS` — each with the value the deployment set, the path that resolved
+  from it, and which variable supplied that value (`Required` says which of them the deployment has to set);
+- whether the slot directory and the wrapper settings document are writable by the service account, which is the part
+  checks 3 and 4 cannot prove because those run as **your** account;
+- **Refresh**, which asks the plugin to probe again instead of answering from what it already has.
+
+The section reads and never writes: it installs nothing, saves nothing and edits nothing. Placing a binary or setting a
+variable stays a deployment step (§4-§6), and checks 3-5 stay the proof that what it reports also works. If the section
+cannot reach the endpoint it says so in one line and leaves the settings usable.
+
 **2. The server names the wrapper as its FFmpeg.** That startup line, naming the wrapper's path, is what identifies the
 wrapper as Jellyfin's FFmpeg; no server-reported FFmpeg version is part of the contract.
 

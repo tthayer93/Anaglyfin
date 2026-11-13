@@ -45,6 +45,62 @@
                 background: rgba(0, 0, 0, 0.18);
             }
 
+            /*
+             * The runtime status section is two tables of text and one summary line, all of it
+             * read-only. The summary carries the page's own words for what the checks found, so
+             * its three colours belong to the page rather than to anything the server said. The
+             * tables keep their own readable widths because the dashboard's sheet has an opinion
+             * about table cells, and the warning is hidden by attribute plus rule for the same
+             * reason the dashboard notice is.
+             */
+            .anaglyfin-runtimeStatus {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 0.6em;
+                margin: 0.6em 0;
+            }
+
+            .anaglyfin-runtimeStatusState {
+                font-weight: bold;
+            }
+
+            .anaglyfin-runtimeStatusStateOk {
+                color: #6dae5a;
+            }
+
+            .anaglyfin-runtimeStatusStateWarning {
+                color: #e2a400;
+            }
+
+            .anaglyfin-runtimeStatusStateError {
+                color: #cf4e52;
+            }
+
+            .anaglyfin-runtimeStatusTable {
+                width: 100%;
+                border-collapse: collapse;
+                margin-bottom: 1.2em;
+            }
+
+            .anaglyfin-runtimeStatusTable caption {
+                text-align: left;
+                font-weight: bold;
+                padding: 0 0 0.3em;
+            }
+
+            .anaglyfin-runtimeStatusTable th,
+            .anaglyfin-runtimeStatusTable td {
+                text-align: left;
+                vertical-align: top;
+                padding: 0.25em 0.8em 0.25em 0;
+            }
+
+            .anaglyfin-runtimeStatusTable th {
+                font-weight: bold;
+                white-space: nowrap;
+            }
+
             .anaglyfin-readonly {
                 margin: 0 0 1.2em;
                 padding: 0.8em 1em;
@@ -224,6 +280,93 @@
                             Installation details are in the Anaglyfin documentation.
                         </div>
                     </div>
+
+                    <!-- anaglyfin-runtime-status:begin -->
+                    <!--
+                      The runtime status section is the one part of this page that names the
+                      deployment, and it names it read-only: what the plugin's own admin-only
+                      status endpoint saw when it looked at this server. Nothing in it is
+                      editable, nothing in it is saved, and nothing in it is installed by this
+                      page - placing a binary or setting a variable is still a deployment step,
+                      described in the Anaglyfin documentation.
+
+                      Every word that arrives from the endpoint is written into a cell as text,
+                      never as markup, so a path or a value the deployment chose can only ever be
+                      read here. What the section lists is decided by the endpoint, not by this
+                      page; the names below are what it reports, carried here so an administrator
+                      reading a page whose endpoint never answered still knows what was missed.
+                    -->
+                    <div class="section anaglyfin-section" id="AnaglyfinRuntimeStatus">
+                        <h2 class="sectionTitle">Runtime status</h2>
+                        <div class="fieldDescription">
+                            What the plugin itself can see of this installation: the binaries an
+                            Anaglyfin command can reach - the Anaglyfin FFmpeg wrapper, the
+                            FFmpeg-mvc build the conversion commands run on, the official/server
+                            FFmpeg, and the derived ffprobe sidecar, each with the version it
+                            answered with - and the deployment variables that name them:
+                            <b>JELLYFIN_FFMPEG</b>, <b>ANAGLYFIN_REAL_FFMPEG</b>,
+                            <b>ANAGLYFIN_SERVER_FFMPEG</b>, <b>ANAGLYFIN_LOCK_DIR</b> and
+                            <b>ANAGLYFIN_WRAPPER_SETTINGS</b>, each with the state its checks
+                            turned out to be and the directory the service account has to be able
+                            to write. This section reads and never writes; it installs nothing and
+                            saves nothing.
+                        </div>
+
+                        <div class="anaglyfin-runtimeStatus">
+                            <div id="AnaglyfinRuntimeStatusOverall" class="anaglyfin-runtimeStatusState" aria-live="polite">
+                                Runtime status has not been read yet.
+                            </div>
+                            <div class="fieldDescription">
+                                <span id="AnaglyfinRuntimeStatusVersion">Plugin version: not read.</span>
+                                <span id="AnaglyfinRuntimeStatusChecked">Checked: not read.</span>
+                            </div>
+                            <button is="emby-button" type="button" id="AnaglyfinRuntimeStatusRefresh" class="raised emby-button">
+                                <span>Refresh</span>
+                            </button>
+                        </div>
+
+                        <div id="AnaglyfinRuntimeStatusWarning" class="anaglyfin-readonly" aria-live="polite" hidden></div>
+
+                        <table class="anaglyfin-runtimeStatusTable">
+                            <caption>Runtime binaries</caption>
+                            <thead>
+                                <tr>
+                                    <th scope="col">Status</th>
+                                    <th scope="col">Required</th>
+                                    <th scope="col">Label</th>
+                                    <th scope="col">Path</th>
+                                    <th scope="col">Version</th>
+                                    <th scope="col">Detail</th>
+                                </tr>
+                            </thead>
+                            <tbody id="AnaglyfinRuntimeStatusBinaries">
+                                <tr>
+                                    <td colspan="6">Runtime status has not been read yet.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <table class="anaglyfin-runtimeStatusTable">
+                            <caption>Deployment variables</caption>
+                            <thead>
+                                <tr>
+                                    <th scope="col">Status</th>
+                                    <th scope="col">Required</th>
+                                    <th scope="col">Variable</th>
+                                    <th scope="col">Value</th>
+                                    <th scope="col">Resolved path</th>
+                                    <th scope="col">Source</th>
+                                    <th scope="col">Detail</th>
+                                </tr>
+                            </thead>
+                            <tbody id="AnaglyfinRuntimeStatusEnvironment">
+                                <tr>
+                                    <td colspan="7">Runtime status has not been read yet.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <!-- anaglyfin-runtime-status:end -->
 
                     <div class="section anaglyfin-section">
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
@@ -890,6 +1033,381 @@
                 } else {
                     loadConfiguration();
                 }
+
+                /* anaglyfin-runtime-status:begin */
+                /*
+                 * The runtime status section and the one endpoint it reads.
+                 *
+                 * Everything here is display. The page asks the plugin's own admin-only status
+                 * endpoint for a snapshot through the dashboard's signed-in client - the same
+                 * client the settings are read and saved with, because a copy of this page opened
+                 * on its own has no credential to ask with and says so instead - and writes what
+                 * comes back into the two tables as text. Nothing the endpoint reported is ever
+                 * put into the document as markup, so a path or a variable value a deployment
+                 * chose is read here and nothing else; nothing is posted anywhere.
+                 *
+                 * The states are the endpoint's, and the administrator reads the page's own words
+                 * for them: each answer is looked up in the list beside the list of names, and an
+                 * answer outside those lists is shown as Unknown rather than repeated back.
+                 *
+                 * The snapshot is asked for once, when the page is opened, and after that only
+                 * when the administrator presses Refresh, which asks the endpoint to probe again
+                 * rather than to hand back what it already has. There is no timer of any kind: a
+                 * page that re-probed the server by itself would be a page starting binaries
+                 * nobody asked it to start.
+                 */
+                var runtimeStatusEndpoint = '/Anaglyfin/RuntimeStatus';
+                var runtimeStatusRefreshQuery = '?refresh=true';
+                var runtimeStatusPlaceholder = '-';
+                var runtimeStatusLoading = false;
+
+                // The summary's three answers and the nine states a row can carry, in the order
+                // the endpoint's own enumerations declare them, each paired with the wording this
+                // page shows for it.
+                var runtimeStatusOverallNames = ['Ok', 'Warning', 'Error'];
+                var runtimeStatusOverallTexts = ['Installation complete', 'Needs attention', 'Installation incomplete'];
+                var runtimeStatusOverallClasses = ['anaglyfin-runtimeStatusStateOk', 'anaglyfin-runtimeStatusStateWarning', 'anaglyfin-runtimeStatusStateError'];
+                var runtimeStatusItemNames = ['Ok', 'Missing', 'NotReadable', 'NotExecutable', 'NotWritable', 'ProbeFailed', 'VersionMismatch', 'Warning', 'Unknown'];
+                var runtimeStatusItemTexts = ['OK', 'Missing', 'Not readable', 'Not executable', 'Not writable', 'Probe failed', 'Version mismatch', 'Warning', 'Unknown'];
+
+                /*
+                 * Which entry of a list an answer means, in either spelling the endpoint can
+                 * answer with - the name it is written as, or the position it is stored at. An
+                 * answer neither list contains is -1, which every caller shows as the honest
+                 * fallback rather than as the first entry of the list.
+                 */
+                function runtimeStatusStateIndex(value, names) {
+                    if (typeof value === 'number') {
+                        return value >= 0 && value < names.length ? value : -1;
+                    }
+
+                    if (typeof value === 'string') {
+                        var stated = value.trim().toLowerCase();
+
+                        for (var i = 0; i < names.length; i++) {
+                            if (names[i].toLowerCase() === stated) {
+                                return i;
+                            }
+                        }
+                    }
+
+                    return -1;
+                }
+
+                function runtimeStatusStateText(value, names, texts, fallback) {
+                    var index = runtimeStatusStateIndex(value, names);
+
+                    return index >= 0 ? texts[index] : fallback;
+                }
+
+                function runtimeStatusOverallText(value) {
+                    return runtimeStatusStateText(value, runtimeStatusOverallNames, runtimeStatusOverallTexts, 'Status unavailable');
+                }
+
+                function runtimeStatusOverallClass(value) {
+                    var index = runtimeStatusStateIndex(value, runtimeStatusOverallNames);
+
+                    return index >= 0 ? runtimeStatusOverallClasses[index] : '';
+                }
+
+                function runtimeStatusItemText(value) {
+                    return runtimeStatusStateText(value, runtimeStatusItemNames, runtimeStatusItemTexts, 'Unknown');
+                }
+
+                function runtimeStatusYesNo(value) {
+                    return parseBoolean(value) === true ? 'Yes' : 'No';
+                }
+
+                // What a cell shows for one reported value. Nothing arrives at the document by any
+                // other road than textContent, and a value that was never reported is a dash
+                // rather than a blank the administrator has to wonder about.
+                function runtimeStatusText(value) {
+                    if (value === null || value === undefined) {
+                        return runtimeStatusPlaceholder;
+                    }
+
+                    var stated = typeof value === 'string' ? value : String(value);
+
+                    return stated.trim() === '' ? runtimeStatusPlaceholder : stated;
+                }
+
+                function runtimeStatusCheckedText(value) {
+                    var stated = typeof value === 'string' ? value.trim() : '';
+
+                    if (stated === '') {
+                        return runtimeStatusPlaceholder;
+                    }
+
+                    var stamp = new Date(stated);
+
+                    // A stamp this page cannot read is still shown, as the text it was sent as:
+                    // the administrator is better served by the raw answer than by a blank.
+                    return isNaN(stamp.getTime()) ? stated : stamp.toLocaleString();
+                }
+
+                function runtimeStatusCell(text, columnCount) {
+                    var cell = document.createElement('td');
+                    cell.textContent = text;
+
+                    if (columnCount) {
+                        cell.setAttribute('colspan', String(columnCount));
+                    }
+
+                    return cell;
+                }
+
+                function runtimeStatusRow(values) {
+                    var row = document.createElement('tr');
+
+                    for (var i = 0; i < values.length; i++) {
+                        row.appendChild(runtimeStatusCell(runtimeStatusText(values[i]), 0));
+                    }
+
+                    return row;
+                }
+
+                function runtimeStatusEmptyRow(columnCount, text) {
+                    var row = document.createElement('tr');
+                    row.appendChild(runtimeStatusCell(text, columnCount));
+
+                    return row;
+                }
+
+                function runtimeStatusBinaryRow(binary) {
+                    var configured = readProperty(binary, 'ConfiguredPath');
+                    var resolved = readProperty(binary, 'ResolvedPath');
+                    var path = typeof configured === 'string' && configured !== '' ? configured : resolved;
+
+                    return runtimeStatusRow([
+                        runtimeStatusItemText(readProperty(binary, 'State')),
+                        runtimeStatusYesNo(readProperty(binary, 'Required')),
+                        readProperty(binary, 'Label'),
+                        path,
+                        readProperty(binary, 'Version'),
+                        readProperty(binary, 'Detail')
+                    ]);
+                }
+
+                // The variable itself supplied the value when the endpoint names no other one, and
+                // a variable that supplied nothing is reported as not set rather than as empty.
+                function runtimeStatusSourceText(entry) {
+                    var source = readProperty(entry, 'SourceVariable');
+
+                    if (typeof source === 'string' && source.trim() !== '') {
+                        return source;
+                    }
+
+                    return parseBoolean(readProperty(entry, 'IsSet')) === true ? 'Set directly' : 'Not set';
+                }
+
+                function runtimeStatusEnvironmentRow(entry) {
+                    return runtimeStatusRow([
+                        runtimeStatusItemText(readProperty(entry, 'State')),
+                        runtimeStatusYesNo(readProperty(entry, 'Required')),
+                        readProperty(entry, 'Name'),
+                        readProperty(entry, 'Value'),
+                        readProperty(entry, 'ResolvedPath'),
+                        runtimeStatusSourceText(entry),
+                        readProperty(entry, 'Detail')
+                    ]);
+                }
+
+                function runtimeStatusList(value) {
+                    return Array.isArray(value) ? value : [];
+                }
+
+                function runtimeStatusFillRows(body, entries, buildRow, columnCount, emptyText) {
+                    while (body.firstChild) {
+                        body.removeChild(body.firstChild);
+                    }
+
+                    if (entries.length === 0) {
+                        body.appendChild(runtimeStatusEmptyRow(columnCount, emptyText));
+                        return;
+                    }
+
+                    for (var i = 0; i < entries.length; i++) {
+                        body.appendChild(buildRow(entries[i]));
+                    }
+                }
+
+                function runtimeStatusNodes() {
+                    var page = pageElement();
+
+                    if (!page) {
+                        return null;
+                    }
+
+                    return {
+                        overall: page.querySelector('#AnaglyfinRuntimeStatusOverall'),
+                        version: page.querySelector('#AnaglyfinRuntimeStatusVersion'),
+                        checked: page.querySelector('#AnaglyfinRuntimeStatusChecked'),
+                        warning: page.querySelector('#AnaglyfinRuntimeStatusWarning'),
+                        binaries: page.querySelector('#AnaglyfinRuntimeStatusBinaries'),
+                        entries: page.querySelector('#AnaglyfinRuntimeStatusEnvironment'),
+                        refresh: page.querySelector('#AnaglyfinRuntimeStatusRefresh')
+                    };
+                }
+
+                function showRuntimeStatusWarning(text) {
+                    var nodes = runtimeStatusNodes();
+
+                    if (nodes && nodes.warning) {
+                        nodes.warning.textContent = text;
+                        nodes.warning.hidden = false;
+                    }
+                }
+
+                function hideRuntimeStatusWarning() {
+                    var nodes = runtimeStatusNodes();
+
+                    if (nodes && nodes.warning) {
+                        nodes.warning.textContent = '';
+                        nodes.warning.hidden = true;
+                    }
+                }
+
+                function setRuntimeStatusRefreshEnabled(nodes, enabled) {
+                    if (nodes && nodes.refresh) {
+                        nodes.refresh.disabled = !enabled;
+                    }
+                }
+
+                function renderRuntimeStatus(status, nodes) {
+                    if (!nodes) {
+                        return false;
+                    }
+
+                    var overall = readProperty(status, 'OverallStatus');
+
+                    if (nodes.overall) {
+                        nodes.overall.textContent = runtimeStatusOverallText(overall);
+                        nodes.overall.className = 'anaglyfin-runtimeStatusState ' + runtimeStatusOverallClass(overall);
+                    }
+
+                    if (nodes.version) {
+                        nodes.version.textContent = 'Plugin version: ' + runtimeStatusText(readProperty(status, 'PluginVersion'));
+                    }
+
+                    if (nodes.checked) {
+                        nodes.checked.textContent = 'Checked: ' + runtimeStatusCheckedText(readProperty(status, 'CheckedAtUtc'));
+                    }
+
+                    var binaries = runtimeStatusList(readProperty(status, 'Binaries'));
+                    var entries = runtimeStatusList(readProperty(status, 'Environment'));
+
+                    if (nodes.binaries) {
+                        runtimeStatusFillRows(nodes.binaries, binaries, runtimeStatusBinaryRow, 6, 'No runtime binaries were reported.');
+                    }
+
+                    if (nodes.entries) {
+                        runtimeStatusFillRows(nodes.entries, entries, runtimeStatusEnvironmentRow, 7, 'No deployment variables were reported.');
+                    }
+
+                    // An answer with nothing in it is not a healthy installation; it is an answer
+                    // this page cannot show, and it is said out loud rather than left as two
+                    // empty tables.
+                    return binaries.length > 0 || entries.length > 0;
+                }
+
+                /*
+                 * The status endpoint is asked through the dashboard's signed-in client and
+                 * through nothing else: the page does not open a request of its own, because a
+                 * copy of this page opened outside the dashboard has no credential for an
+                 * admin-only endpoint and no business guessing at one.
+                 */
+                function runtimeStatusClientAvailable() {
+                    return typeof window.ApiClient !== 'undefined'
+                        && !!window.ApiClient
+                        && typeof window.ApiClient.request === 'function';
+                }
+
+                function requestRuntimeStatus(refresh) {
+                    // One request at a time, whichever road the page was entered from.
+                    if (runtimeStatusLoading) {
+                        return;
+                    }
+
+                    var nodes = runtimeStatusNodes();
+                    runtimeStatusLoading = true;
+                    setRuntimeStatusRefreshEnabled(nodes, false);
+
+                    function finished() {
+                        runtimeStatusLoading = false;
+                        setRuntimeStatusRefreshEnabled(nodes, true);
+                    }
+
+                    if (!runtimeStatusClientAvailable()) {
+                        finished();
+                        showRuntimeStatusWarning('The runtime status was not read: this copy of the page has no dashboard client to ask with.');
+                        return;
+                    }
+
+                    var asked = null;
+
+                    try {
+                        asked = window.ApiClient.request({
+                            type: 'GET',
+                            url: runtimeStatusEndpoint + (refresh ? runtimeStatusRefreshQuery : ''),
+                            dataType: 'json'
+                        });
+                    } catch (error) {
+                        asked = null;
+                    }
+
+                    if (!asked || typeof asked.then !== 'function') {
+                        finished();
+                        showRuntimeStatusWarning('The runtime status was not read: the dashboard client could not be asked.');
+                        return;
+                    }
+
+                    asked.then(function (status) {
+                        var reported = renderRuntimeStatus(status, nodes);
+                        finished();
+
+                        if (reported) {
+                            hideRuntimeStatusWarning();
+                        } else {
+                            showRuntimeStatusWarning('The Anaglyfin runtime status endpoint answered with nothing to show.');
+                        }
+                    }, function () {
+                        finished();
+                        showRuntimeStatusWarning('The Anaglyfin runtime status endpoint did not answer. The settings above are unaffected.');
+                    });
+                }
+
+                function loadRuntimeStatus() {
+                    requestRuntimeStatus(false);
+                }
+
+                function refreshRuntimeStatus(event) {
+                    if (event && typeof event.preventDefault === 'function') {
+                        event.preventDefault();
+                    }
+
+                    requestRuntimeStatus(true);
+                    return false;
+                }
+
+                function bindRuntimeStatusRefresh() {
+                    var nodes = runtimeStatusNodes();
+
+                    if (nodes && nodes.refresh) {
+                        nodes.refresh.addEventListener('click', refreshRuntimeStatus);
+                    }
+                }
+
+                bindRuntimeStatusRefresh();
+
+                // Read once when the page opens, and after that only when the administrator asks.
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', function () {
+                        loadRuntimeStatus();
+                    });
+                } else {
+                    loadRuntimeStatus();
+                }
+                /* anaglyfin-runtime-status:end */
             }());
         </script>
     </div>
