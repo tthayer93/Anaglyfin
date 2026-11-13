@@ -185,6 +185,63 @@ public sealed class RuntimeStatusCachingTests
     }
 
     [Fact]
+    public async Task AStuckProbePassDoesNotOccupyTheSingleFlightSlotForever()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        SetupHealthy(harness, probe);
+
+        var entered = new ManualResetEventSlim(false);
+        var release = new ManualResetEventSlim(false);
+        probe.Entered = entered;
+        probe.Release = release;
+
+        try
+        {
+            var service = new RuntimeStatusService(
+                probe,
+                harness.ReadVariable,
+                harness.Root,
+                PluginVersion,
+                TimeSpan.FromSeconds(30),
+                TimeSpan.FromMilliseconds(20),
+                () => DateTimeOffset.UnixEpoch,
+                TimeSpan.FromMilliseconds(250));
+
+            var stuckPass = service.GetStatusAsync(CancellationToken.None);
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(5)), "the stuck pass never started.");
+
+            var watchdogTimeout = Task.Delay(TimeSpan.FromSeconds(5));
+            var completedFirst = await Task.WhenAny(stuckPass, watchdogTimeout);
+            Assert.True(completedFirst == stuckPass, "the watchdog did not release the stuck pass.");
+
+            var stuckResult = await stuckPass;
+            Assert.Equal(RuntimeStatusLevel.Warning, stuckResult.OverallStatus);
+            Assert.Empty(stuckResult.Binaries);
+            var failed = Assert.Single(stuckResult.Environment);
+            Assert.Equal(RuntimeItemState.ProbeFailed, failed.State);
+
+            // While the abandoned pass is still blocked in the fake probe, a new request must not join
+            // it forever: it starts a fresh pass instead.
+            var secondPass = service.GetStatusAsync(CancellationToken.None);
+            Assert.True(
+                SpinWait.SpinUntil(() => probe.CallCount == 2, TimeSpan.FromSeconds(5)),
+                "the abandoned pass is still occupying the single-flight slot.");
+
+            release.Set();
+            var secondResult = await secondPass;
+            Assert.Equal(RuntimeStatusLevel.Ok, secondResult.OverallStatus);
+            Assert.NotSame(stuckResult, secondResult);
+        }
+        finally
+        {
+            release.Set();
+            entered.Dispose();
+            release.Dispose();
+        }
+    }
+
+    [Fact]
     public void NullDependenciesAreRejectedAtTheDoor()
     {
         Assert.Throws<ArgumentNullException>(() => new RuntimeStatusService(null!, _ => null, "/tmp", "1.0.0"));

@@ -65,8 +65,7 @@ public sealed class RuntimeStatusControllerTests
         var route = Assert.Single(ControllerType.GetCustomAttributes<RouteAttribute>());
         Assert.Equal("Anaglyfin", route.Template);
 
-        var action = ControllerType.GetMethod("GetRuntimeStatus")
-            ?? throw new InvalidOperationException("The controller exposes no GetRuntimeStatus action.");
+        var action = GetAction();
 
         // Exactly one verb, and it is a GET: a read-only surface exposes no write.
         var verb = Assert.Single(action.GetCustomAttributes<HttpMethodAttribute>());
@@ -79,6 +78,21 @@ public sealed class RuntimeStatusControllerTests
                 '/',
                 new[] { route.Template ?? string.Empty, httpGet.Template ?? string.Empty }
                     .Select(part => part.Trim('/'))));
+    }
+
+    [Fact]
+    public void TheActionAcceptsAnOptionalRefreshQuery()
+    {
+        var action = GetAction();
+
+        var refresh = Assert.Single(
+            action.GetParameters(),
+            parameter => parameter.Name == "refresh");
+
+        Assert.Equal(typeof(bool?), refresh.ParameterType);
+        Assert.True(refresh.HasDefaultValue);
+        Assert.Null(refresh.DefaultValue);
+        Assert.Single(refresh.GetCustomAttributes<FromQueryAttribute>());
     }
 
     [Fact]
@@ -99,14 +113,55 @@ public sealed class RuntimeStatusControllerTests
         var service = new FakeRuntimeStatusService(response);
 
         var controller = new RuntimeStatusController(service);
-        var result = await controller.GetRuntimeStatus(CancellationToken.None);
+        var result = await controller.GetRuntimeStatus(null, CancellationToken.None);
 
         // The action answers with the service's snapshot itself. Ok carries it either as the model
         // value or as an OkObjectResult's value, depending on how the result was constructed; the
         // snapshot has to be reachable either way, and exactly the one the service handed back.
         var payload = result.Value ?? Assert.IsType<OkObjectResult>(result.Result).Value;
         Assert.Same(response, payload);
-        Assert.Equal(1, service.CallCount);
+        Assert.Equal(1, service.GetCallCount);
+        Assert.Equal(0, service.RefreshCallCount);
+    }
+
+    [Fact]
+    public async Task TheActionRefreshesWhenRefreshIsTrue()
+    {
+        var response = new RuntimeStatusResponse(
+            RuntimeStatusLevel.Ok,
+            "1.2.3",
+            DateTimeOffset.UnixEpoch,
+            Array.Empty<RuntimeBinaryStatus>(),
+            Array.Empty<RuntimeEnvironmentStatus>());
+        var service = new FakeRuntimeStatusService(response);
+
+        var controller = new RuntimeStatusController(service);
+        var result = await controller.GetRuntimeStatus(true, CancellationToken.None);
+
+        var payload = result.Value ?? Assert.IsType<OkObjectResult>(result.Result).Value;
+        Assert.Same(response, payload);
+        Assert.Equal(0, service.GetCallCount);
+        Assert.Equal(1, service.RefreshCallCount);
+    }
+
+    [Fact]
+    public async Task TheActionDoesNotRefreshWhenRefreshIsFalse()
+    {
+        var response = new RuntimeStatusResponse(
+            RuntimeStatusLevel.Ok,
+            "1.2.3",
+            DateTimeOffset.UnixEpoch,
+            Array.Empty<RuntimeBinaryStatus>(),
+            Array.Empty<RuntimeEnvironmentStatus>());
+        var service = new FakeRuntimeStatusService(response);
+
+        var controller = new RuntimeStatusController(service);
+        var result = await controller.GetRuntimeStatus(false, CancellationToken.None);
+
+        var payload = result.Value ?? Assert.IsType<OkObjectResult>(result.Result).Value;
+        Assert.Same(response, payload);
+        Assert.Equal(1, service.GetCallCount);
+        Assert.Equal(0, service.RefreshCallCount);
     }
 
     [Fact]
@@ -115,25 +170,30 @@ public sealed class RuntimeStatusControllerTests
         Assert.Throws<ArgumentNullException>(() => new RuntimeStatusController(null!));
     }
 
+    private static MethodInfo GetAction()
+        => typeof(RuntimeStatusController).GetMethod("GetRuntimeStatus")
+            ?? throw new InvalidOperationException("The controller exposes no GetRuntimeStatus action.");
+
     private sealed class FakeRuntimeStatusService : IRuntimeStatusService
     {
         private readonly RuntimeStatusResponse _response;
-        private int _callCount;
 
         public FakeRuntimeStatusService(RuntimeStatusResponse response)
             => _response = response;
 
-        public int CallCount => _callCount;
+        public int GetCallCount { get; private set; }
+
+        public int RefreshCallCount { get; private set; }
 
         public Task<RuntimeStatusResponse> GetStatusAsync(CancellationToken cancellationToken)
         {
-            _callCount++;
+            GetCallCount++;
             return Task.FromResult(_response);
         }
 
         public Task<RuntimeStatusResponse> RefreshAsync(CancellationToken cancellationToken)
         {
-            _callCount++;
+            RefreshCallCount++;
             return Task.FromResult(_response);
         }
     }

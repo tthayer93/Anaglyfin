@@ -130,6 +130,28 @@ public sealed class RuntimeStatusServiceTests
     }
 
     [Fact]
+    public void AWrapperThatCannotBeReadIsAnErrorAndIsNeverStarted()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        var paths = SetupHealthy(harness, probe);
+
+        // Same path, but the service account cannot read the file to start it.
+        harness.WriteUnreadableFile("bin", "ffmpeg");
+
+        var status = Status(Create(harness, probe));
+
+        Assert.Equal(RuntimeStatusLevel.Error, status.OverallStatus);
+        Assert.Equal(RuntimeItemState.NotReadable, Bin(status, RuntimeStatusService.WrapperKey).State);
+        Assert.DoesNotContain(probe.Calls, call => call.ExecutablePath == paths.Wrapper);
+    }
+
+    [Fact]
     public void AWrapperThatIsReallyAnOrdinaryFfmpegIsNotAWrapper()
     {
         var harness = new RuntimeStatusHarness();
@@ -461,6 +483,47 @@ public sealed class RuntimeStatusServiceTests
         var server = Env(status, FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable);
         Assert.True(server.IsSet);
         Assert.Equal(FFmpegWrapperOptions.ServerFFmpegAlternateEnvironmentVariable, server.SourceVariable);
+        Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.OfficialFfmpegKey).State);
+    }
+
+    [Fact]
+    public void TheFfmpegMvcPathSourceNamesPathAsItsSource()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        SetupHealthy(harness, probe);
+
+        var pathFfmpeg = harness.WriteExecutable(Path.Combine(harness.EmptyPath, "ffmpeg"));
+        harness.Env[FFmpegWrapperOptions.RealFFmpegEnvironmentVariable] = null;
+        harness.Env[FFmpegWrapperOptions.RealFFmpegAlternateEnvironmentVariable] = null;
+
+        var status = Status(Create(harness, probe));
+
+        var real = Env(status, FFmpegWrapperOptions.RealFFmpegEnvironmentVariable);
+        Assert.False(real.IsSet);
+        Assert.Null(real.Value);
+        Assert.Equal(pathFfmpeg, real.ResolvedPath);
+        Assert.Equal("PATH", real.SourceVariable);
+        Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.FfmpegMvcKey).State);
+    }
+
+    [Fact]
+    public void TheOfficialFfmpegPathSourceNamesPathAsItsSource()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        SetupHealthy(harness, probe);
+
+        harness.Env[FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable] = "ffmpeg";
+        harness.Env[FFmpegWrapperOptions.ServerFFmpegAlternateEnvironmentVariable] = null;
+
+        var status = Status(Create(harness, probe));
+
+        var server = Env(status, FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable);
+        Assert.True(server.IsSet);
+        Assert.Equal("ffmpeg", server.Value);
+        Assert.Equal("ffmpeg", server.ResolvedPath);
+        Assert.Equal("PATH", server.SourceVariable);
         Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.OfficialFfmpegKey).State);
     }
 

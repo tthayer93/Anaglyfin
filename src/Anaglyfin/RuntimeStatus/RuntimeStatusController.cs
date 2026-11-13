@@ -46,8 +46,12 @@ public sealed class RuntimeStatusController : ControllerBase
     }
 
     /// <summary>
-    /// Gets the current runtime status.
+    /// Gets the current runtime status, optionally asking the service for a fresh probe pass.
     /// </summary>
+    /// <param name="refresh">
+    /// When <c>true</c>, ignores the cache and calls <see cref="IRuntimeStatusService.RefreshAsync"/>;
+    /// when <c>false</c> or absent, calls <see cref="IRuntimeStatusService.GetStatusAsync"/>.
+    /// </param>
     /// <param name="cancellationToken">
     /// Stops this request from waiting for the snapshot. It does not cancel the service's shared
     /// probe pass; that pass completes on its own and may still become the cache.
@@ -56,9 +60,13 @@ public sealed class RuntimeStatusController : ControllerBase
     /// <response code="200">The runtime status snapshot.</response>
     [HttpGet("RuntimeStatus")]
     [ProducesResponseType(typeof(RuntimeStatusResponse), StatusCodes.Status200OK)]
-    public async Task<ActionResult<RuntimeStatusResponse>> GetRuntimeStatus(CancellationToken cancellationToken)
+    public async Task<ActionResult<RuntimeStatusResponse>> GetRuntimeStatus(
+        [FromQuery] bool? refresh = null,
+        CancellationToken cancellationToken = default)
     {
-        var status = await _runtimeStatusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+        var status = refresh == true
+            ? await _runtimeStatusService.RefreshAsync(cancellationToken).ConfigureAwait(false)
+            : await _runtimeStatusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
 
         return Ok(status);
     }

@@ -42,6 +42,12 @@ namespace Anaglyfin.RuntimeStatus;
 /// pass still runs, and its answer still becomes the cache, so an aborted request cannot poison
 /// the snapshot or cancel a probe other administrators are waiting on.
 /// </para>
+/// <para>
+/// <b>Stuck passes are bounded.</b> A whole pass also has a watchdog a little longer than its
+/// per-binary timeout. If it cannot answer, the single-flight slot is released and a later request
+/// starts a fresh pass; the stuck pass is abandoned rather than allowed to occupy the cache slot
+/// forever.
+/// </para>
 /// </remarks>
 public sealed class RuntimeStatusService : IRuntimeStatusService
 {
@@ -78,6 +84,14 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// <summary>How long a single binary is given to answer a probe, in seconds.</summary>
     public const int DefaultProbeTimeoutSeconds = 2;
 
+    /// <summary>
+    /// How much longer than the per-binary probe timeout a whole status pass is allowed to occupy
+    /// the single-flight slot before the watchdog releases it. The grace is generous because a pass
+    /// can run a few binaries in sequence, and the final stream drain of a process probe has its own
+    /// small bounded wait.
+    /// </summary>
+    public const int DefaultWatchdogGraceSeconds = 30;
+
     // Duplicated wrapper environment names. Source of truth: Anaglyfin.FFmpegWrapper.FFmpegWrapperOptions
     // (RealFFmpegEnvironmentVariable, RealFFmpegAlternateEnvironmentVariable,
     // ServerFFmpegEnvironmentVariable, ServerFFmpegAlternateEnvironmentVariable, FFmpegExecutableName,
@@ -112,6 +126,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     private readonly string _pluginVersion;
     private readonly TimeSpan _cacheLifetime;
     private readonly TimeSpan _probeTimeout;
+    private readonly TimeSpan _passWatchdogTimeout;
     private readonly Func<DateTimeOffset> _clock;
 
     private readonly object _gate = new();
@@ -136,6 +151,10 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// <param name="cacheLifetime">How long a completed snapshot is reused; defaults to 30 seconds.</param>
     /// <param name="probeTimeout">How long one binary is given to answer; defaults to 2 seconds.</param>
     /// <param name="clock">The clock the cache reads; defaults to <see cref="DateTimeOffset.UtcNow"/>.</param>
+    /// <param name="passWatchdogTimeout">
+    /// How long a whole probe pass may occupy the single-flight slot before the watchdog releases it.
+    /// Defaults to the probe timeout plus <see cref="DefaultWatchdogGraceSeconds"/>.
+    /// </param>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="probe"/> or <paramref name="readEnvironmentVariable"/> is <c>null</c>.
     /// </exception>
@@ -146,7 +165,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         string pluginVersion,
         TimeSpan? cacheLifetime = null,
         TimeSpan? probeTimeout = null,
-        Func<DateTimeOffset>? clock = null)
+        Func<DateTimeOffset>? clock = null,
+        TimeSpan? passWatchdogTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(probe);
         ArgumentNullException.ThrowIfNull(readEnvironmentVariable);
@@ -158,6 +178,11 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         _cacheLifetime = cacheLifetime ?? TimeSpan.FromSeconds(DefaultCacheSeconds);
         _probeTimeout = probeTimeout ?? TimeSpan.FromSeconds(DefaultProbeTimeoutSeconds);
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
+
+        var passWatchdog = passWatchdogTimeout
+            ?? _probeTimeout + TimeSpan.FromSeconds(DefaultWatchdogGraceSeconds);
+
+        _passWatchdogTimeout = passWatchdog < TimeSpan.Zero ? TimeSpan.Zero : passWatchdog;
     }
 
     /// <inheritdoc />
@@ -197,8 +222,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     }
 
     /// <summary>
-    /// Starts a probe pass off the request thread and remembers it as the single in-flight pass, so
-    /// every caller until it finishes joins the same one.
+    /// Starts a probe pass off the request thread and remembers the caller-facing task as the single
+    /// in-flight pass, so every caller until it finishes joins the same one.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -213,26 +238,64 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// administrators are waiting on, and it must not be able to cache a cancelled answer. The
     /// process probe owns the finite timeout bound for each binary it starts.
     /// </para>
+    /// <para>
+    /// A watchdog bounds the whole single-flight slot. If a pass is wedged inside the probe seam, it
+    /// is abandoned, the slot is released, and the next caller can start a fresh pass. An abandoned
+    /// pass is never allowed to cache itself later.
+    /// </para>
     /// </remarks>
     private Task<RuntimeStatusResponse> StartPassLocked()
     {
-        var task = Task.Run(Build);
-        _inFlight = task;
+        var pass = Task.Run(Build);
+        var callerPass = new TaskCompletionSource<RuntimeStatusResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var abandoned = false;
 
-        task.ContinueWith(
+        _inFlight = callerPass.Task;
+
+        pass.ContinueWith(
             completed =>
             {
                 lock (_gate)
                 {
-                    if (ReferenceEquals(_inFlight, task))
+                    if (ReferenceEquals(_inFlight, callerPass.Task))
                     {
                         _inFlight = null;
+                    }
+
+                    if (abandoned)
+                    {
+                        return;
                     }
 
                     if (completed.Status == TaskStatus.RanToCompletion && completed.Result is { } snapshot)
                     {
                         _cached = snapshot;
                         _cachedAt = _clock();
+                        callerPass.TrySetResult(snapshot);
+                        return;
+                    }
+
+                    var cause = completed.Status == TaskStatus.Faulted
+                        ? completed.Exception?.GetBaseException()
+                        : null;
+
+                    callerPass.TrySetResult(PassFailureSnapshot(cause));
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        Task.Delay(_passWatchdogTimeout, CancellationToken.None).ContinueWith(
+            _ =>
+            {
+                lock (_gate)
+                {
+                    if (!abandoned && ReferenceEquals(_inFlight, callerPass.Task))
+                    {
+                        abandoned = true;
+                        _inFlight = null;
+                        callerPass.TrySetResult(WatchdogTimeoutSnapshot());
                     }
                 }
             },
@@ -240,7 +303,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
 
-        return task;
+        return callerPass.Task;
     }
 
     /// <summary>
@@ -278,6 +341,50 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         }
 
         return await waiter.Task.ConfigureAwait(false);
+    }
+
+    private RuntimeStatusResponse WatchdogTimeoutSnapshot()
+        => new(
+            RuntimeStatusLevel.Warning,
+            _pluginVersion,
+            _clock(),
+            Array.Empty<RuntimeBinaryStatus>(),
+            new[]
+            {
+                new RuntimeEnvironmentStatus(
+                    "runtime-status",
+                    true,
+                    false,
+                    null,
+                    null,
+                    null,
+                    RuntimeItemState.ProbeFailed,
+                    $"The runtime status pass did not finish within {(int)_passWatchdogTimeout.TotalMilliseconds} ms; a new request will start another pass.")
+            });
+
+    private RuntimeStatusResponse PassFailureSnapshot(Exception? exception)
+    {
+        var detail = exception is null
+            ? "The runtime status pass did not complete."
+            : $"The status pass could not be completed ({exception.GetType().Name}).";
+
+        return new(
+            RuntimeStatusLevel.Error,
+            _pluginVersion,
+            _clock(),
+            Array.Empty<RuntimeBinaryStatus>(),
+            new[]
+            {
+                new RuntimeEnvironmentStatus(
+                    "runtime-status",
+                    true,
+                    false,
+                    null,
+                    null,
+                    null,
+                    RuntimeItemState.ProbeFailed,
+                    detail)
+            });
     }
 
     /// <summary>
@@ -357,7 +464,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
                 ReadNonBlank(_readEnvironmentVariable(RealFFmpegVariable)),
                 ReadNonBlank(_readEnvironmentVariable(RealFFmpegAliasVariable))),
             ResolvedPath: ffmpegMvcBinary.ResolvedPath,
-            SourceVariable: AliasOrDefault(realSource, RealFFmpegAliasVariable),
+            SourceVariable: SourceVariableForBinary(realSource, RealFFmpegAliasVariable, ffmpegMvcBinary.ResolvedPath),
             State: ffmpegMvcBinary.State,
             Detail: ffmpegMvcBinary.Detail));
 
@@ -370,7 +477,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             IsSet: hasServerFFmpeg,
             Value: serverPath,
             ResolvedPath: officialBinary.ResolvedPath,
-            SourceVariable: AliasOrDefault(serverSource, ServerFFmpegAliasVariable),
+            SourceVariable: SourceVariableForBinary(serverSource, ServerFFmpegAliasVariable, officialBinary.ResolvedPath),
             State: officialBinary.State,
             Detail: officialBinary.Detail));
 
@@ -938,8 +1045,16 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     private static bool IsResolvedByVariable(string? source)
         => source is not null && source != PathLookupSource;
 
-    private static string? AliasOrDefault(string? source, string aliasName)
-        => string.Equals(source, aliasName, StringComparison.Ordinal) ? aliasName : null;
+    private static string? SourceVariableForBinary(string? source, string aliasName, string? resolvedPath)
+    {
+        if (string.Equals(source, PathLookupSource, StringComparison.Ordinal)
+            || (!string.IsNullOrWhiteSpace(resolvedPath) && !Path.IsPathRooted(resolvedPath)))
+        {
+            return PathEnvironmentVariable;
+        }
+
+        return string.Equals(source, aliasName, StringComparison.Ordinal) ? aliasName : null;
+    }
 
     /// <summary>
     /// Resolves the FFmpeg-mvc binary the Anaglyfin commands go to, from the deployment's variables
