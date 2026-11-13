@@ -3,7 +3,9 @@ using Anaglyfin.Detection;
 using Anaglyfin.FFmpegWrapper;
 using Anaglyfin.MediaSources;
 using Anaglyfin.Profiles;
+using Anaglyfin.RuntimeStatus;
 using Anaglyfin.VersionItems;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
@@ -82,6 +84,23 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         // running, which is the only moment a leftover slot can be told apart from a running job
         // without waiting for a playback to find out the hard way.
         serviceCollection.Add(new ServiceDescriptor(typeof(IHostedService), typeof(TranscodeSlotCleanupService), ServiceLifetime.Singleton));
+
+        // ---- the runtime status surface ---------------------------------------------------------
+        //
+        // The read-only status the administration page reads. Only the service is registered. The
+        // controller in front of it is discovered by the server as an application part exactly like the
+        // media source provider, so registering it here would be a second answer to a server-owned
+        // service. The real process probe is composed into the one service that asks binaries
+        // questions rather than registered on its own: it is an implementation detail of that service,
+        // and keeping it out of the container keeps this set the deliberate, reviewed one it is.
+        serviceCollection.Add(new ServiceDescriptor(
+            typeof(IRuntimeStatusService),
+            provider => new RuntimeStatusService(
+                new ProcessRuntimeVersionProbe(),
+                Environment.GetEnvironmentVariable,
+                provider.GetRequiredService<IApplicationPaths>().PluginConfigurationsPath,
+                typeof(Plugin).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"),
+            ServiceLifetime.Singleton));
 
         // ---- the version picker's view of the original MVC file ------------------------------
         //

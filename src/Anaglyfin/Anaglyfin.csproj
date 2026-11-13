@@ -29,6 +29,16 @@
     <PackageReference Include="Jellyfin.Model" Version="12.0.0" ExcludeAssets="runtime" />
   </ItemGroup>
 
+  <!--
+    The admin-only runtime status endpoint is an ASP.NET Core controller, so the plugin compiles
+    against the ASP.NET Core shared framework the server already hosts. A FrameworkReference never
+    copies shared-framework assemblies into the plugin's output - the server provides them at run
+    time - so this adds no runtime asset to the package and no dependency the wrapper has to carry.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <ItemGroup>
     <EmbeddedResource Include="Plugin.manifest.xml">
       <LogicalName>Anaglyfin.Plugin.manifest.xml</LogicalName>
