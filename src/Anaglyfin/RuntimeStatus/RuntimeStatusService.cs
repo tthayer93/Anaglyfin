@@ -42,6 +42,12 @@ namespace Anaglyfin.RuntimeStatus;
 /// pass still runs, and its answer still becomes the cache, so an aborted request cannot poison
 /// the snapshot or cancel a probe other administrators are waiting on.
 /// </para>
+/// <para>
+/// <b>Stuck passes are bounded and cancelled.</b> Each pass owns a service cancellation token, never a
+/// caller token. The watchdog cancels that token when the whole-pass budget is spent, releases the
+/// single-flight slot, and prevents the abandoned pass from caching itself later. The token flows to
+/// the probe so a well-behaved probe terminates instead of running forever in the background.
+/// </para>
 /// </remarks>
 public sealed class RuntimeStatusService : IRuntimeStatusService
 {
@@ -78,6 +84,15 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// <summary>How long a single binary is given to answer a probe, in seconds.</summary>
     public const int DefaultProbeTimeoutSeconds = 2;
 
+    /// <summary>How many binaries a normal status pass may probe in sequence.</summary>
+    public const int MaxProbedBinaries = 4;
+
+    /// <summary>
+    /// Extra time added to the computed per-binary process budget. This covers environment reads,
+    /// directory checks, and scheduling slack around the four bounded process probes.
+    /// </summary>
+    public const int DefaultWatchdogSetupMarginSeconds = 5;
+
     // Duplicated wrapper environment names. Source of truth: Anaglyfin.FFmpegWrapper.FFmpegWrapperOptions
     // (RealFFmpegEnvironmentVariable, RealFFmpegAlternateEnvironmentVariable,
     // ServerFFmpegEnvironmentVariable, ServerFFmpegAlternateEnvironmentVariable, FFmpegExecutableName,
@@ -112,6 +127,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     private readonly string _pluginVersion;
     private readonly TimeSpan _cacheLifetime;
     private readonly TimeSpan _probeTimeout;
+    private readonly TimeSpan _passWatchdogTimeout;
     private readonly Func<DateTimeOffset> _clock;
 
     private readonly object _gate = new();
@@ -136,8 +152,16 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// <param name="cacheLifetime">How long a completed snapshot is reused; defaults to 30 seconds.</param>
     /// <param name="probeTimeout">How long one binary is given to answer; defaults to 2 seconds.</param>
     /// <param name="clock">The clock the cache reads; defaults to <see cref="DateTimeOffset.UtcNow"/>.</param>
+    /// <param name="passWatchdogTimeout">
+    /// How long a whole probe pass may occupy the single-flight slot before the watchdog cancels it and
+    /// releases the slot. Defaults to <see cref="MaxProbedBinaries"/> process-probe budgets plus
+    /// <see cref="DefaultWatchdogSetupMarginSeconds"/>. Must be positive.
+    /// </param>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="probe"/> or <paramref name="readEnvironmentVariable"/> is <c>null</c>.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="probeTimeout"/> or <paramref name="passWatchdogTimeout"/> is not positive.
     /// </exception>
     public RuntimeStatusService(
         IRuntimeVersionProbe probe,
@@ -146,10 +170,21 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         string pluginVersion,
         TimeSpan? cacheLifetime = null,
         TimeSpan? probeTimeout = null,
-        Func<DateTimeOffset>? clock = null)
+        Func<DateTimeOffset>? clock = null,
+        TimeSpan? passWatchdogTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(probe);
         ArgumentNullException.ThrowIfNull(readEnvironmentVariable);
+
+        if (probeTimeout is { } positiveProbeTimeout && positiveProbeTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(probeTimeout), probeTimeout, "The probe timeout must be positive.");
+        }
+
+        if (passWatchdogTimeout is { } positiveWatchdog && positiveWatchdog <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(passWatchdogTimeout), passWatchdogTimeout, "The pass watchdog timeout must be positive.");
+        }
 
         _probe = probe;
         _readEnvironmentVariable = readEnvironmentVariable;
@@ -158,6 +193,16 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         _cacheLifetime = cacheLifetime ?? TimeSpan.FromSeconds(DefaultCacheSeconds);
         _probeTimeout = probeTimeout ?? TimeSpan.FromSeconds(DefaultProbeTimeoutSeconds);
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        _passWatchdogTimeout = passWatchdogTimeout ?? DefaultPassWatchdogTimeout(_probeTimeout);
+    }
+
+    private static TimeSpan DefaultPassWatchdogTimeout(TimeSpan probeTimeout)
+    {
+        var perBinaryBudget = probeTimeout
+            + TimeSpan.FromMilliseconds(2L * ProcessRuntimeVersionProbe.DefaultFinalWaitGraceMilliseconds);
+
+        return TimeSpan.FromTicks(MaxProbedBinaries * perBinaryBudget.Ticks)
+            + TimeSpan.FromSeconds(DefaultWatchdogSetupMarginSeconds);
     }
 
     /// <inheritdoc />
@@ -197,8 +242,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     }
 
     /// <summary>
-    /// Starts a probe pass off the request thread and remembers it as the single in-flight pass, so
-    /// every caller until it finishes joins the same one.
+    /// Starts a probe pass off the request thread and remembers the caller-facing task as the single
+    /// in-flight pass, so every caller until it finishes joins the same one.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -210,37 +255,148 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// <para>
     /// The request cancellation token is deliberately absent from this pass. A disconnected admin
     /// request may stop waiting for the snapshot, but it must not cancel the probe pass other
-    /// administrators are waiting on, and it must not be able to cache a cancelled answer. The
-    /// process probe owns the finite timeout bound for each binary it starts.
+    /// administrators are waiting on, and it must not be able to cache a cancelled answer.
+    /// </para>
+    /// <para>
+    /// The watchdog owns the service-side cancellation for the pass. It cancels the pass token, releases
+    /// the slot, and marks the pass abandoned so it cannot cache itself after cancellation. The watchdog
+    /// timer is cancelled and disposed when the pass completes, so a normal pass does not leave a timer
+    /// parked.
     /// </para>
     /// </remarks>
     private Task<RuntimeStatusResponse> StartPassLocked()
     {
-        var task = Task.Run(Build);
-        _inFlight = task;
+        var passCancellation = new CancellationTokenSource();
+        var watchdogCancellation = new CancellationTokenSource();
+        var callerPass = new TaskCompletionSource<RuntimeStatusResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        task.ContinueWith(
+        var abandoned = false;
+        var inFlightPublished = false;
+        var watchdogFiredBeforePublish = false;
+
+        var pass = Task.Run(
+            () => Build(passCancellation.Token),
+            passCancellation.Token);
+
+        pass.ContinueWith(
             completed =>
             {
                 lock (_gate)
                 {
-                    if (ReferenceEquals(_inFlight, task))
+                    if (ReferenceEquals(_inFlight, callerPass.Task))
                     {
                         _inFlight = null;
+                    }
+
+                    if (abandoned)
+                    {
+                        return;
                     }
 
                     if (completed.Status == TaskStatus.RanToCompletion && completed.Result is { } snapshot)
                     {
                         _cached = snapshot;
                         _cachedAt = _clock();
+                        callerPass.TrySetResult(snapshot);
                     }
+                    else if (completed.IsCanceled)
+                    {
+                        callerPass.TrySetResult(WatchdogTimeoutSnapshot());
+                    }
+                    else
+                    {
+                        var cause = completed.Exception?.GetBaseException();
+                        callerPass.TrySetResult(PassFailureSnapshot(cause));
+                    }
+                }
+
+                try
+                {
+                    watchdogCancellation.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+
+                try
+                {
+                    watchdogCancellation.Dispose();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+
+                try
+                {
+                    passCancellation.Dispose();
+                }
+                catch (ObjectDisposedException)
+                {
                 }
             },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
 
-        return task;
+        Task.Delay(_passWatchdogTimeout, watchdogCancellation.Token).ContinueWith(
+            timer =>
+            {
+                if (timer.IsCanceled || timer.IsFaulted)
+                {
+                    return;
+                }
+
+                lock (_gate)
+                {
+                    if (abandoned)
+                    {
+                        return;
+                    }
+
+                    if (ReferenceEquals(_inFlight, callerPass.Task))
+                    {
+                        abandoned = true;
+                        _inFlight = null;
+                        passCancellation.Cancel();
+                        callerPass.TrySetResult(WatchdogTimeoutSnapshot());
+                    }
+                    else if (!inFlightPublished && !callerPass.Task.IsCompleted)
+                    {
+                        watchdogFiredBeforePublish = true;
+                    }
+                }
+
+                try
+                {
+                    watchdogCancellation.Dispose();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        lock (_gate)
+        {
+            inFlightPublished = true;
+            _inFlight = callerPass.Task;
+
+            if (watchdogFiredBeforePublish && !abandoned && !callerPass.Task.IsCompleted)
+            {
+                abandoned = true;
+                _inFlight = null;
+                passCancellation.Cancel();
+                callerPass.TrySetResult(WatchdogTimeoutSnapshot());
+            }
+            else if (callerPass.Task.IsCompleted && ReferenceEquals(_inFlight, callerPass.Task))
+            {
+                _inFlight = null;
+            }
+        }
+
+        return callerPass.Task;
     }
 
     /// <summary>
@@ -280,15 +436,63 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         return await waiter.Task.ConfigureAwait(false);
     }
 
+    private RuntimeStatusResponse WatchdogTimeoutSnapshot()
+        => new(
+            RuntimeStatusLevel.Warning,
+            _pluginVersion,
+            _clock(),
+            Array.Empty<RuntimeBinaryStatus>(),
+            new[]
+            {
+                new RuntimeEnvironmentStatus(
+                    "runtime-status",
+                    true,
+                    false,
+                    null,
+                    null,
+                    null,
+                    RuntimeItemState.ProbeFailed,
+                    $"The runtime status pass did not finish within {(int)_passWatchdogTimeout.TotalMilliseconds} ms; a new request will start another pass.")
+            });
+
+    private RuntimeStatusResponse PassFailureSnapshot(Exception? exception)
+    {
+        var detail = exception is null
+            ? "The runtime status pass did not complete."
+            : $"The status pass could not be completed ({exception.GetType().Name}).";
+
+        return new(
+            RuntimeStatusLevel.Error,
+            _pluginVersion,
+            _clock(),
+            Array.Empty<RuntimeBinaryStatus>(),
+            new[]
+            {
+                new RuntimeEnvironmentStatus(
+                    "runtime-status",
+                    true,
+                    false,
+                    null,
+                    null,
+                    null,
+                    RuntimeItemState.ProbeFailed,
+                    detail)
+            });
+    }
+
     /// <summary>
     /// Runs one full probe pass and assembles the snapshot. Never throws: a check that cannot be made
     /// is a warning or an error in the snapshot, never an exception the request would carry.
     /// </summary>
-    private RuntimeStatusResponse Build()
+    private RuntimeStatusResponse Build(CancellationToken cancellationToken)
     {
         try
         {
-            return BuildCore();
+            return BuildCore(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return WatchdogTimeoutSnapshot();
         }
         catch (Exception exception) when (IsProbePathFailure(exception))
         {
@@ -314,8 +518,10 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         }
     }
 
-    private RuntimeStatusResponse BuildCore()
+    private RuntimeStatusResponse BuildCore(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var (realPath, realSource) = ResolveRealFFmpeg(_readEnvironmentVariable);
         var (serverPath, serverSource) = ResolveServerFFmpeg(_readEnvironmentVariable);
         var hasServerFFmpeg = !string.IsNullOrWhiteSpace(serverPath);
@@ -333,7 +539,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         }
 
         var wrapperConfigured = ReadNonBlank(_readEnvironmentVariable(JellyfinFFmpegEnvironmentVariable));
-        var (wrapperBinary, wrapperLevel) = BuildWrapper(wrapperConfigured);
+        var (wrapperBinary, wrapperLevel) = BuildWrapper(wrapperConfigured, cancellationToken);
         binaries.Add(wrapperBinary);
         Raise(wrapperLevel);
         environment.Add(new RuntimeEnvironmentStatus(
@@ -346,7 +552,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             State: wrapperBinary.State,
             Detail: wrapperBinary.Detail));
 
-        var (ffmpegMvcBinary, ffmpegMvcLevel) = BuildFfmpegMvc(realPath);
+        var (ffmpegMvcBinary, ffmpegMvcLevel) = BuildFfmpegMvc(realPath, cancellationToken);
         binaries.Add(ffmpegMvcBinary);
         Raise(ffmpegMvcLevel);
         environment.Add(new RuntimeEnvironmentStatus(
@@ -357,11 +563,11 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
                 ReadNonBlank(_readEnvironmentVariable(RealFFmpegVariable)),
                 ReadNonBlank(_readEnvironmentVariable(RealFFmpegAliasVariable))),
             ResolvedPath: ffmpegMvcBinary.ResolvedPath,
-            SourceVariable: AliasOrDefault(realSource, RealFFmpegAliasVariable),
+            SourceVariable: SourceVariableForBinary(realSource, RealFFmpegAliasVariable),
             State: ffmpegMvcBinary.State,
             Detail: ffmpegMvcBinary.Detail));
 
-        var (officialBinary, officialLevel) = BuildOfficial(serverPath, hasServerFFmpeg, ffmpegMvcBinary);
+        var (officialBinary, officialLevel) = BuildOfficial(serverPath, hasServerFFmpeg, ffmpegMvcBinary, cancellationToken);
         binaries.Add(officialBinary);
         Raise(officialLevel);
         environment.Add(new RuntimeEnvironmentStatus(
@@ -370,11 +576,11 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             IsSet: hasServerFFmpeg,
             Value: serverPath,
             ResolvedPath: officialBinary.ResolvedPath,
-            SourceVariable: AliasOrDefault(serverSource, ServerFFmpegAliasVariable),
+            SourceVariable: SourceVariableForBinary(serverSource, ServerFFmpegAliasVariable),
             State: officialBinary.State,
             Detail: officialBinary.Detail));
 
-        var (sidecarBinary, sidecarLevel) = BuildSidecar(wrapperConfigured, ffmpegMvcBinary);
+        var (sidecarBinary, sidecarLevel) = BuildSidecar(wrapperConfigured, ffmpegMvcBinary, cancellationToken);
         binaries.Add(sidecarBinary);
         Raise(sidecarLevel);
 
@@ -398,7 +604,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// The wrapper binary: asked only <c>--anaglyfin-version</c>, and only accepted as the wrapper if
     /// that one line comes back exactly.
     /// </summary>
-    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildWrapper(string? configuredPath)
+    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildWrapper(string? configuredPath, CancellationToken cancellationToken)
     {
         const string Label = "Anaglyfin FFmpeg wrapper";
 
@@ -416,7 +622,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
                 LevelForPresence(blocked, true));
         }
 
-        var result = _probe.Probe(configuredPath, WrapperProbeArguments, _probeTimeout, CancellationToken.None);
+        var result = _probe.Probe(configuredPath, WrapperProbeArguments, _probeTimeout, cancellationToken);
 
         if (result.TimedOut)
         {
@@ -461,7 +667,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// The FFmpeg-mvc binary the Anaglyfin commands go to, resolved through the wrapper's own
     /// canonical order (real variable, then its alias, then <c>PATH</c>).
     /// </summary>
-    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildFfmpegMvc(string realPath)
+    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildFfmpegMvc(string realPath, CancellationToken cancellationToken)
     {
         const string Label = "FFmpeg-mvc (Anaglyfin)";
 
@@ -470,7 +676,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             Label,
             realPath,
             realPath,
-            true);
+            true,
+            cancellationToken);
     }
 
     /// <summary>
@@ -480,7 +687,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildOfficial(
         string? serverPath,
         bool hasServer,
-        RuntimeBinaryStatus ffmpegMvc)
+        RuntimeBinaryStatus ffmpegMvc,
+        CancellationToken cancellationToken)
     {
         const string Label = "Official/server FFmpeg";
 
@@ -509,7 +717,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             Label,
             serverPath,
             serverPath,
-            false);
+            false,
+            cancellationToken);
     }
 
     /// <summary>
@@ -523,7 +732,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// </remarks>
     private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildSidecar(
         string? wrapperConfiguredPath,
-        RuntimeBinaryStatus ffmpegMvc)
+        RuntimeBinaryStatus ffmpegMvc,
+        CancellationToken cancellationToken)
     {
         const string Label = "Derived ffprobe sidecar";
 
@@ -549,7 +759,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             Label,
             wrapperConfiguredPath,
             derived,
-            true);
+            true,
+            cancellationToken);
     }
 
     /// <summary>
@@ -562,7 +773,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         string label,
         string? configuredPath,
         string? resolvedPath,
-        bool required)
+        bool required,
+        CancellationToken cancellationToken)
     {
         if (resolvedPath is null)
         {
@@ -578,7 +790,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
                 LevelForPresence(blocked, required));
         }
 
-        var result = _probe.Probe(resolvedPath, VersionProbeArguments, _probeTimeout, CancellationToken.None);
+        var result = _probe.Probe(resolvedPath, VersionProbeArguments, _probeTimeout, cancellationToken);
 
         if (result.TimedOut)
         {
@@ -597,8 +809,10 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
 
         if (result.ExitCode == 0)
         {
+            var detail = DetailForBarePath(null, resolvedPath);
+
             return (new RuntimeBinaryStatus(key, label, configuredPath, resolvedPath, ParseFfmpegVersion(result.StandardOutputLine), required,
-                RuntimeItemState.Ok, null),
+                RuntimeItemState.Ok, detail),
                 RuntimeStatusLevel.Ok);
         }
 
@@ -938,8 +1152,23 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     private static bool IsResolvedByVariable(string? source)
         => source is not null && source != PathLookupSource;
 
-    private static string? AliasOrDefault(string? source, string aliasName)
-        => string.Equals(source, aliasName, StringComparison.Ordinal) ? aliasName : null;
+    private static string? SourceVariableForBinary(string? source, string aliasName)
+    {
+        if (string.Equals(source, PathLookupSource, StringComparison.Ordinal))
+        {
+            return PathEnvironmentVariable;
+        }
+
+        return string.Equals(source, aliasName, StringComparison.Ordinal) ? aliasName : null;
+    }
+
+    private static string? DetailForBarePath(string? detail, string? resolvedPath)
+        => string.IsNullOrEmpty(detail) && IsBarePath(resolvedPath)
+            ? "The configured value is a bare name, so it was resolved through PATH."
+            : detail;
+
+    private static bool IsBarePath(string? resolvedPath)
+        => !string.IsNullOrWhiteSpace(resolvedPath) && !Path.IsPathRooted(resolvedPath);
 
     /// <summary>
     /// Resolves the FFmpeg-mvc binary the Anaglyfin commands go to, from the deployment's variables

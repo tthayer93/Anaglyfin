@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Anaglyfin.RuntimeStatus;
 
@@ -26,10 +27,15 @@ namespace Anaglyfin.RuntimeStatus;
 /// blocks and would otherwise hang the request that is waiting on it.
 /// </para>
 /// <para>
-/// <b>A hard timeout that kills.</b> A probe that has not answered within the time it was given is
-/// killed — the process tree, not just its root — and reported as timed out. An administrator's page
-/// refresh must never be held open by a hung binary; the caller caches the answer so a refresh is not
-/// a fresh fork either.
+/// <b>A hard timeout that kills, and a bounded stdout answer.</b> A probe that has not answered within
+/// the time it was given is killed — the process tree, not just its root — and reported as timed out.
+/// After the direct process exits, the probe waits only for stdout evidence — a first line or stdout
+/// EOF — with a bounded grace. If stdout has answered and only stderr remains open because a
+/// descendant inherited that handle, the valid stdout answer is kept rather than discarded. A
+/// best-effort kill is then attempted for any remaining process tree; when the direct process has
+/// already exited, that kill may fail and is ignored because the answer is already bounded. An
+/// administrator's page refresh must never be held open by a hung binary; the caller caches the answer
+/// so a refresh is not a fresh fork either.
 /// </para>
 /// <para>
 /// <b>It runs as the service account.</b> This is the server's own process asking, so the probe
@@ -45,6 +51,15 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
     /// the probe asked for.
     /// </summary>
     public const int MaxCapturedLineCharacters = 4096;
+
+    /// <summary>
+    /// How long the probe is allowed to wait after the process has already exited for stdout evidence:
+    /// either a first line, or end-of-stream. The wait exists so a normal FFmpeg banner is not lost when
+    /// its last line races the process exit; it is bounded so a surviving grandchild holding a handle
+    /// open cannot pin the status pass. Stderr is drained to keep the child from blocking, but delayed
+    /// stderr EOF alone must not turn a valid stdout answer into a timeout.
+    /// </summary>
+    public const int DefaultFinalWaitGraceMilliseconds = 2000;
 
     /// <inheritdoc />
     /// <remarks>
@@ -62,6 +77,11 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentNullException.ThrowIfNull(arguments);
 
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return RuntimeVersionProbeResult.TimedOutResult();
+        }
+
         using var process = new Process
         {
             StartInfo = BuildStartInfo(executablePath, arguments)
@@ -69,15 +89,29 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
 
         var firstLine = (string?)null;
 
+        // Stdout, not stderr, carries the version answer. After the direct process exits, the probe
+        // needs stdout evidence within the bounded grace: either the first line arrived, or stdout
+        // reached EOF. Stderr is still drained to keep the child from blocking, but delayed stderr
+        // EOF must not discard a stdout answer.
+        var stdoutEof = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stdoutLineCaptured = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
         process.OutputDataReceived += (_, eventArgs) =>
         {
+            if (eventArgs.Data is null)
+            {
+                stdoutEof.TrySetResult(true);
+                return;
+            }
+
             // The first line only. Once it is captured, later lines are read and dropped so the
             // pipe keeps draining without growing the result.
-            if (firstLine is null && eventArgs.Data is not null)
+            if (firstLine is null)
             {
                 firstLine = eventArgs.Data.Length > MaxCapturedLineCharacters
                     ? eventArgs.Data.Substring(0, MaxCapturedLineCharacters)
                     : eventArgs.Data;
+                stdoutLineCaptured.TrySetResult(true);
             }
         };
 
@@ -99,7 +133,13 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        using var cancellation = cancellationToken.Register(() => TryKill(process));
+        var cancelled = false;
+        using var cancellation = cancellationToken.Register(
+            () =>
+            {
+                cancelled = true;
+                TryKill(process);
+            });
 
         var waited = (int)Math.Clamp(timeout.TotalMilliseconds, 0, int.MaxValue);
 
@@ -120,11 +160,30 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
             return RuntimeVersionProbeResult.TimedOutResult();
         }
 
-        // Blocks until the asynchronous readers have hit end-of-stream, so the first line they
-        // captured is visible here and the exit code is the final one.
-        process.WaitForExit();
+        if (cancellationToken.IsCancellationRequested || cancelled)
+        {
+            TryKill(process);
+            return RuntimeVersionProbeResult.TimedOutResult();
+        }
 
-        return RuntimeVersionProbeResult.Ran(process.ExitCode, firstLine);
+        var finalWait = (int)Math.Clamp(DefaultFinalWaitGraceMilliseconds, 1, int.MaxValue);
+        var stdoutEvidence = Task.WhenAny(stdoutLineCaptured.Task, stdoutEof.Task);
+        var sawStdoutEvidence = WaitCompleted(stdoutEvidence, finalWait);
+
+        if (cancellationToken.IsCancellationRequested || cancelled)
+        {
+            TryKill(process);
+            return RuntimeVersionProbeResult.TimedOutResult();
+        }
+
+        // Best effort. If the direct process already exited, Kill may fail even with the whole-tree
+        // option; a surviving grandchild that still holds a stderr handle is allowed to run out its
+        // own life because the caller's answer is already bounded.
+        TryKill(process);
+
+        return sawStdoutEvidence
+            ? RuntimeVersionProbeResult.Ran(process.ExitCode, firstLine)
+            : RuntimeVersionProbeResult.TimedOutResult();
     }
 
     /// <summary>
@@ -158,7 +217,9 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
     }
 
     /// <summary>
-    /// Kills the process tree, ignoring the case where it already exited between the wait and here.
+    /// Best-effort kill of the process tree. When the direct process has already exited, the whole-tree
+    /// kill can still fail because there is no live root to enumerate; the probe's answer is already
+    /// bounded at that point, so this is allowed to do nothing.
     /// </summary>
     private static void TryKill(Process process)
     {
@@ -175,6 +236,29 @@ public sealed class ProcessRuntimeVersionProbe : IRuntimeVersionProbe
             // Already gone, or not ours to kill.
         }
     }
+
+    private static bool WaitCompleted(Task task, int milliseconds)
+    {
+        try
+        {
+            return task.Wait(milliseconds, CancellationToken.None);
+        }
+        catch (Exception exception) when (IsDrainFailure(exception))
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Whether waiting on an EOF/first-line signal can be answered by "the signal did not arrive"
+    /// instead of letting a status probe throw at the caller.
+    /// </summary>
+    private static bool IsDrainFailure(Exception exception)
+        => exception is AggregateException
+            or InvalidOperationException
+            or NotSupportedException
+            or IOException
+            or ObjectDisposedException;
 
     /// <summary>
     /// Whether an exception from the process layer is one that means "it never ran", as opposed to

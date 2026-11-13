@@ -46,8 +46,15 @@ public sealed class RuntimeStatusController : ControllerBase
     }
 
     /// <summary>
-    /// Gets the current runtime status.
+    /// Gets the current runtime status, optionally asking the service for a fresh probe pass.
     /// </summary>
+    /// <param name="refresh">
+    /// Raw query text. Only the case-insensitive value <c>true</c> asks for
+    /// <see cref="IRuntimeStatusService.RefreshAsync"/>; any other value, including malformed values
+    /// such as <c>abc</c> or <c>1</c>, is treated as no refresh and calls
+    /// <see cref="IRuntimeStatusService.GetStatusAsync"/>. The parameter is kept as a string so an
+    /// <c>[ApiController]</c> action does not reject an invalid boolean query with 400.
+    /// </param>
     /// <param name="cancellationToken">
     /// Stops this request from waiting for the snapshot. It does not cancel the service's shared
     /// probe pass; that pass completes on its own and may still become the cache.
@@ -56,9 +63,15 @@ public sealed class RuntimeStatusController : ControllerBase
     /// <response code="200">The runtime status snapshot.</response>
     [HttpGet("RuntimeStatus")]
     [ProducesResponseType(typeof(RuntimeStatusResponse), StatusCodes.Status200OK)]
-    public async Task<ActionResult<RuntimeStatusResponse>> GetRuntimeStatus(CancellationToken cancellationToken)
+    public async Task<ActionResult<RuntimeStatusResponse>> GetRuntimeStatus(
+        [FromQuery(Name = "refresh")] string? refresh = null,
+        CancellationToken cancellationToken = default)
     {
-        var status = await _runtimeStatusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+        var shouldRefresh = string.Equals(refresh, "true", StringComparison.OrdinalIgnoreCase);
+
+        var status = shouldRefresh
+            ? await _runtimeStatusService.RefreshAsync(cancellationToken).ConfigureAwait(false)
+            : await _runtimeStatusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
 
         return Ok(status);
     }
