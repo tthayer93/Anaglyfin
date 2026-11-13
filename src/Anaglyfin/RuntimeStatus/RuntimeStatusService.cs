@@ -76,6 +76,19 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// <summary>How long a single binary is given to answer a probe, in seconds.</summary>
     public const int DefaultProbeTimeoutSeconds = 2;
 
+    // The variable names this status reads. They mirror the wrapper's own canonical names, but are
+    // spelled here because the plugin assembly must not depend on the wrapper executable assembly -
+    // the wrapper is built from the plugin, not the other way round. The strings are the contract.
+    private const string RealFFmpegVariable = "ANAGLYFIN_REAL_FFMPEG";
+    private const string RealFFmpegAliasVariable = "FFMPEG_MVC_PATH";
+    private const string ServerFFmpegVariable = "ANAGLYFIN_SERVER_FFMPEG";
+    private const string ServerFFmpegAliasVariable = "ANAGLYFIN_OFFICIAL_FFMPEG";
+    private const string FFmpegExecutableName = "ffmpeg";
+    private const string PathEnvironmentVariable = "PATH";
+
+    /// <summary>Label used when a binary came from a <c>PATH</c> lookup rather than a variable.</summary>
+    public const string PathLookupSource = "PATH lookup";
+
     /// <summary>The filename every official sidecar carries, whatever the wrapper is called.</summary>
     private const string SidecarFileName = "ffprobe";
 
@@ -253,7 +266,9 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
 
     private RuntimeStatusResponse BuildCore(CancellationToken cancellationToken)
     {
-        var options = FFmpegWrapperOptions.FromEnvironment(_readEnvironmentVariable);
+        var (realPath, realSource) = ResolveRealFFmpeg(_readEnvironmentVariable);
+        var (serverPath, serverSource) = ResolveServerFFmpeg(_readEnvironmentVariable);
+        var hasServerFFmpeg = !string.IsNullOrWhiteSpace(serverPath);
 
         var binaries = new List<RuntimeBinaryStatus>();
         var environment = new List<RuntimeEnvironmentStatus>();
@@ -281,35 +296,31 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             State: wrapperBinary.State,
             Detail: wrapperBinary.Detail));
 
-        var (ffmpegMvcBinary, ffmpegMvcLevel) = BuildFfmpegMvc(options, cancellationToken);
+        var (ffmpegMvcBinary, ffmpegMvcLevel) = BuildFfmpegMvc(realPath, cancellationToken);
         binaries.Add(ffmpegMvcBinary);
         Raise(ffmpegMvcLevel);
         environment.Add(new RuntimeEnvironmentStatus(
-            FFmpegWrapperOptions.RealFFmpegEnvironmentVariable,
+            RealFFmpegVariable,
             Required: true,
-            IsSet: IsResolvedByVariable(options.RealFFmpegPathSource),
+            IsSet: IsResolvedByVariable(realSource),
             Value: FirstNonBlank(
-                ReadNonBlank(_readEnvironmentVariable(FFmpegWrapperOptions.RealFFmpegEnvironmentVariable)),
-                ReadNonBlank(_readEnvironmentVariable(FFmpegWrapperOptions.RealFFmpegAlternateEnvironmentVariable))),
+                ReadNonBlank(_readEnvironmentVariable(RealFFmpegVariable)),
+                ReadNonBlank(_readEnvironmentVariable(RealFFmpegAliasVariable))),
             ResolvedPath: ffmpegMvcBinary.ResolvedPath,
-            SourceVariable: AliasOrDefault(
-                options.RealFFmpegPathSource,
-                FFmpegWrapperOptions.RealFFmpegAlternateEnvironmentVariable),
+            SourceVariable: AliasOrDefault(realSource, RealFFmpegAliasVariable),
             State: ffmpegMvcBinary.State,
             Detail: ffmpegMvcBinary.Detail));
 
-        var (officialBinary, officialLevel) = BuildOfficial(options, ffmpegMvcBinary, cancellationToken);
+        var (officialBinary, officialLevel) = BuildOfficial(serverPath, hasServerFFmpeg, ffmpegMvcBinary, cancellationToken);
         binaries.Add(officialBinary);
         Raise(officialLevel);
         environment.Add(new RuntimeEnvironmentStatus(
-            FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable,
+            ServerFFmpegVariable,
             Required: false,
-            IsSet: options.HasServerFFmpegPath,
-            Value: options.ServerFFmpegPath,
+            IsSet: hasServerFFmpeg,
+            Value: serverPath,
             ResolvedPath: officialBinary.ResolvedPath,
-            SourceVariable: AliasOrDefault(
-                options.ServerFFmpegPathSource,
-                FFmpegWrapperOptions.ServerFFmpegAlternateEnvironmentVariable),
+            SourceVariable: AliasOrDefault(serverSource, ServerFFmpegAliasVariable),
             State: officialBinary.State,
             Detail: officialBinary.Detail));
 
@@ -400,15 +411,15 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// The FFmpeg-mvc binary the Anaglyfin commands go to, resolved through the wrapper's own
     /// canonical order (real variable, then its alias, then <c>PATH</c>).
     /// </summary>
-    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildFfmpegMvc(FFmpegWrapperOptions options, CancellationToken cancellationToken)
+    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildFfmpegMvc(string realPath, CancellationToken cancellationToken)
     {
         const string Label = "FFmpeg-mvc (Anaglyfin)";
 
         return BuildVersionedBinary(
             FfmpegMvcKey,
             Label,
-            options.RealFFmpegPath,
-            options.RealFFmpegPath,
+            realPath,
+            realPath,
             Required: true,
             cancellationToken);
     }
@@ -418,13 +429,14 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// absence is a plain single-binary deployment rather than a fault.
     /// </summary>
     private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildOfficial(
-        FFmpegWrapperOptions options,
+        string? serverPath,
+        bool hasServer,
         RuntimeBinaryStatus ffmpegMvc,
         CancellationToken cancellationToken)
     {
         const string Label = "Official/server FFmpeg";
 
-        if (!options.HasServerFFmpegPath)
+        if (!hasServer)
         {
             return (new RuntimeBinaryStatus(OfficialFfmpegKey, Label, null, null, null, false,
                 RuntimeItemState.Missing,
@@ -435,11 +447,11 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         // The capability inversion: if the server's own FFmpeg is the very same file as the
         // FFmpeg-mvc build, the server reads its capability probes off a build that cannot serve the
         // commands it then composes for them. It runs, but it is the deployment telling itself a lie.
-        if (AreSameFile(options.ServerFFmpegPath, ffmpegMvc.ResolvedPath))
+        if (AreSameFile(serverPath, ffmpegMvc.ResolvedPath))
         {
-            return (new RuntimeBinaryStatus(OfficialFfmpegKey, Label, options.ServerFFmpegPath, options.ServerFFmpegPath, null, false,
+            return (new RuntimeBinaryStatus(OfficialFfmpegKey, Label, serverPath, serverPath, null, false,
                 RuntimeItemState.Warning,
-                $"The official FFmpeg is the same file as the FFmpeg-mvc build; {FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable} "
+                $"The official FFmpeg is the same file as the FFmpeg-mvc build; {ServerFFmpegVariable} "
                 + "should name a different FFmpeg so the server probes the build it is really talking to."),
                 RuntimeStatusLevel.Warning);
         }
@@ -447,8 +459,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         return BuildVersionedBinary(
             OfficialFfmpegKey,
             Label,
-            options.ServerFFmpegPath,
-            options.ServerFFmpegPath,
+            serverPath,
+            serverPath,
             Required: false,
             cancellationToken);
     }
@@ -880,10 +892,101 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         => first ?? second;
 
     private static bool IsResolvedByVariable(string? source)
-        => source is not null && source != FFmpegWrapperOptions.PathLookupSource;
+        => source is not null && source != PathLookupSource;
 
     private static string? AliasOrDefault(string? source, string aliasName)
         => string.Equals(source, aliasName, StringComparison.Ordinal) ? aliasName : null;
+
+    /// <summary>
+    /// Resolves the FFmpeg-mvc binary the Anaglyfin commands go to, from the deployment's variables
+    /// in the wrapper's own canonical order: the real variable, then its alias, then a <c>PATH</c>
+    /// lookup of the bare FFmpeg name.
+    /// </summary>
+    /// <remarks>
+    /// This mirrors <c>FFmpegWrapperOptions.ResolveRealFFmpeg</c> because the status must report the
+    /// same binary the wrapper would actually run; the plugin cannot reference the wrapper assembly
+    /// (the wrapper is built from the plugin), so the small resolution is restated here against the
+    /// same variable names.
+    /// </remarks>
+    private static (string Path, string Source) ResolveRealFFmpeg(Func<string, string?> readVariable)
+    {
+        var configured = ReadNonBlank(readVariable(RealFFmpegVariable));
+        if (configured is not null)
+        {
+            return (configured, RealFFmpegVariable);
+        }
+
+        var alias = ReadNonBlank(readVariable(RealFFmpegAliasVariable));
+        if (alias is not null)
+        {
+            return (alias, RealFFmpegAliasVariable);
+        }
+
+        return (FindOnPath(readVariable) ?? FFmpegExecutableName, PathLookupSource);
+    }
+
+    /// <summary>
+    /// Resolves the second, official FFmpeg binary from its variable then its alias, and nothing
+    /// after: an environment that names no second binary is answered with nothing, never a lookup.
+    /// </summary>
+    private static (string? Path, string? Source) ResolveServerFFmpeg(Func<string, string?> readVariable)
+    {
+        var configured = ReadNonBlank(readVariable(ServerFFmpegVariable));
+        if (configured is not null)
+        {
+            return (configured, ServerFFmpegVariable);
+        }
+
+        var alias = ReadNonBlank(readVariable(ServerFFmpegAliasVariable));
+        if (alias is not null)
+        {
+            return (alias, ServerFFmpegAliasVariable);
+        }
+
+        return (null, null);
+    }
+
+    /// <summary>
+    /// Looks the FFmpeg executable up in the <c>PATH</c> of the same environment view, returning the
+    /// first existing candidate file. Only ever used for the FFmpeg name, never for the sidecar.
+    /// </summary>
+    private static string? FindOnPath(Func<string, string?> readVariable)
+    {
+        var searchPath = ReadNonBlank(readVariable(PathEnvironmentVariable));
+        if (searchPath is null)
+        {
+            return null;
+        }
+
+        foreach (var entry in searchPath.Split(Path.PathSeparator))
+        {
+            var directory = entry.Trim();
+            if (directory.Length == 0)
+            {
+                continue;
+            }
+
+            foreach (var candidate in ExecutableCandidates(directory))
+            {
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string[] ExecutableCandidates(string directory)
+    {
+        var plain = Path.Combine(directory, FFmpegExecutableName);
+
+        // The extension is what Windows's search adds; on Unix a ".exe" sibling means nothing.
+        return OperatingSystem.IsWindows()
+            ? new[] { plain, plain + ".exe" }
+            : new[] { plain };
+    }
 
     private static bool IsProbePathFailure(Exception exception)
         => exception is IOException
