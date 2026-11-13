@@ -354,7 +354,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
 
         if (configuredPath is null)
         {
-            return (Missing(WrapperKey, Label, null, null, Required: true,
+            return (Missing(WrapperKey, Label, null, null, true,
                 $"{JellyfinFFmpegEnvironmentVariable} is not set, so the wrapper binary is unknown."),
                 RuntimeStatusLevel.Error);
         }
@@ -362,8 +362,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         var decision = DecideProbe(configuredPath, out var blocked, out var bare);
         if (decision == ProbeDecision.Skip)
         {
-            return (FromPresence(WrapperKey, Label, configuredPath, configuredPath, Required: true, blocked),
-                LevelForPresence(blocked, Required: true));
+            return (FromPresence(WrapperKey, Label, configuredPath, configuredPath, true, blocked),
+                LevelForPresence(blocked, true));
         }
 
         var result = _probe.Probe(configuredPath, WrapperProbeArguments, _probeTimeout, cancellationToken);
@@ -420,7 +420,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             Label,
             realPath,
             realPath,
-            Required: true,
+            true,
             cancellationToken);
     }
 
@@ -461,7 +461,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             Label,
             serverPath,
             serverPath,
-            Required: false,
+            false,
             cancellationToken);
     }
 
@@ -503,7 +503,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             Label,
             wrapperConfiguredPath,
             derived,
-            Required: true,
+            true,
             cancellationToken);
     }
 
