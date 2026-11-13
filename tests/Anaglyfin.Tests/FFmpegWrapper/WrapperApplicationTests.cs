@@ -1121,6 +1121,11 @@ public sealed class WrapperApplicationTests : IDisposable
         // PluginManifestTests pins to the release tag).
         var line = Assert.Single(WrittenLines(_standardOutput));
         Assert.StartsWith("anaglyfin-wrapper ", line, StringComparison.Ordinal);
+
+        // The release line as a literal, because this is the string an admin page parses and a
+        // test that only compared the wrapper to itself could not notice both halves drifting.
+        Assert.Equal("anaglyfin-wrapper 0.2.2", line);
+
         Assert.Equal(
             WrapperApplication.VersionReportPrefix + typeof(WrapperApplication).Assembly.GetName().Version?.ToString(3),
             line);

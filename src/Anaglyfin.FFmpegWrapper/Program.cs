@@ -34,20 +34,23 @@ internal static class Program
     /// <returns>The exit code the server should read.</returns>
     private static int Main(string[] args)
     {
-        // The identity question is answered here, ahead of everything else this executable does -
-        // ahead of the environment read below, so that a deployment with no FFmpeg path, no slot
-        // directory and no settings document still gets an answer. It is the one invocation that
-        // asks who the wrapper is rather than asking it to run something, and the caller asking it
-        // is looking at a deployment nobody trusts yet.
-        if (WrapperApplication.TryReportVersion(args, Console.Out))
-        {
-            return WrapperApplication.ExitCodeSuccess;
-        }
-
-        var options = FFmpegWrapperOptions.FromEnvironment();
-
         try
         {
+            // The identity question is answered here, ahead of everything else this executable
+            // does - ahead of the environment read below, so that a deployment with no FFmpeg
+            // path, no slot directory and no settings document still gets an answer. It is the one
+            // invocation that asks who the wrapper is rather than asking it to run something, and
+            // the caller asking it is looking at a deployment nobody trusts yet. It sits inside
+            // this try for the same reason as everything after it: the one way writing the line
+            // can fail is a stdout nobody will take, and that is a refusal with an exit code the
+            // server reads, not a stack trace.
+            if (WrapperApplication.TryReportVersion(args, Console.Out))
+            {
+                return WrapperApplication.ExitCodeSuccess;
+            }
+
+            var options = FFmpegWrapperOptions.FromEnvironment();
+
             using var guard = new WrapperConcurrencyGuard(options);
             var wrapper = new WrapperApplication(options, new FFmpegProcessLauncher(), guard);
 
