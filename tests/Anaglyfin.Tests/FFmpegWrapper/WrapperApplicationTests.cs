@@ -46,6 +46,13 @@ public sealed class WrapperApplicationTests : IDisposable
     private readonly TemporarySlotDirectory _slots = new();
     private readonly StringWriter _diagnostics = new();
 
+    /// <summary>
+    /// The stdout this test's invocation was given. Nothing a wrapper does to a real FFmpeg
+    /// belongs on it, so the only line that may ever appear here is the identity line of the
+    /// <see cref="WrapperApplication.VersionCommand"/> tests.
+    /// </summary>
+    private readonly StringWriter _standardOutput = new();
+
     /// <summary>The directory holding this test's stand-ins for the real FFmpeg binaries.</summary>
     private readonly string _binaryDirectory;
 
@@ -1098,6 +1105,257 @@ public sealed class WrapperApplicationTests : IDisposable
         Assert.Empty(launcher.Launches);
     }
 
+    // ----- identity: the version command ----------------------------------------------
+
+    [Fact]
+    public void TheVersionCommandAnswersWithTheWrapperIdentityAndSuccess()
+    {
+        var (application, launcher) = CreateApplication();
+
+        var exitCode = application.Run(new[] { WrapperApplication.VersionCommand });
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, exitCode);
+
+        // Exactly one line, on stdout, in the shape the runtime-status reader parses: the fixed
+        // prefix and nothing after it but the release version this assembly carries (the number
+        // PluginManifestTests pins to the release tag).
+        var line = Assert.Single(WrittenLines(_standardOutput));
+        Assert.StartsWith("anaglyfin-wrapper ", line, StringComparison.Ordinal);
+
+        // The release line as a literal, because this is the string an admin page parses and a
+        // test that only compared the wrapper to itself could not notice both halves drifting.
+        Assert.Equal("anaglyfin-wrapper 0.2.2", line);
+
+        Assert.Equal(
+            WrapperApplication.VersionReportPrefix + typeof(WrapperApplication).Assembly.GetName().Version?.ToString(3),
+            line);
+
+        // The answer is about the wrapper, so it is not a refusal of anything and it is not a
+        // command: no diagnostic line, and no FFmpeg asked to do anything.
+        Assert.Equal(string.Empty, _diagnostics.ToString());
+        Assert.Empty(launcher.Launches);
+    }
+
+    [Fact]
+    public void TheVersionCommandIsTheAssemblyVersionAndNotASecondCopyOfIt()
+    {
+        // The identity a running binary reports has to be the identity it was built with, so the
+        // number is read out of the assembly rather than repeated in the wrapper's source: a
+        // literal there would survive a version bump and misreport the build it is asked about.
+        Assert.Equal(
+            typeof(WrapperApplication).Assembly.GetName().Version?.ToString(3),
+            WrapperApplication.ReleaseVersion);
+
+        // Three plain numbers, because the reader splits the line on the prefix and compares what
+        // is left.
+        Assert.Matches("^[0-9]+\\.[0-9]+\\.[0-9]+$", WrapperApplication.ReleaseVersion);
+    }
+
+    [Fact]
+    public void TheVersionCommandStartsNoProcessAndTakesNoSlot()
+    {
+        // The limit spent by somebody else's job before this one was asked who it is: a path that
+        // dispatched would have waited for a slot and refused, and either outcome is the failure
+        // this test is about.
+        var running = new WrapperConcurrencyGuard(_slots.Location, maxConcurrentTranscodes: 1);
+        Assert.True(running.TryAcquire());
+
+        try
+        {
+            var (application, launcher) = CreateApplication(maxConcurrentTranscodes: 1);
+
+            Assert.Equal(
+                WrapperApplication.ExitCodeSuccess,
+                application.Run(new[] { WrapperApplication.VersionCommand }));
+
+            Assert.Empty(launcher.Launches);
+
+            // The one slot file in the directory is the occupier's own: the answer claimed no
+            // slot, and it did not need the free one that does not exist.
+            Assert.Single(_slots.SlotFiles());
+            Assert.Equal(string.Empty, _diagnostics.ToString());
+            Assert.StartsWith(
+                "anaglyfin-wrapper ",
+                Assert.Single(WrittenLines(_standardOutput)),
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            running.Dispose();
+        }
+    }
+
+    [Fact]
+    public void TheVersionCommandAnswersADeploymentThatNamedNoUsableFFmpeg()
+    {
+        // The deployment the identity question is really asked about: the Anaglyfin binary points
+        // at a file that is not there, no slot directory was ever named and no settings document
+        // was ever published. The contrast is in the same test - an ordinary command under this
+        // configuration is refused - which is what proves the identity answer did not come out of
+        // a configuration that happened to work.
+        var environment = new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            [FFmpegWrapperOptions.RealFFmpegEnvironmentVariable] =
+                Path.Combine(_binaryDirectory, "ffmpeg-that-was-never-built")
+        };
+
+        var options = FFmpegWrapperOptions.FromEnvironment(
+            name => environment.TryGetValue(name, out var value) ? value : null);
+
+        var launcher = new FakeFFmpegProcessLauncher();
+        var application = new WrapperApplication(
+            options,
+            launcher,
+            new WrapperConcurrencyGuard(options),
+            diagnostics: _diagnostics,
+            standardOutput: _standardOutput);
+
+        Assert.Equal(
+            WrapperApplication.ExitCodeSuccess,
+            application.Run(new[] { WrapperApplication.VersionCommand }));
+
+        Assert.Empty(launcher.Launches);
+        Assert.Equal(string.Empty, _diagnostics.ToString());
+        Assert.Single(WrittenLines(_standardOutput));
+
+        Assert.Equal(
+            WrapperApplication.ExitCodeRealFFmpegNotStarted,
+            application.Run(JellyfinLikeCommand("/library/movie.mkv")));
+
+        Assert.Contains(
+            FFmpegWrapperOptions.RealFFmpegEnvironmentVariable,
+            _diagnostics.ToString(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheVersionCommandNeedsNoOptionsLauncherOrSlotToAnswer()
+    {
+        // The executable asks this before it has read the environment or wired anything together,
+        // so the static entry is tested with nothing but the vector and a writer in scope: no
+        // options to validate, no binary to inspect, no guard that could take a slot.
+        var output = new StringWriter();
+
+        Assert.True(WrapperApplication.TryReportVersion(new[] { WrapperApplication.VersionCommand }, output));
+
+        Assert.Equal(
+            WrapperApplication.VersionReportPrefix + WrapperApplication.ReleaseVersion,
+            Assert.Single(WrittenLines(output)));
+
+        // Without the flag the same call writes nothing and leaves the vector to the dispatch.
+        var untouched = new StringWriter();
+
+        Assert.False(WrapperApplication.TryReportVersion(JellyfinLikeCommand("/library/movie.mkv"), untouched));
+        Assert.Equal(string.Empty, untouched.ToString());
+    }
+
+    [Fact]
+    public void TheVersionCommandAnswersAheadOfAnUnusableMarkerInTheSameVector()
+    {
+        // The vector that would otherwise be refused outright: a marker that parses to nothing.
+        // The answer is a version line rather than a refusal, and above all not a dispatch that
+        // would put the marker in front of FFmpeg as a media file.
+        var arguments = JellyfinLikeCommand(
+            "http://127.0.0.1/anaglyfin/profile/side_by_side_too?source=%2Fmovies%2FFilm.mkv");
+        arguments.Add(WrapperApplication.VersionCommand);
+
+        var (application, launcher) = CreateApplication();
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        Assert.Empty(launcher.Launches);
+        Assert.Empty(_slots.SlotFiles());
+        Assert.Equal(string.Empty, _diagnostics.ToString());
+
+        var line = Assert.Single(WrittenLines(_standardOutput));
+        Assert.StartsWith("anaglyfin-wrapper ", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("anaglyfin/profile", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheVersionCommandAnswersAheadOfAWellFormedMarkerInTheSameVector()
+    {
+        // A command that would have been rewritten, with a slot claimed and FFmpeg started: the
+        // flag still wins, because a vector carrying it is a probe rather than a playback. Nothing
+        // was rewritten, so the marker text reaches neither the launcher nor the wrapper's output.
+        var marker = Marker(ProfileIds.SideBySideFull);
+        var arguments = JellyfinLikeCommand(marker);
+        arguments.Insert(0, WrapperApplication.VersionCommand);
+
+        var (application, launcher) = CreateApplication();
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        Assert.Empty(launcher.Launches);
+        Assert.Empty(_slots.SlotFiles());
+        Assert.Equal(string.Empty, _diagnostics.ToString());
+
+        var line = Assert.Single(WrittenLines(_standardOutput));
+        Assert.DoesNotContain(marker, line, StringComparison.Ordinal);
+        Assert.DoesNotContain(SourcePath, line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ACommandWithoutTheVersionCommandRunsAndLeavesStandardOutputAlone()
+    {
+        // The ordinary path is untouched by the identity answer: the vector goes to FFmpeg exactly
+        // as it arrived, and the wrapper's stdout stays empty because what FFmpeg writes there is
+        // the server's to read, not the wrapper's to fill.
+        var arguments = JellyfinLikeCommand("/library/movie.mkv");
+        var (application, launcher) = CreateApplication();
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(arguments));
+
+        var launch = Assert.Single(launcher.Launches);
+        Assert.Equal(_realFFmpeg, launch.ExecutablePath);
+        Assert.Equal(arguments.ToArray(), launch.Arguments);
+        Assert.Equal(string.Empty, _standardOutput.ToString());
+        Assert.Equal(string.Empty, _diagnostics.ToString());
+    }
+
+    [Theory]
+    [InlineData("-version")]
+    [InlineData("--anaglyfin-version=1")]
+    [InlineData("-anaglyfin-version")]
+    [InlineData("--Anaglyfin-Version")]
+    [InlineData("--anaglyfin-versions")]
+    [InlineData("/library/--anaglyfin-version.mkv")]
+    public void ATokenThatOnlyLooksLikeTheVersionCommandIsHandedToFFmpeg(string token)
+    {
+        // FFmpeg's own "-version" and the near-misses stay ordinary arguments: the flag is matched
+        // exactly, so a token that merely resembles it is still FFmpeg's business, reaches the
+        // binary unchanged, and writes no identity line.
+        var (application, launcher) = CreateApplication();
+
+        Assert.Equal(WrapperApplication.ExitCodeSuccess, application.Run(new[] { token }));
+
+        var launch = Assert.Single(launcher.Launches);
+        Assert.Equal(new[] { token }, launch.Arguments);
+        Assert.Equal(string.Empty, _standardOutput.ToString());
+    }
+
+    [Fact]
+    public void TheVersionCommandIsFoundBehindTheExecutableTokenACallerForwarded()
+    {
+        // A wrapper script that forwards its own command line whole puts the program name in front
+        // of the flag; the identity answer does not care what else the vector carries.
+        var (application, launcher) = CreateApplication();
+
+        Assert.Equal(
+            WrapperApplication.ExitCodeSuccess,
+            application.Run(new[] { "/usr/lib/jellyfin-ffmpeg/ffmpeg", WrapperApplication.VersionCommand }));
+
+        Assert.Empty(launcher.Launches);
+        Assert.Single(WrittenLines(_standardOutput));
+    }
+
+    [Fact]
+    public void ANullVectorIsStillAProgrammingErrorRatherThanAnIdentityQuestion()
+    {
+        Assert.Throws<ArgumentNullException>(
+            () => WrapperApplication.TryReportVersion(null!, new StringWriter()));
+    }
+
     // ----- fixture --------------------------------------------------------------------
 
     /// <summary>
@@ -1258,7 +1516,12 @@ public sealed class WrapperApplicationTests : IDisposable
         var launcher = new FakeFFmpegProcessLauncher();
 
         return (
-            new WrapperApplication(options, launcher, new WrapperConcurrencyGuard(options), diagnostics: _diagnostics),
+            new WrapperApplication(
+                options,
+                launcher,
+                new WrapperConcurrencyGuard(options),
+                diagnostics: _diagnostics,
+                standardOutput: _standardOutput),
             launcher);
     }
 
@@ -1291,7 +1554,12 @@ public sealed class WrapperApplicationTests : IDisposable
         var launcher = new FakeFFmpegProcessLauncher();
 
         return (
-            new WrapperApplication(options, launcher, new WrapperConcurrencyGuard(options), diagnostics: _diagnostics),
+            new WrapperApplication(
+                options,
+                launcher,
+                new WrapperConcurrencyGuard(options),
+                diagnostics: _diagnostics,
+                standardOutput: _standardOutput),
             launcher);
     }
 
@@ -1327,7 +1595,12 @@ public sealed class WrapperApplicationTests : IDisposable
         var launcher = new FakeFFmpegProcessLauncher();
 
         return (
-            new WrapperApplication(options, launcher, new WrapperConcurrencyGuard(options), diagnostics: _diagnostics),
+            new WrapperApplication(
+                options,
+                launcher,
+                new WrapperConcurrencyGuard(options),
+                diagnostics: _diagnostics,
+                standardOutput: _standardOutput),
             launcher);
     }
 
@@ -1340,6 +1613,32 @@ public sealed class WrapperApplicationTests : IDisposable
     {
         await Task.Delay(delay).ConfigureAwait(false);
         slot.Dispose();
+    }
+
+    /// <summary>
+    /// The lines one writer was given, without the newline the writer adds after the last one.
+    /// </summary>
+    /// <param name="writer">The writer a wrapper invocation was handed.</param>
+    /// <returns>One entry per line written, empty when nothing was written.</returns>
+    /// <remarks>
+    /// A test asserts on lines rather than on the whole text because the contract of the identity
+    /// answer is exactly one line: <see cref="Assert.Single"/> over these entries is the statement
+    /// that nothing else - no banner, no second line, no trailing prose - was written.
+    /// </remarks>
+    private static string[] WrittenLines(StringWriter writer)
+    {
+        var text = writer.ToString();
+
+        if (text.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        Assert.EndsWith(Environment.NewLine, text);
+
+        return text
+            .Substring(0, text.Length - Environment.NewLine.Length)
+            .Split(new[] { Environment.NewLine }, StringSplitOptions.None);
     }
 
     private static void TryDelete(string path)
