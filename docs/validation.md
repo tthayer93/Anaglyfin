@@ -206,9 +206,9 @@ The runtime status section, checked on the same visit:
 - [ ] The section is display-only - no box, dropdown or switch in it, nothing bound to the settings
   model - and saving afterwards changes no status. Make the endpoint fail and the section says the
   status was not read, in one line, while the settings above still load and save.
-- [ ] A state is read as the page's own words (**OK**, **Missing**, **Not executable**, **Not
-  writable**, **Version mismatch**, **Warning**, **Probe failed**, **Unknown**) and never as the
-  server's enumeration spelling.
+- [ ] A state is read as the page's own words (**OK**, **Missing**, **Not readable**, **Not
+  executable**, **Not writable**, **Probe failed**, **Version mismatch**, **Warning**,
+  **Unknown**) and never as the server's enumeration spelling.
 - [x] When `ANAGLYFIN_WRAPPER_SETTINGS` is configured, changing **Maximum concurrent Anaglyfin
   transcodes** and saving writes that number to the shared settings document; a wrapper started after
   the save sees it without another deployment step.
