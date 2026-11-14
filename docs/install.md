@@ -11,8 +11,8 @@ Nothing here installs Jellyfin, replaces the FFmpeg it ships, or touches its dat
 
 | Item | Current value |
 | --- | --- |
-| Anaglyfin | `v0.2.2`. Plugin and wrapper are published under one tag: they are a pair, and an update moves them together |
-| Jellyfin | 12.x; the targeted container image is `jellyfin/jellyfin:12.4`. The manifest's `targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.2` loads on 12.0 or later. Jellyfin 12.4 moved its own .NET baseline to `10.0.14`; Anaglyfin targets `net10.0` inside that band, so nothing is retargeted |
+| Anaglyfin | `v0.2.3`. Plugin and wrapper are published under one tag: they are a pair, and an update moves them together |
+| Jellyfin | 12.x; the targeted container image is `jellyfin/jellyfin:12.4`. The manifest's `targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.3` loads on 12.0 or later. Jellyfin 12.4 moved its own .NET baseline to `10.0.14`; Anaglyfin targets `net10.0` inside that band, so nothing is retargeted |
 | FFmpeg-mvc | product tag `n8.1.3-mvc11-jf2` on the `jellyfin-8.1` branch — the current Jellyfin-line tag, and the drop-in companion to the parent `jellyfin-ffmpeg v8.1.3-2`. The `n9.0.2-mvc11`/`n9` line carries no `-jf` parent, is not a Jellyfin product line, and is **not** adopted. Jellyfin's stable target remains 12.4. This `mvc11-jf2` pairing is **not yet runtime-validated** (pending in `docs/validation.md`); earlier `n8.1.3-mvc10-jf1`/`v8.1.3-1` and older evidence stays historical. **FFmpeg-mvc publishes no binaries for any platform**, so every `ffmpeg-mvc` below is one you build with the commands given here |
 | Wrapper release asset | `anaglyfin-ffmpeg`, a self-contained **linux-x64** binary, published with `SHA256SUMS.txt` in the same release. There is **no** `win-x64` asset |
 
@@ -138,7 +138,7 @@ one line changed and nothing else.
 ```sh
 docker compose exec -u root jellyfin sh -c '
   set -e
-  anaglyfin_tag=v0.2.2
+  anaglyfin_tag=v0.2.3
   runtime=/config/anaglyfin/ffmpeg
   staged="$runtime/.anaglyfin-ffmpeg.new"
   rm -rf /tmp/anaglyfin-install
@@ -342,8 +342,8 @@ sudo install -d -m 0755 -o jellyfin -g jellyfin \
 assets, so check the wrapper line rather than the file unless you also downloaded the plugin archive:
 ```sh
 set -e
-curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/anaglyfin-ffmpeg -o /tmp/anaglyfin-ffmpeg
-curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.2/SHA256SUMS.txt -o /tmp/SHA256SUMS.txt
+curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.3/anaglyfin-ffmpeg -o /tmp/anaglyfin-ffmpeg
+curl -fsSL https://github.com/tthayer93/Anaglyfin/releases/download/v0.2.3/SHA256SUMS.txt -o /tmp/SHA256SUMS.txt
 cd /tmp
 grep " anaglyfin-ffmpeg$" SHA256SUMS.txt > anaglyfin-ffmpeg.sha256
 sha256sum -c anaglyfin-ffmpeg.sha256
@@ -478,9 +478,9 @@ another account, grant to that one, reading it with
 `Get-CimInstance Win32_Service -Filter "Name='JellyfinServer'" | Select-Object -ExpandProperty StartName`.
 
 **3. Build the wrapper for `win-x64`** — there is no Windows asset to download, so the tag is published locally. Clone the tag the catalog
-installed rather than a branch tip: `v0.2.2` is what §2 installs, and a release bumps plugin and wrapper together.
+installed rather than a branch tip: `v0.2.3` is what §2 installs, and a release bumps plugin and wrapper together.
 ```powershell
-git clone --depth 1 --branch v0.2.2 https://github.com/tthayer93/Anaglyfin.git C:\build\anaglyfin-wrapper-src
+git clone --depth 1 --branch v0.2.3 https://github.com/tthayer93/Anaglyfin.git C:\build\anaglyfin-wrapper-src
 cd C:\build\anaglyfin-wrapper-src
 dotnet publish .\src\Anaglyfin.FFmpegWrapper\Anaglyfin.FFmpegWrapper.csproj `
   --configuration Release --runtime win-x64 --self-contained true `
