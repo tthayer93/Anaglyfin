@@ -112,6 +112,13 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// <summary>The filename every official sidecar carries, whatever the wrapper is called.</summary>
     private const string SidecarFileName = "ffprobe";
 
+    /// <summary>
+    /// The filename the wrapper is published under in a release, named in the one message that tells an
+    /// administrator to update it. It is display text for that message, kept in step with the release
+    /// assets and <c>docs/install.md</c>; nothing reads it back.
+    /// </summary>
+    private const string WrapperReleaseAssetName = "anaglyfin-ffmpeg";
+
     private static readonly Regex WrapperVersionPattern =
         new(@"^[0-9]+\.[0-9]+\.[0-9]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
@@ -568,7 +575,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         }
 
         var wrapperConfigured = ReadNonBlank(_readEnvironmentVariable(JellyfinFFmpegEnvironmentVariable));
-        var (wrapperBinary, wrapperLevel) = BuildWrapper(wrapperConfigured, cancellationToken);
+        var (wrapperBinary, wrapperLevel) = BuildWrapper(wrapperConfigured, realPath, serverPath, cancellationToken);
         binaries.Add(wrapperBinary);
         Raise(wrapperLevel);
         environment.Add(new RuntimeEnvironmentStatus(
@@ -633,7 +640,37 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// The wrapper binary: asked only <c>--anaglyfin-version</c>, and only accepted as the wrapper if
     /// that one line comes back exactly.
     /// </summary>
-    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildWrapper(string? configuredPath, CancellationToken cancellationToken)
+    /// <remarks>
+    /// <para>
+    /// <b>A binary that starts and does not answer is two different failures, and they are told apart
+    /// by the paths this pass already resolved.</b> When the configured path is the very file one of the
+    /// deployment's own FFmpeg builds, the server was pointed at an FFmpeg instead of at the wrapper:
+    /// that is positively a misconfiguration, and it is an error naming which FFmpeg the file turned out
+    /// to be. Anything else that starts and stays silent about its identity is
+    /// most likely a wrapper from before <c>--anaglyfin-version</c> existed — the same wrong-release
+    /// condition <see cref="RuntimeItemState.VersionMismatch"/> already answers with a warning — so it
+    /// warns, names the release to update to, and points at the variable in case the binary is not the
+    /// wrapper at all. Nothing here is re-resolved or re-probed: the two FFmpeg paths are the ones
+    /// <see cref="BuildCore"/> settled before any binary was started.
+    /// </para>
+    /// </remarks>
+    /// <param name="configuredPath">
+    /// The path <c>JELLYFIN_FFMPEG</c> named, or <c>null</c> when it named nothing.
+    /// </param>
+    /// <param name="realPath">
+    /// The FFmpeg-mvc path this pass resolved, used only to recognise a wrapper path that is that very
+    /// file. Never re-resolved, and never a reason to start anything.
+    /// </param>
+    /// <param name="serverPath">
+    /// The official/server FFmpeg path this pass resolved, or <c>null</c> when none is configured, used
+    /// the same way.
+    /// </param>
+    /// <param name="cancellationToken">The pass's own cancellation token.</param>
+    private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildWrapper(
+        string? configuredPath,
+        string realPath,
+        string? serverPath,
+        CancellationToken cancellationToken)
     {
         const string Label = "Anaglyfin FFmpeg wrapper";
 
@@ -668,7 +705,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
                 state == RuntimeItemState.Missing ? RuntimeStatusLevel.Error : RuntimeStatusLevel.Warning);
         }
 
-        // exit 0 and the exact identity line, or it is not the wrapper at all - which includes an
+        // exit 0 and the exact identity line, or it is not accepted as the wrapper - which includes an
         // ordinary FFmpeg that answers --anaglyfin-version with a banner or an error.
         if (result.ExitCode == 0 && TryParseWrapperIdentity(result.StandardOutputLine, out var version))
         {
@@ -685,11 +722,39 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
                 RuntimeStatusLevel.Warning);
         }
 
+        // Started, and the identity line never came back. The first question is whether this binary is
+        // one of the two FFmpeg builds the deployment already named: a wrapper path that is one of them
+        // is not an unidentified wrapper, it is FFmpeg where the wrapper belongs. The comparison is
+        // against the paths this pass settled before any binary was started, so it costs no second
+        // resolution and no extra process. Which FFmpeg it turned out to be is said in the words the
+        // page uses for that row rather than as a variable name, because either path can have come from
+        // a variable, from its alias, or - for FFmpeg-mvc - from PATH.
+        var ffmpegThePathTurnedOutToBe =
+            AreSameFile(configuredPath, realPath) ? "the FFmpeg-mvc build the Anaglyfin commands go to"
+                : AreSameFile(configuredPath, serverPath) ? "the official/server FFmpeg"
+                : null;
+
+        if (ffmpegThePathTurnedOutToBe is { } ffmpeg)
+        {
+            return (new RuntimeBinaryStatus(WrapperKey, Label, configuredPath, configuredPath, null, true,
+                RuntimeItemState.ProbeFailed,
+                $"The binary at {JellyfinFFmpegEnvironmentVariable} is the same file as {ffmpeg}; "
+                + $"{JellyfinFFmpegEnvironmentVariable} points at FFmpeg, not at the Anaglyfin wrapper."),
+                RuntimeStatusLevel.Error);
+        }
+
+        // The remaining answer is the one an administrator can act on: the wrapper gained
+        // --anaglyfin-version in the release the plugin ships with, so a real wrapper left behind by an
+        // older deployment cannot answer it at all. That is the same wrong-release condition a wrapper
+        // which does answer carries as a warning, so it warns with the release to update to, and names
+        // the variable to check in case the binary is not the wrapper either.
         return (new RuntimeBinaryStatus(WrapperKey, Label, configuredPath, configuredPath, null, true,
             RuntimeItemState.ProbeFailed,
-            $"The binary at {JellyfinFFmpegEnvironmentVariable} did not identify as the Anaglyfin wrapper; "
-            + $"it is not a real wrapper."),
-            RuntimeStatusLevel.Error);
+            $"The binary at {JellyfinFFmpegEnvironmentVariable} did not answer {WrapperProbeArguments[0]} as the "
+            + $"Anaglyfin wrapper. The most likely cause is an outdated wrapper: update the {WrapperReleaseAssetName} "
+            + $"wrapper to the release matching the plugin ({_pluginVersion}). If it is already current, check that "
+            + $"{JellyfinFFmpegEnvironmentVariable} names the wrapper rather than a plain FFmpeg."),
+            RuntimeStatusLevel.Warning);
     }
 
     /// <summary>

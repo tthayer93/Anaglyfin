@@ -152,14 +152,48 @@ public sealed class RuntimeStatusServiceTests
     }
 
     [Fact]
-    public void AWrapperThatIsReallyAnOrdinaryFfmpegIsNotAWrapper()
+    public void AWrapperPathThatIsTheFfmpegMvcBuildNamesThatFfmpeg()
     {
         var harness = new RuntimeStatusHarness();
         var probe = new FakeRuntimeVersionProbe();
         var paths = SetupHealthy(harness, probe);
 
-        // An ordinary FFmpeg answers the identity flag with its own banner, not the wrapper line.
-        probe.ByPath[paths.Wrapper] = RuntimeVersionProbeResult.Ran(0, "ffmpeg version 6.1.1 Copyright");
+        // JELLYFIN_FFMPEG aimed at the very FFmpeg-mvc file. The same path is then asked two questions:
+        // the identity flag, which an FFmpeg refuses, and its own -version, which it answers.
+        harness.Env[RuntimeStatusService.JellyfinFFmpegEnvironmentVariable] = paths.FfmpegMvc;
+        probe.Responder = (executable, arguments) =>
+            arguments[0] == "--anaglyfin-version"
+                ? RuntimeVersionProbeResult.Ran(1, null)
+                : RuntimeVersionProbeResult.Ran(0, "ffmpeg version 6.1.1-mvc11-jf2 Copyright (c) the FFmpeg developers");
+
+        var status = Status(Create(harness, probe));
+
+        // A wrapper path that IS an FFmpeg is a misconfiguration, not a mystery.
+        Assert.Equal(RuntimeStatusLevel.Error, status.OverallStatus);
+        var wrapper = Bin(status, RuntimeStatusService.WrapperKey);
+        Assert.Equal(RuntimeItemState.ProbeFailed, wrapper.State);
+        Assert.Null(wrapper.Version);
+        Assert.Contains("is the same file as the FFmpeg-mvc build", wrapper.Detail, StringComparison.Ordinal);
+        Assert.Contains("points at FFmpeg, not at the Anaglyfin wrapper", wrapper.Detail, StringComparison.Ordinal);
+
+        // It is not also told it is out of date, and the variable row carries the same advice.
+        Assert.DoesNotContain("outdated wrapper", wrapper.Detail, StringComparison.Ordinal);
+        Assert.Equal(wrapper.Detail, Env(status, RuntimeStatusService.JellyfinFFmpegEnvironmentVariable).Detail);
+    }
+
+    [Fact]
+    public void AWrapperPathThatIsTheOfficialFfmpegNamesThatFfmpeg()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        var paths = SetupHealthy(harness, probe);
+
+        // The server's own FFmpeg where the wrapper belongs: still FFmpeg, still the wrong file.
+        harness.Env[RuntimeStatusService.JellyfinFFmpegEnvironmentVariable] = paths.Official;
+        probe.Responder = (executable, arguments) =>
+            arguments[0] == "--anaglyfin-version"
+                ? RuntimeVersionProbeResult.Ran(1, null)
+                : RuntimeVersionProbeResult.Ran(0, "ffmpeg version 6.1.1 Copyright (c) the FFmpeg developers");
 
         var status = Status(Create(harness, probe));
 
@@ -167,21 +201,90 @@ public sealed class RuntimeStatusServiceTests
         var wrapper = Bin(status, RuntimeStatusService.WrapperKey);
         Assert.Equal(RuntimeItemState.ProbeFailed, wrapper.State);
         Assert.Null(wrapper.Version);
+        Assert.Contains("is the same file as the official/server FFmpeg", wrapper.Detail, StringComparison.Ordinal);
+        Assert.Contains("points at FFmpeg, not at the Anaglyfin wrapper", wrapper.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("outdated wrapper", wrapper.Detail, StringComparison.Ordinal);
+
+        // And the other three rows are untouched: the error is the wrapper row's alone.
+        Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.FfmpegMvcKey).State);
+        Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.OfficialFfmpegKey).State);
+        Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.FfprobeKey).State);
     }
 
     [Fact]
-    public void AWrapperThatRefusesTheIdentityFlagIsNotAWrapper()
+    public void ABinaryThatAnswersTheIdentityLineIsTheWrapperEvenWhereAnFfmpegPathNamesItToo()
     {
         var harness = new RuntimeStatusHarness();
         var probe = new FakeRuntimeVersionProbe();
         var paths = SetupHealthy(harness, probe);
 
+        // The identity line is the proof. A deployment that also names this file as its FFmpeg-mvc
+        // build must not talk the answered identity out of being the wrapper.
+        harness.Env[RuntimeStatusService.JellyfinFFmpegEnvironmentVariable] = paths.FfmpegMvc;
+        probe.ByPath[paths.FfmpegMvc] = RuntimeVersionProbeResult.Ran(0, "anaglyfin-wrapper " + PluginVersion);
+
+        var status = Status(Create(harness, probe));
+
+        Assert.Equal(RuntimeStatusLevel.Ok, status.OverallStatus);
+        var wrapper = Bin(status, RuntimeStatusService.WrapperKey);
+        Assert.Equal(RuntimeItemState.Ok, wrapper.State);
+        Assert.Equal(PluginVersion, wrapper.Version);
+        Assert.Null(wrapper.Detail);
+    }
+
+    [Fact]
+    public void AWrapperThatAnswersTheIdentityFlagWithAFfmpegBannerPointsAtAnOutdatedWrapper()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        var paths = SetupHealthy(harness, probe);
+
+        // An ordinary FFmpeg answers the identity flag with its own banner, not the wrapper line. The
+        // wrapper path is neither FFmpeg this pass resolved, so the honest answer is that the binary
+        // never identified itself - and the cause an admin can act on is a wrapper left behind.
+        probe.ByPath[paths.Wrapper] = RuntimeVersionProbeResult.Ran(0, "ffmpeg version 6.1.1 Copyright");
+
+        var status = Status(Create(harness, probe));
+
+        Assert.Equal(RuntimeStatusLevel.Warning, status.OverallStatus);
+        var wrapper = Bin(status, RuntimeStatusService.WrapperKey);
+        Assert.Equal(RuntimeItemState.ProbeFailed, wrapper.State);
+        Assert.Null(wrapper.Version);
+        Assert.Contains("did not answer --anaglyfin-version", wrapper.Detail, StringComparison.Ordinal);
+        Assert.Contains("outdated wrapper", wrapper.Detail, StringComparison.Ordinal);
+        Assert.Contains("update the anaglyfin-ffmpeg wrapper to the release matching the plugin", wrapper.Detail, StringComparison.Ordinal);
+        Assert.Contains("(" + PluginVersion + ")", wrapper.Detail, StringComparison.Ordinal);
+        Assert.Contains("names the wrapper rather than a plain FFmpeg", wrapper.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("it is not a real wrapper", wrapper.Detail, StringComparison.Ordinal);
+        Assert.Equal(wrapper.Detail, Env(status, RuntimeStatusService.JellyfinFFmpegEnvironmentVariable).Detail);
+
+        // The warning is this row's alone; nothing else in the deployment went wrong.
+        Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.FfmpegMvcKey).State);
+        Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.OfficialFfmpegKey).State);
+        Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.FfprobeKey).State);
+    }
+
+    [Fact]
+    public void AWrapperThatRefusesTheIdentityFlagPointsAtAnOutdatedWrapper()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        var paths = SetupHealthy(harness, probe);
+
+        // A binary that exits without ever writing the identity line is the same unanswered question as
+        // a banner: the pre-0.2.3 wrapper has no such flag to answer. The second FFmpeg is not even
+        // configured here, so a path that resolved to nothing must not become a second answer.
+        harness.Env[FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable] = null;
         probe.ByPath[paths.Wrapper] = RuntimeVersionProbeResult.Ran(1, null);
 
         var status = Status(Create(harness, probe));
 
-        Assert.Equal(RuntimeStatusLevel.Error, status.OverallStatus);
-        Assert.Equal(RuntimeItemState.ProbeFailed, Bin(status, RuntimeStatusService.WrapperKey).State);
+        Assert.Equal(RuntimeStatusLevel.Warning, status.OverallStatus);
+        var wrapper = Bin(status, RuntimeStatusService.WrapperKey);
+        Assert.Equal(RuntimeItemState.ProbeFailed, wrapper.State);
+        Assert.Contains("did not answer --anaglyfin-version", wrapper.Detail, StringComparison.Ordinal);
+        Assert.Contains("outdated wrapper", wrapper.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("it is not a real wrapper", wrapper.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -208,12 +311,17 @@ public sealed class RuntimeStatusServiceTests
         var probe = new FakeRuntimeVersionProbe();
         var paths = SetupHealthy(harness, probe);
 
+        // A line that wears the prefix but is not a version is an identity that was never answered, so
+        // it is the unanswered question - not the answered-but-wrong one the version mismatch reports.
         probe.ByPath[paths.Wrapper] = RuntimeVersionProbeResult.Ran(0, "anaglyfin-wrapper 1.2");
 
         var status = Status(Create(harness, probe));
 
-        Assert.Equal(RuntimeStatusLevel.Error, status.OverallStatus);
-        Assert.Equal(RuntimeItemState.ProbeFailed, Bin(status, RuntimeStatusService.WrapperKey).State);
+        Assert.Equal(RuntimeStatusLevel.Warning, status.OverallStatus);
+        var wrapper = Bin(status, RuntimeStatusService.WrapperKey);
+        Assert.Equal(RuntimeItemState.ProbeFailed, wrapper.State);
+        Assert.Null(wrapper.Version);
+        Assert.Contains("did not answer --anaglyfin-version", wrapper.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
