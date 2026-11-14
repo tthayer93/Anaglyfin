@@ -274,14 +274,20 @@ signature of getting this wrong is one line at startup and a library that never 
       trying to start process '/config/anaglyfin/ffmpeg/ffprobe' ... No such file or directory
 ```
 
-- [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
+- [x] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
   current Jellyfin-line tag is `n8.1.3-mvc11-jf2` — the drop-in companion to the parent
   `jellyfin-ffmpeg v8.1.3-2` — running on the pinned `jellyfin/jellyfin:12.4` stable target; the
   `n9.0.2-mvc11`/`n9` line is not a Jellyfin product line and is not adopted. This
-  Jellyfin 12.4 + `mvc11-jf2` + `v8.1.3-2` combo has **not** been run here, so it is recorded as
-  **pending**; the `n8.1.3-mvc10-jf1`/`v8.1.3-1` and older results below stay historical. An older
-  FFmpeg-mvc may run ordinary commands but cannot honour a depth request if it does not carry
-  `mvcsubdepth`.
+  Jellyfin 12.4 + `mvc11-jf2` + `v8.1.3-2` combo **has** been run here since: the 2026-11-14 entry
+  below built that tag inside the image, mounted it where the wrapper's marker route reads it, had
+  it answer under the server, and played both top-and-bottom versions of a real MVC file through it,
+  so the top-and-bottom pass is **validated by that entry** rather than pending. What that entry
+  leaves unclaimed stays open here — the anaglyph profile, QSV/VA-API encode, subtitle depth on
+  hardware, and every V5.2 client row. Only the container shape is covered by that entry: the
+  Debian/Ubuntu package and Windows service deployments have never been run here
+  (`docs/install.md` §1, "Runtime evidence"). The `n8.1.3-mvc10-jf1`/`v8.1.3-1` and older results
+  below stay historical. An older FFmpeg-mvc may run ordinary commands but cannot honour a depth
+  request if it does not carry `mvcsubdepth`.
 - [x] `FFmpeg -filters` on the **FFmpeg-mvc** binary names `mvcsubdepth` (the filter a depth request
   needs; it is not loaded when subtitle depth is `Flat`). Note that the server's startup probe reads
   the **official** FFmpeg's filters now, so `mvcsubdepth` will not appear there — it is required only
@@ -1929,10 +1935,14 @@ server's filter chain rather than replacing it; and the server's `libfdk_aac` wa
 (`stereo3d=sbsl:tbl,format=yuv420p,...` against a 1920x2160 target), so the two versions really do
 differ in the graph and not only in the label. The job logs agree:
 `FFmpeg.Transcode-2026-11-14_15-32-00_...log` and `..._15-35-23_...log` each open with
-`ffmpeg version n8.1.3-mvc11-jf2`, show the source as `h264 (Stereo High) 1920x1080`, log
-`Manually selecting views with -view_ids`, contain zero error or failure lines, and advance past
-`frame=  185`. The concurrency slot (`/tmp/anaglyfin/ffmpeg-wrapper/anaglyfin-transcode-0.lock`)
-was present while the job ran and the directory was empty once both jobs finished.
+`ffmpeg version n8.1.3-mvc11-jf2`, show the source as `h264 (Stereo High) 1920x1080`, log the
+fork's own `-view_ids` notice
+`Manually selecting views with -view_ids is not recommended, use view specifiers instead`,
+contain zero error or failure lines, and advance past `frame=  185`. The concurrency slot
+(`/tmp/anaglyfin/ffmpeg-wrapper/anaglyfin-transcode-0.lock`) was present while the job ran; no
+listing of that directory was captured after the runs, so its being empty again is an inference
+from the two `TranscodeManager: FFmpeg exited with code 0` lines the server logged when the jobs
+ended (15:32:18 and 15:35:38), rather than an observation.
 
 **Four things this run discovered about driving 12.4, recorded so a later pass does not mistake
 them for product defects:**
