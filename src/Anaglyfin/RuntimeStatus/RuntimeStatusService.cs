@@ -644,9 +644,9 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// <para>
     /// <b>A binary that starts and does not answer is two different failures, and they are told apart
     /// by the paths this pass already resolved.</b> When the configured path is the very file one of the
-    /// deployment's own FFmpeg builds, the server was pointed at an FFmpeg instead of at the wrapper:
-    /// that is positively a misconfiguration, and it is an error naming which FFmpeg the file turned out
-    /// to be. Anything else that starts and stays silent about its identity is
+    /// deployment's two FFmpeg builds resolves to, the server was pointed at an FFmpeg instead of at the
+    /// wrapper: that is positively a misconfiguration, and it is an error naming which FFmpeg the file
+    /// turned out to be. Anything else that starts and stays silent about its identity is
     /// most likely a wrapper from before <c>--anaglyfin-version</c> existed — the same wrong-release
     /// condition <see cref="RuntimeItemState.VersionMismatch"/> already answers with a warning — so it
     /// warns, names the release to update to, and points at the variable in case the binary is not the
