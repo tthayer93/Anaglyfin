@@ -1836,3 +1836,129 @@ These are synthetic single-encode runs against the installed runtime files: no J
 playback drove them and no rendered picture was inspected. Subtitle depth on hardware stays
 unvalidated (V10), every V5.2 row stays open, and the PARTIAL statuses recorded above are
 unchanged by this entry.
+
+## Result log entry - 2026-11-14, MVC to top-and-bottom on FFmpeg-mvc n8.1.3-mvc11-jf2 / jellyfin-ffmpeg v8.1.3-2, Jellyfin 12.4
+
+**Artifact:** plugin `0.2.2` (`Anaglyfin.dll`, sha256 `3fa20092f88f0360c873cbc6d37705b8b496828799a7444ee52ef3ea458bd179`)
+and the `anaglyfin-ffmpeg` wrapper (sha256 `24866c6f16b5f71d49ce3c453ebf45c4d0ebc9cb68a8e2d4328427e401c49b70`),
+both as produced by the CI container job for this branch; against FFmpeg-mvc `n8.1.3-mvc11-jf2`
+built from the vendored source of `docs/install.md` §4.1, whose parent is `jellyfin-ffmpeg v8.1.3-2`.
+**Environment:** the disposable harness of `dev/jellyfin-validation/` - a headless `jellyfin/jellyfin:12.4`
+container on this host, driven entirely through the plain HTTP API, with software `libx264`
+(no `/dev/dri` was mapped into this stack). There is no physical 3D client and no remote target
+here, so nothing below touches a client-facing or remote row.
+
+**The binary under test was built in this run, from the vendored source, inside the image that
+will run it.** A derived `jellyfin/jellyfin:12.4` image took the §4.1 build packages, `./configure`
+ran with:
+
+```
+--disable-doc --enable-gpl --enable-libx264 --enable-libass --enable-vaapi --enable-libvpl
+--extra-ldflags='-Wl,-rpath,/usr/lib/jellyfin-ffmpeg/lib'
+--extra-ldexeflags='-Wl,-rpath,/usr/lib/jellyfin-ffmpeg/lib'
+```
+
+and produced `ffmpeg version n8.1.3-mvc11-jf2`, sha256
+`0f5afbe0846f21e702cb096864a747aa3188e4ed64e3cdea32821fbf8104fc50`. `mvcsubdepth` and `stereo3d`
+are both in its filter list; the highest GLIBC symbol version it asks for is `GLIBC_2.35` against
+the image's glibc `2.41-12+deb13u4`; `objdump` shows `RUNPATH [/usr/lib/jellyfin-ffmpeg/lib]`; and
+`ldd` reported zero `not found` when the file was run from a *clean* `jellyfin/jellyfin:12.4`
+container with no build packages - the build-time-only claim of §4.1, re-checked against this
+version pair. It carries no `libfdk_aac`, which is what the server asks for on 5.1 audio, so the
+wrapper's encoder rewrite is load-bearing in this pass and is visible in the evidence below.
+
+**Three binaries, deliberately distinguishable.** `GET /Anaglyfin/RuntimeStatus?refresh=true`
+returned `"OverallStatus":"Ok"` with every entry `State: Ok`: the wrapper at
+`/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` (`0.2.2`, and `MediaEncoder: FFmpeg:
+"/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg"` in the server log), FFmpeg-mvc at
+`/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc` reporting `8.1.3`, the server's own FFmpeg at
+`/usr/lib/jellyfin-ffmpeg/ffmpeg` also `8.1.3`, and the derived sidecar resolved to
+`/config/anaglyfin/ffmpeg/ffprobe` (`ffprobe version 8.1.3-Jellyfin` - the *official* build, so the
+measurements below were not taken by the binary under test).
+
+**The asset was real MVC, and its provenance is on disk.** `media-t85/Ready Player One (2018) - 3D mvc.mkv`
+(102,690,038 bytes, 20.979 s) is a stream copy of seconds 608.23-628.23 of the 49 GB MakeMKV
+`- 3D mvc.mkv` dump in `movies/Ready Player One (2018)/`; that derivation - source path, offsets and
+the command - is written up in `media-t85/README.md` beside the file (a gitignored harness
+directory, so the recipe is quoted here as well).
+One real-world note: the cut had to be made with the *stock* binary, because the fork's own
+`-c copy` refuses this file - `Timestamps are unset in a packet for stream 0`, a consequence of
+the untimestamped dependent-view packets that make MVC streams what they are. The MVC composition
+survived the copy and was confirmed before playback: decoding that file with `-view_ids -1` and
+`stereo3d=sbsl:tbl` yields 1920x2160 at SAR 1:1 with real picture in both halves.
+
+**Harness change required for this shape:** `dev/jellyfin-validation/compose.jellyfin.yml` gained a
+read-only mount for the MVC build at `/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc` and
+`ANAGLYFIN_REAL_FFMPEG` now defaults to that path, so the wrapper's child and the server's own
+FFmpeg are two different files by default rather than by operator memory.
+
+Playback was requested for the two top-and-bottom versions of item
+`eb3a725600a2c8d4fc498ac284c8aac1`, enabled through the admin settings route (the plugin's own
+`POST /Plugins/{id}/Configuration`, not a hand-written XML), after which the server log shows
+`ProfileVersionItemManager` adding `"3D Full Top-and-Bottom"` and `"3D Half Top-and-Bottom"`, and
+PlaybackInfo offers them as separate `mvc` media sources at 1920x2160 and 1920x1080 beside the
+original 1080p `h264`. Each version was then played on its own: master playlist, main playlist,
+and the first segment fetched over HTTP and measured.
+
+- **Full top-and-bottom** (`tb_full`, media source `5023af50dbe62e3d7b740ae459ce2512`): master
+  playlist `RESOLUTION=1920x2160`; segment HTTP 200, 2,684,828 bytes; official ffprobe on the
+  delivered segment: `h264 1920x2160 sample_aspect_ratio=1:1 display_aspect_ratio=8:9`.
+- **Half top-and-bottom** (`tb_half`, media source `70bbd81ed7eb12eb37d722c8c5daa221`): master
+  playlist `RESOLUTION=1920x1080`; segment HTTP 200, 1,644,436 bytes; official ffprobe:
+  `h264 1920x1080 sample_aspect_ratio=1:1 display_aspect_ratio=16:9`.
+
+While each job was live, `/proc` snapshots inside the container caught the two-process chain the
+design promises. For `tb_half`:
+
+```
+[pid 3825] /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg ... -i
+    http://127.0.0.1/anaglyfin/profile/tb_half?source=%2Fmedia%2FReady%20Player%20One%20%282018%29%20-%203D%20mvc.mkv&video=0
+    ... -vf setparams=color_primaries=bt709:... -codec:a:0 libfdk_aac ...
+[pid 3834] /opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc ... -view_ids -1
+    -i /media/Ready Player One (2018) - 3D mvc.mkv ...
+    -vf stereo3d=sbsl:tbl,scale=iw:ih/2:flags=bicubic,setsar=sar=1,format=yuv420p,setparams=color_primaries=bt709:...
+    -codec:a:0 aac ...
+```
+
+The four properties that make this a real MVC pass rather than a re-encode of one view are all
+present in that pair: the marker reached the wrapper as a *single* input token and never appears
+in the child's argv, which carries the decoded `/media/...` path; the child is the MVC binary and
+not the server's; `-view_ids -1` and the profile's own conversion graph sit *in front of* the
+server's filter chain rather than replacing it; and the server's `libfdk_aac` was rewritten to the
+`aac` this build actually has. `tb_full` is the same shape with the half-height scale absent
+(`stereo3d=sbsl:tbl,format=yuv420p,...` against a 1920x2160 target), so the two versions really do
+differ in the graph and not only in the label. The job logs agree:
+`FFmpeg.Transcode-2026-11-14_15-32-00_...log` and `..._15-35-23_...log` each open with
+`ffmpeg version n8.1.3-mvc11-jf2`, show the source as `h264 (Stereo High) 1920x1080`, log
+`Manually selecting views with -view_ids`, contain zero error or failure lines, and advance past
+`frame=  185`. The concurrency slot (`/tmp/anaglyfin/ffmpeg-wrapper/anaglyfin-transcode-0.lock`)
+was present while the job ran and the directory was empty once both jobs finished.
+
+**Four things this run discovered about driving 12.4, recorded so a later pass does not mistake
+them for product defects:**
+
+- A request without an explicit `VideoCodec` gets direct-stream treatment (`-codec:v:0 copy`),
+  which the wrapper correctly refuses with exit `65` (`ServerChoseVideoCopy`) - the refusal is the
+  designed behaviour, and the harness must ask for `h264` to see a transcode at all.
+- A request without a `VideoBitRate` at or above the source's bitrate gets its resolution clamped
+  by `ResolutionNormalizer` (this file: 416x468), which silently turns a top-and-bottom test into
+  a different test. `VideoBitRate=40000000` against the source's 33699123 is what makes the
+  2160-row real.
+- The transcode output path is hashed from `PlaySessionId`/`DeviceId`, so two versions requested
+  under the same session id are served the *first* version's finished segments. That is why the
+  captures below use one session id per version - and it is worth remembering as a false-pass trap.
+- Jellyfin 12.4 names its per-job logs `FFmpeg.Transcode-<ts>_<mediaSource>_<hash>.log` (and
+  `FFmpeg.DirectStream-...` for the copy path), not `transcode_*.log`.
+
+**What this entry does not claim.** The Red/Cyan anaglyph profile was enabled and its version item
+added, but it was not played in this pass, so no anaglyph segment was measured here. This run
+encoded in software, so it says nothing new about QSV or VA-API (the 2026-09-22/23 entry stands).
+The MVC *picture* was verified by decoding the delivered segment's dimensions and by the
+pre-decode view selection on the real MVC source - it was not judged by an eye or a 3D client, and
+the V5.2 client rows, the remote-target rows, and subtitle depth on hardware all stay open exactly
+as recorded above.
+
+The harness was left running as it finished, with its disposable `/config` and `/cache` under
+`dev/jellyfin-validation/jellyfin-t85/` and the captured playlists, segments, `/proc` snapshots and
+`runtime-status.json` under that directory's `cache/t85/`; all of it is ignored by git, and nothing
+in this entry depends on the stack still being up.
