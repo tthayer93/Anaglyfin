@@ -1519,6 +1519,101 @@ public class ConfigurationPageTests
     }
 
     [Fact]
+    public void TheRuntimeStatusTablesPutEveryRequiredRowAboveTheRest()
+    {
+        // What has to be there is read first. The two tables are the section's answer to "what is
+        // wrong with this installation", and a table that showed a row the deployment can do without
+        // above a row it cannot made the administrator read past the problem to find it. The order is
+        // a partition rather than a ranking: the page has no basis for ordering two missing binaries
+        // against each other, so the endpoint's own order is kept inside each half and the only thing
+        // that moves is which half of the table a row is shown in.
+        var html = ReadPageHtml();
+        var (_, script) = ReadRuntimeStatusRegions();
+
+        Assert.Matches(@"function runtimeStatusOrderByRequired\(\s*entries\s*\)\s*\{", script);
+
+        var ordering = FunctionBody(html, "runtimeStatusOrderByRequired");
+
+        // Required-ness is asked of the reported item by the one property the Required column of
+        // that same row shows, and read the same way that column reads it: a row cannot sit in the
+        // half of the table its own column contradicts. Anything that is not a yes - another answer,
+        // or no answer at all - belongs to the half that can be done without, which is the honest
+        // reading of a missing one rather than a guess in the page's favour.
+        Assert.Contains("parseBoolean(readProperty(entry, 'Required')) === true", ordering, StringComparison.Ordinal);
+
+        // The two halves are collected apart and handed back required-then-not, so the half that has
+        // to be there is above the half that only ought to be.
+        Assert.Contains("var required = [];", ordering, StringComparison.Ordinal);
+        Assert.Contains("var optional = [];", ordering, StringComparison.Ordinal);
+        Assert.Contains("required.push(entry);", ordering, StringComparison.Ordinal);
+        Assert.Contains("optional.push(entry);", ordering, StringComparison.Ordinal);
+        Assert.True(
+            ordering.IndexOf("required.push(entry);", StringComparison.Ordinal)
+                < ordering.IndexOf("optional.push(entry);", StringComparison.Ordinal),
+            "The runtime status helper fills the half a row can do without before the half it cannot.");
+        Assert.Matches(@"return\s+required\.concat\(\s*optional\s*\)\s*;", ordering);
+
+        // A partition and not a sort: one walk from the front of the answer to the back, no
+        // comparator and no second key, so two rows the endpoint put in a row stay in that row.
+        Assert.Matches(@"for\s*\(\s*var i = 0;\s*i < \w+\.length;\s*i\+\+\s*\)", ordering);
+        Assert.DoesNotContain(".sort", ordering, StringComparison.Ordinal);
+        Assert.DoesNotContain("localeCompare", ordering, StringComparison.Ordinal);
+
+        // And the answer the caller is holding is left as it arrived: the helper builds its own two
+        // lists and returns a third, rather than rearranging the one it was handed.
+        foreach (var mutation in new[]
+                {
+                    "entries[",
+                    "entries =",
+                    "entries.push",
+                    "entries.pop",
+                    "entries.shift",
+                    "entries.unshift",
+                    "entries.reverse",
+                    "entries.splice",
+                    "entries.sort"
+                })
+        {
+            Assert.DoesNotContain(mutation, ordering, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain("return entries", ordering, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheRuntimeStatusTablesAreBothFilledThroughThatOneOrder()
+    {
+        // One order, decided once, for both tables. The binaries and the deployment rows are one
+        // grid answering one question, and an order applied where one table is filled and not where
+        // the other is filled is two rules an administrator has to guess the difference between.
+        var html = ReadPageHtml();
+        var (_, script) = ReadRuntimeStatusRegions();
+
+        var fill = FunctionBody(html, "runtimeStatusFillRows");
+
+        Assert.Contains("runtimeStatusOrderByRequired(entries)", fill, StringComparison.Ordinal);
+
+        // The order is taken before a single row is built, and every row is built out of the ordered
+        // list: a row appended straight from the unordered one would land back wherever the endpoint
+        // left it, which is the difference between ordering the table and ordering part of it.
+        var ordered = fill.IndexOf("runtimeStatusOrderByRequired(entries)", StringComparison.Ordinal);
+        var appended = fill.IndexOf("body.appendChild(buildRow(", StringComparison.Ordinal);
+
+        Assert.True(
+            appended > ordered,
+            "The runtime status tables build their rows before those rows are put in their order.");
+        Assert.DoesNotContain("buildRow(entries[", fill, StringComparison.Ordinal);
+
+        // Both tables still arrive through the one shared fill, so the order above is the order of
+        // the binaries and of the deployment rows alike.
+        Assert.Contains("runtimeStatusFillRows(nodes.binaries, binaries,", script, StringComparison.Ordinal);
+        Assert.Contains("runtimeStatusFillRows(nodes.entries, entries,", script, StringComparison.Ordinal);
+        Assert.Equal(
+            2,
+            Regex.Matches(script, @"runtimeStatusFillRows\(nodes\.(?:binaries|entries), [^,]*, [^,]*, runtimeStatusColumnCount,").Count);
+    }
+
+    [Fact]
     public void TheRuntimeStatusSectionNamesNoVariableTheStatusEndpointDoesNotReport()
     {
         // The section is the one part of the page allowed to name the deployment, which is exactly
