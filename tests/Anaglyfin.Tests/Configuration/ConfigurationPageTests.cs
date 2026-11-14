@@ -964,12 +964,14 @@ public class ConfigurationPageTests
         // page is a thing an administrator can do nothing about while looking at it.
         //
         // The runtime status section is the one exception the owner asked for, and it is a read-only
-        // answer rather than an edit: the page now shows what the deployment named, because an
+        // answer rather than an edit: the page shows what the deployment named, because an
         // administrator who cannot tell a missing binary from a wrong one was sent to a shell for it.
         // The exception is bounded rather than general - it is the marked section and its script,
         // and the names it may carry are the ones the status endpoint itself reports, which
-        // TheRuntimeStatusSectionNamesOnlyTheVariablesTheStatusEndpointReports pins. Everything the
-        // settings half of the page has to stay free of, it still stays free of.
+        // TheRuntimeStatusSectionNamesNoVariableTheStatusEndpointDoesNotReport pins. It no longer
+        // needs any of them in its own copy: the answer carries the names, and the paragraph that
+        // recited them before the endpoint had answered is gone. Everything the settings half of the
+        // page has to stay free of, it still stays free of.
         var (outside, regions) = ReadPageWithoutRuntimeStatus();
 
         Assert.DoesNotContain("wrapper", outside, StringComparison.OrdinalIgnoreCase);

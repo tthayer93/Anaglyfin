@@ -115,7 +115,9 @@
              * The one column grid both tables declare, one class per column on each table's own
              * colgroup. The widths are said once, here, so the two tables cannot drift apart and
              * an administrator reads one table of five columns twice rather than two tables that
-             * happen to disagree about where a value starts.
+             * happen to disagree about where a value starts. The names are the binary table's, and
+             * the variables table borrows them by position: a Value is the same third of the page
+             * as a Path is, and a Resolved path is the same third as a Version.
              */
             .anaglyfin-runtimeStatusColStatus {
                 width: 12%;
@@ -1146,10 +1148,10 @@
                 var runtimeStatusItemNames = ['Ok', 'Missing', 'NotReadable', 'NotExecutable', 'NotWritable', 'ProbeFailed', 'VersionMismatch', 'Warning', 'Unknown'];
                 var runtimeStatusItemTexts = ['OK', 'Missing', 'Not readable', 'Not executable', 'Not writable', 'Probe failed', 'Version mismatch', 'Warning', 'Unknown'];
 
-                // Everything that was checked and came back as anything other than OK is said in
-                // the error family, because each of those states costs an Anaglyfin command
-                // something; only the state that means "present, but look at this" is amber. A
-                // state this build has no name for is unknown, and unknown is not a pass.
+                // Every state that is not the one that passed is drawn in the error family, because
+                // each of them costs an Anaglyfin command something; only the state that means
+                // "present, but look at this" is amber. A state this build has no name for is
+                // unknown, and unknown is not a pass.
                 var runtimeStatusItemClasses = [
                     'anaglyfin-runtimeStatusRowOk',
                     'anaglyfin-runtimeStatusRowError',
