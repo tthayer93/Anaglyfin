@@ -35,12 +35,13 @@ services:
       # --- The Anaglyfin deployment contract (docs/install.md, "Docker server") ---
       # The server's FFmpeg path: the wrapper, mounted from the CI artifacts.
       JELLYFIN_FFMPEG: ${HARNESS_JELLYFIN_FFMPEG:-/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg}
-      # What the wrapper hands MARKER/PROFILE commands to. The default is the FFmpeg the
-      # official image ships, which is enough to validate marker transport, command rewrite,
-      # and ordinary pass-through - and is NOT an FFmpeg-mvc build, so it cannot decode MVC.
-      # See README.md step 4 for discovering the real path in this image, and step 9 for
-      # pointing this at a mounted FFmpeg-mvc build, which is what a real MVC playback needs.
-      ANAGLYFIN_REAL_FFMPEG: ${HARNESS_REAL_FFMPEG:-/usr/lib/jellyfin-ffmpeg/ffmpeg}
+      # What the wrapper hands MARKER/PROFILE commands to. The default is the mounted
+      # FFmpeg-mvc build below, because that is the only binary in this stack that can decode
+      # MVC and therefore the only one a converted profile may reach. Point it at the image's
+      # own FFmpeg to study marker transport and command rewrite without a build (the profile
+      # then fails at the decoder, which is a correct observation about a stock FFmpeg), and
+      # never point ANAGLYFIN_SERVER_FFMPEG at the build: see README.md step 9.
+      ANAGLYFIN_REAL_FFMPEG: ${HARNESS_REAL_FFMPEG:-/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc}
       # What the wrapper hands ORDINARY commands and Jellyfin's startup capability probes to -
       # the stock FFmpeg the server would otherwise run. The default matches the official
       # image's FFmpeg, so the harness dispatches exactly as a real two-binary deployment
@@ -68,21 +69,23 @@ services:
       # The wrapper: the staged CI artifact, executable, read-only. The server only ever
       # executes it; .NET single-file extraction goes to the container's tmp.
       - ${HARNESS_WRAPPER_BIN:-../../artifacts/anaglyfin-ffmpeg}:/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg:ro
-    # Two things are deliberately not here, because compose cannot express "only if it
-    # exists" and a stack that needs either one is not a stack everyone can start:
+      # The FFmpeg-mvc build: what turns MARKER playback into 3D output, and the only binary
+      # the wrapper's marker route may use. It is read-only because the server only executes it,
+      # and it is mounted at its own path rather than beside the wrapper so that the two
+      # binaries stay two files - the admin runtime status reports a capability inversion when
+      # they are the same one. The default is the harness's own build directory, which git
+      # ignores, so HARNESS_FFMPEG_MVC only has to be set to put a build somewhere else; when
+      # no build has been placed there the marker route has nothing to run, which is the honest
+      # reading of a stack that was never given one. docs/install.md 4.1 step 4 builds it, and
+      # README.md step 9 names the pair of variables that wires it.
+      - ${HARNESS_FFMPEG_MVC:-./jellyfin-mvc/ffmpeg-mvc}:/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc:ro
+    # One thing is deliberately not here, because compose cannot express "only if it exists"
+    # and a stack that needs it is not a stack everyone can start:
     #
     #   - an ffprobe beside the wrapper. Jellyfin looks for ffprobe next to the FFmpeg it
     #     was given, so the wrapper's directory has to hold one; `sh harness.sh ffprobe`
     #     copies the image's OWN (official) one in - and a real deployment copies its stock
     #     FFmpeg's too, never the FFmpeg-mvc build's.
-    #   - an FFmpeg-mvc build, which is what turns MARKER playback into 3D output:
-    #
-    #       - ${HARNESS_FFMPEG_MVC}:/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc:ro
-    #
-    #     with HARNESS_FFMPEG_MVC in .env naming the binary on this host, and
-    #     HARNESS_REAL_FFMPEG=/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc to point the wrapper's
-    #     marker route at it (leaving ANAGLYFIN_SERVER_FFMPEG on the stock FFmpeg for ordinary
-    #     commands and probes). README.md step 9 has the pair, docs/install.md the bare-metal shape.
     #
     # Intel GPU access is the same story and lives in compose.qsv.yml.
 
