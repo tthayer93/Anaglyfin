@@ -14,12 +14,12 @@ public class PluginManifestTests
 {
     private const string ManifestResourceName = "Anaglyfin.Plugin.manifest.xml";
 
-    // 0.2.2 is the version this release cuts, and it is written down once - here. Every other
+    // 0.2.3 is the version this release cuts, and it is written down once - here. Every other
     // place the number appears is derived: the project files compile it into their assembly
     // versions, the manifest beside them states it, and the packaging job reads it out of that
     // manifest to name the archive. A bump therefore has to be noticed somewhere on purpose,
     // and this is that somewhere; the tests below then refuse any build that disagrees.
-    private const string ReleaseVersion = "0.2.2";
+    private const string ReleaseVersion = "0.2.3";
 
     [Fact]
     public void PluginAssemblyCarriesTheIdentityManifest()
