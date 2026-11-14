@@ -137,7 +137,7 @@ public sealed class RuntimeStatusPassCancellationTests : IDisposable
     }
 
     [Fact]
-    public async Task AQuicklyCompletedPassReleasesItsCancellationsBeforeTheTimerReadsThem()
+    public async Task AQuicklyCompletedPassStillResolvesAndReleasesItsCancellations()
     {
         var harness = new RuntimeStatusHarness();
         var probe = new FakeRuntimeVersionProbe();
@@ -149,10 +149,11 @@ public sealed class RuntimeStatusPassCancellationTests : IDisposable
             harness.Root,
             PluginVersion);
 
-        // A probe that answers at once lets the pass finish before the watchdog timer has even read
-        // its token: the pass continuation used to dispose the watchdog source in that window and the
-        // delay then registered against a disposed source. Repeated rather than run once, so the
-        // ordering is provoked rather than waited for; every round still has to be the built snapshot.
+        // A probe that answers at once lets the pass finish while the watchdog is still being armed:
+        // the pass continuation used to release both cancellation sources itself in exactly this
+        // window, with the timer creation and the watchdog continuation still to come. Repeated rather
+        // than run once, so the ordering is provoked rather than waited for; every round still has to
+        // be the built, healthy snapshot.
         for (var round = 0; round < 25; round++)
         {
             var snapshot = await service.RefreshAsync(CancellationToken.None);
