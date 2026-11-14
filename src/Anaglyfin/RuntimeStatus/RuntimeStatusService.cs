@@ -260,8 +260,16 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     /// <para>
     /// The watchdog owns the service-side cancellation for the pass. It cancels the pass token, releases
     /// the slot, and marks the pass abandoned so it cannot cache itself after cancellation. The watchdog
-    /// timer is cancelled and disposed when the pass completes, so a normal pass does not leave a timer
-    /// parked.
+    /// timer is cancelled when the pass completes, so a normal pass does not leave a timer parked.
+    /// </para>
+    /// <para>
+    /// <b>One owner releases the cancellations.</b> Neither the pass continuation nor the timer
+    /// continuation disposes anything; a single continuation of the <c>Task.WhenAll</c> of the two of
+    /// them disposes both sources once each, after both have settled. That is what makes the lifetime
+    /// race-free rather than merely caught: a pass that finishes in the same instant the watchdog fires
+    /// cannot have a source pulled out from under the continuation still holding it, and the abandoned
+    /// path - which returns before any result is cached - releases its sources exactly like every other
+    /// path.
     /// </para>
     /// </remarks>
     private Task<RuntimeStatusResponse> StartPassLocked()
@@ -278,7 +286,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             () => Build(passCancellation.Token),
             passCancellation.Token);
 
-        pass.ContinueWith(
+        var passFinished = pass.ContinueWith(
             completed =>
             {
                 lock (_gate)
@@ -310,35 +318,16 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
                     }
                 }
 
-                try
-                {
-                    watchdogCancellation.Cancel();
-                }
-                catch (ObjectDisposedException)
-                {
-                }
-
-                try
-                {
-                    watchdogCancellation.Dispose();
-                }
-                catch (ObjectDisposedException)
-                {
-                }
-
-                try
-                {
-                    passCancellation.Dispose();
-                }
-                catch (ObjectDisposedException)
-                {
-                }
+                // A pass that finished owns the timer it was waiting under: cancelling the source here
+                // is what stops the delay from sitting on the timer queue for the rest of the budget.
+                // Disposal is not this continuation's business - the single owner below does it.
+                CancelQuietly(watchdogCancellation);
             },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
 
-        Task.Delay(_passWatchdogTimeout, watchdogCancellation.Token).ContinueWith(
+        var watchdogElapsed = Task.Delay(_passWatchdogTimeout, watchdogCancellation.Token).ContinueWith(
             timer =>
             {
                 if (timer.IsCanceled || timer.IsFaulted)
@@ -357,21 +346,13 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
                     {
                         abandoned = true;
                         _inFlight = null;
-                        passCancellation.Cancel();
+                        CancelQuietly(passCancellation);
                         callerPass.TrySetResult(WatchdogTimeoutSnapshot());
                     }
                     else if (!inFlightPublished && !callerPass.Task.IsCompleted)
                     {
                         watchdogFiredBeforePublish = true;
                     }
-                }
-
-                try
-                {
-                    watchdogCancellation.Dispose();
-                }
-                catch (ObjectDisposedException)
-                {
                 }
             },
             CancellationToken.None,
@@ -387,7 +368,7 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             {
                 abandoned = true;
                 _inFlight = null;
-                passCancellation.Cancel();
+                CancelQuietly(passCancellation);
                 callerPass.TrySetResult(WatchdogTimeoutSnapshot());
             }
             else if (callerPass.Task.IsCompleted && ReferenceEquals(_inFlight, callerPass.Task))
@@ -396,7 +377,55 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
             }
         }
 
+        // The single owner of both cancellation sources. Neither continuation above disposes anything,
+        // so the pass that completes in the same instant the watchdog fires - and the abandoned pass,
+        // whose continuation returns before any result is cached - are both released here, once, after
+        // the last hand still holding a source has let go of it.
+        Task.WhenAll(passFinished, watchdogElapsed).ContinueWith(
+            settled =>
+            {
+                // Each continuation settles its own callers; reading the aggregate here only keeps one
+                // of them from resurfacing later as an unobserved task exception.
+                _ = settled.Exception;
+
+                DisposeQuietly(watchdogCancellation);
+                DisposeQuietly(passCancellation);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.None,
+            TaskScheduler.Default);
+
         return callerPass.Task;
+    }
+
+    /// <summary>
+    /// Cancels one of a pass's cancellation sources, tolerating the one case that is not a failure: the
+    /// single owner in <see cref="StartPassLocked"/> may already have released it.
+    /// </summary>
+    private static void CancelQuietly(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Disposes one of a pass's cancellation sources. The single owner disposes each source once, and
+    /// the guard keeps any future lifetime slip from throwing out of a continuation.
+    /// </summary>
+    private static void DisposeQuietly(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            cancellation.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     /// <summary>
