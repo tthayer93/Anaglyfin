@@ -72,6 +72,10 @@ checkout that ran them (`artifacts/` is ignored, so a worktree is a good place t
 | `artifacts/anaglyfin-ffmpeg` | `/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` |
 | `artifacts/Anaglyfin_0.2.3.zip` | not mounted - it contains exactly the DLL above, for servers you install by unpacking instead of mounting |
 
+The DLL and the wrapper are two files of one release, so rebuild before a run rather than pairing a fresh DLL with a stale
+`anaglyfin-ffmpeg`; on a real server that pairing is the catalog's doing, because a catalog plugin update carries the DLL only
+(`docs/install.md` §8).
+
 `.env` in the repository root is a local file, not a tracked one; see the comment at the
 top of `.ci/test.yml` for `SRC_DIR` and `BUILD_CONTEXT`. The harness reads its own
 `.env` in this directory, so the two never collide.

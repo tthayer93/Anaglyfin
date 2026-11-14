@@ -14,7 +14,7 @@ Nothing here installs Jellyfin, replaces the FFmpeg it ships, or touches its dat
 | Anaglyfin | `v0.2.3`. Plugin and wrapper are published under one tag: they are a pair, and an update moves them together |
 | Jellyfin | 12.x; the targeted container image is `jellyfin/jellyfin:12.4`. The manifest's `targetAbi 12.0.0` is a minimum-version floor rather than an exact match, so `v0.2.3` loads on 12.0 or later. Jellyfin 12.4 moved its own .NET baseline to `10.0.14`; Anaglyfin targets `net10.0` inside that band, so nothing is retargeted |
 | FFmpeg-mvc | product tag `n8.1.3-mvc11-jf2` on the `jellyfin-8.1` branch — the current Jellyfin-line tag, and the drop-in companion to the parent `jellyfin-ffmpeg v8.1.3-2`. The `n9.0.2-mvc11`/`n9` line carries no `-jf` parent, is not a Jellyfin product line, and is **not** adopted. Jellyfin's stable target remains 12.4. This `mvc11-jf2` pairing **is** runtime-validated for the MVC-to-top-and-bottom flow: the 2026-11-14 entry in `docs/validation.md` records a real MVC file decoded by this tag and delivered as both full- and half-height top-and-bottom by a `jellyfin/jellyfin:12.4` server. What that entry does not cover stays open in that file — the anaglyph profile, hardware (QSV/VA-API) encode, subtitle depth on hardware, and the 3D-client rows. Earlier `n8.1.3-mvc10-jf1`/`v8.1.3-1` and older evidence stays historical. **FFmpeg-mvc publishes no binaries for any platform**, so every `ffmpeg-mvc` below is one you build with the commands given here |
-| Wrapper release asset | `anaglyfin-ffmpeg`, a self-contained **linux-x64** binary, published with `SHA256SUMS.txt` in the same release. There is **no** `win-x64` asset |
+| Wrapper release asset | `anaglyfin-ffmpeg`, a self-contained **linux-x64** binary, published with `SHA256SUMS.txt` in the same release. There is **no** `win-x64` asset. The catalog never delivers this file: installing or updating the plugin moves only the DLL, so the wrapper is placed by the platform section and has to carry **the plugin's own version** — a plugin at one tag over a wrapper from another is the failure §8's wrapper entry covers |
 
 **Before you start.** Jellyfin 12 running as one of the three shapes in §3 and reachable in a browser; permission to stop and start
 that service, or recreate that container, **once** at the end of your platform section — that restart loads the plugin; and, on the
@@ -71,6 +71,12 @@ for a container mounting `./jellyfin/config` at `/config`; `/var/lib/jellyfin/pl
 service's own data directory. The catalog installs this same archive, so the plugin is identical either way — and it never bundles
 or installs the runtime files; the platform section you now follow does.
 
+**The catalog moves the plugin and nothing else, on an update as well as on an install.** The catalog entry replaces the plugin
+DLL; `anaglyfin-ffmpeg` is a separate asset of the same release, so a catalog update leaves the wrapper exactly where the last
+install put it. Plugin and wrapper ship under one tag and have to be at that tag together, so the catalog is only half of an
+update: the platform section's update step — §4.2, §5.2 or §6.2 — is what carries the wrapper to the new release, and taking
+the plugin without it is the failure §8's wrapper entry covers.
+
 ## 3. Choose one platform and follow that section
 
 | Your server, already installed and running | The service | The five variables go in | Follow |
@@ -87,11 +93,13 @@ install, or the reverse.
 - **Initial install:** prerequisites → directories → wrapper → FFmpeg-mvc → official `ffprobe` → ownership → the five variables
   (plus Docker's optional GPU mapping when used) → **one** restart or recreate → verify.
 - **Update** — plugin and wrapper ship under one tag, so move them as a pair: (1) take the plugin update from the catalog,
-  which waits for the restart at step 3; (2) replace the runtime file you are updating — wrapper, `ffmpeg-mvc`, or both —
-  with the mechanics each shape makes safe: Docker execs every file operation inside the running container and swaps each
-  file through a staged same-directory rename, stopping nothing; the bare-metal shapes stop the service, replace, and leave
-  it stopped; (3) start, restart, recreate, or `daemon-reload` + start, **once**, which loads the plugin update too;
-  (4) verify.
+  which waits for the restart at step 3 and replaces **only the plugin DLL** — the catalog never touches `anaglyfin-ffmpeg`,
+  so the wrapper reaches the new tag in step 2 and not here; (2) replace the runtime file you are updating — wrapper,
+  `ffmpeg-mvc`, or both — with the mechanics each shape makes safe: Docker execs every file operation inside the running
+  container and swaps each file through a staged same-directory rename, stopping nothing; the bare-metal shapes stop the
+  service, replace, and leave it stopped; (3) start, restart, recreate, or `daemon-reload` + start, **once**, which loads the
+  plugin update too; (4) verify. A plugin taken without its wrapper is what §7's runtime-status wrapper row reports as a
+  binary that did not answer `--anaglyfin-version`, and §8 says what to do about it.
 - **Uninstall:** (1) take the plugin out of **Dashboard → Plugins** first — either order survives, this one is clearer;
   (2) remove **every** Anaglyfin environment entry, from every place you added one — the compose file on the host, the
   systemd drop-ins, or the service's `AppEnvironmentExtra`; (3) delete the Anaglyfin runtime directory and the `lock` /
@@ -254,7 +262,8 @@ disturbs no running process, and being same-directory it is atomic. A transcode 
 and every process started after the rename already runs the new file.
 
 1. **Plugin.** Take the update from the catalog first (§2) and start no restart yet: plugin and wrapper ship under one tag, so the single
-   restart at step 5 of this section loads both.
+   restart at step 5 of this section loads both. The catalog writes only the plugin DLL, so this step moves no runtime file — step 3 is what
+   carries `anaglyfin-ffmpeg` to the new tag, and stopping here is a new plugin over an old wrapper (§8).
 
 2. **Temporary tools.** **Repeat step 1** if the container has been recreated or rebuilt since that block last ran — `docker compose restart`
    alone does not discard those packages, while a recreate, a rebuild, or an image pull does. They are fetch-time and build-time only, never
@@ -264,7 +273,8 @@ and every process started after the rename already runs the new file.
 
 3. **New Anaglyfin wrapper and plugin.** **Repeat step 3**, changing only its `anaglyfin_tag=` assignment to the new release. That block
    re-fetches the tag's pair of assets, checks the wrapper's checksum line fail-closed, and renames the new binary over the running one; no
-   other line of it changes.
+   other line of it changes. Repeat it whenever the catalog update at item 1 was taken: `anaglyfin_tag=` and the tag the catalog installed are
+   one release, and the runtime-status wrapper row (§7) is the check that they match.
 
 4. **New FFmpeg-mvc.** **Repeat step 4**, changing only its `ffmpeg_mvc_tag=` assignment, then **repeat step 5** unchanged. The source arrives
    as a tarball, so moving to a new tag means a new tarball rather than a `git` command in `/tmp`. Keep both `-rpath` lines: they bake
@@ -404,8 +414,10 @@ sudo systemctl restart jellyfin
 
 ### 5.2 Update
 
-Take the plugin update from the catalog first (§2); plugin and wrapper are one release and move together. Stop the service
-before replacing either file, and start it once at the end.
+Take the plugin update from the catalog first (§2); plugin and wrapper are one release and move together, and the catalog
+carries only the plugin DLL — the block below is what takes `anaglyfin-ffmpeg` to the tag the plugin came from, and a server
+that takes only the catalog update keeps the old wrapper (§8). Stop the service before replacing either file, and start it
+once at the end.
 ```sh
 set -e
 sudo systemctl stop jellyfin
@@ -572,7 +584,8 @@ also the restart that loads the plugin from §2. Then run §7: on this shape you
 ### 6.2 Update
 
 Take the plugin update from the catalog first (§2), then swap the file with the service stopped — a running `.exe` cannot be overwritten — and
-start it again.
+start it again. The catalog brings the plugin DLL and nothing else, so the publish below is what moves `anaglyfin-ffmpeg.exe` to the tag the
+plugin came from; a server that takes only the catalog update keeps the wrapper it already had (§8).
 
 **The wrapper:** the tag changes, the clone does not, because `git clone` refuses an existing directory and the old tag leaves
 a detached HEAD that `--detach` moves off cleanly.
@@ -648,6 +661,13 @@ installation — read it before reading the server log. It confirms:
 The section reads and never writes: it installs nothing, saves nothing and edits nothing. Placing a binary or setting a
 variable stays a deployment step (§4-§6), and checks 3-5 stay the proof that what it reports also works. If the section
 cannot reach the endpoint it says so in one line and leaves the settings usable.
+
+The **Anaglyfin FFmpeg wrapper** row is the one to read after an update: its state comes from the wrapper's own
+`--anaglyfin-version` answer, so a `Probe failed` there on a server whose plugin page opens is the plugin having moved without
+its wrapper — §8 names the fix. `Version mismatch` is the same pairing on a wrapper new enough to name itself. The endpoint
+behind the table, `GET /Anaglyfin/RuntimeStatus`, spells each row out in its own words: the stale wrapper says the binary did
+not answer `--anaglyfin-version`, and a row saying the wrapper path **is the same file as** one of the two FFmpeg builds is
+`JELLYFIN_FFMPEG` aimed at FFmpeg rather than at `anaglyfin-ffmpeg`.
 
 **2. The server names the wrapper as its FFmpeg.** That startup line, naming the wrapper's path, is what identifies the
 wrapper as Jellyfin's FFmpeg; no server-reported FFmpeg version is part of the contract.
@@ -736,6 +756,14 @@ and does not cost you.
 - **The server will not start at all:** `FFmpeg validation: The process returned no result` and `Path set by command line or environment
   variable is invalid`. That message blames the `JELLYFIN_FFMPEG` path — the wrapper — but in a single-binary deployment the startup probe
   itself goes to `ANAGLYFIN_REAL_FFMPEG`, so the missing file is usually the other one. Check both binaries before changing either path.
+- **The runtime-status wrapper row reads `Probe failed` right after a catalog plugin update**, usually with the plugin page itself opening
+  and ordinary playback fine. The catalog replaces only the plugin DLL (§2), so the `anaglyfin-ffmpeg` on disk is still the release before
+  the plugin's — and that release predates the `--anaglyfin-version` question the status asks, so the wrapper has nothing to answer it with
+  and the status answer for that row says the binary did not answer it (older plugin builds word the same answer `it is not a real wrapper`).
+  Take the wrapper to the plugin's own tag — §4.2's wrapper step, §5.2, §6.2 — and do the one restart; the row returns to `OK` with it. Two
+  neighbours are different faults: `Version mismatch` names both releases because that wrapper is new enough to answer, and an answer saying
+  the wrapper path **is the same file as** the FFmpeg-mvc build or the official/server FFmpeg is not a stale wrapper at all but
+  `JELLYFIN_FFMPEG` aimed at FFmpeg, which §1.1 says how to correct.
 - **`Running /config/anaglyfin/ffmpeg/ffprobe ... No such file or directory`**, and a library that never fills: no sidecar `ffprobe`. Copy the
   **official** one beside the wrapper — the derived name is always `ffprobe` in that same directory, never `anaglyfin-ffprobe`, and `PATH` is
   never consulted — then restart.
