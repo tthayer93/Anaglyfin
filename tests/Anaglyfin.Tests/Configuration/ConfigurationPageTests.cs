@@ -113,8 +113,7 @@ public class ConfigurationPageTests
         "Required",
         "Label",
         "Path",
-        "Version",
-        "Detail"
+        "Version"
     ];
 
     /// <summary>The columns the variable table owes each reported variable, in the order it shows them.</summary>
@@ -124,9 +123,61 @@ public class ConfigurationPageTests
         "Required",
         "Variable",
         "Value",
-        "Resolved path",
-        "Source",
-        "Detail"
+        "Resolved path"
+    ];
+
+    /// <summary>
+    /// The five column classes both tables name on their own <c>colgroup</c>, in order. The two
+    /// tables are one grid rather than two tables that happen to look alike, so the pair is only
+    /// aligned while the same five names appear in the same order on both of them.
+    /// </summary>
+    private static readonly string[] RuntimeStatusColumnClasses =
+    [
+        "anaglyfin-runtimeStatusColStatus",
+        "anaglyfin-runtimeStatusColRequired",
+        "anaglyfin-runtimeStatusColName",
+        "anaglyfin-runtimeStatusColPath",
+        "anaglyfin-runtimeStatusColVersion"
+    ];
+
+    /// <summary>The three row colours the page owns, and the only three a generated row may ever carry.</summary>
+    private const string RuntimeStatusRowOkClass = "anaglyfin-runtimeStatusRowOk";
+
+    private const string RuntimeStatusRowWarningClass = "anaglyfin-runtimeStatusRowWarning";
+
+    private const string RuntimeStatusRowErrorClass = "anaglyfin-runtimeStatusRowError";
+
+    /// <summary>
+    /// The three row states as the page draws them: the class a row carries and the colour it is
+    /// drawn in, which is the same family the summary line uses.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are pinned because the dashboard brings its own sheet to this page, and that
+    /// sheet paints <c>td</c> elements of its own. A colour declared on the <c>tr</c> only reaches a
+    /// cell by inheritance, and inheritance loses to any declaration the dashboard makes on the cell
+    /// - so the three colours have to be declared on the cells to be the colours an administrator
+    /// sees, which is what <see cref="TheRuntimeStatusRowsAreColouredByThePageAndNotByTheEndpoint"/>
+    /// pins. The band behind them is pinned too: it is what makes a row read as one answer rather
+    /// than five coloured accidents.
+    /// </remarks>
+    private static readonly (string StateClass, string Colour)[] RuntimeStatusRowStates =
+    [
+        (RuntimeStatusRowOkClass, "#6dae5a"),
+        (RuntimeStatusRowWarningClass, "#e2a400"),
+        (RuntimeStatusRowErrorClass, "#cf4e52")
+    ];
+
+    /// <summary>
+    /// The words the removed summary paragraph opened with, and the two sentences it closed with.
+    /// The section is allowed one short line under its heading; what it is not allowed is to
+    /// re-grow the paragraph that used to list every binary and every variable the endpoint might
+    /// report, which is the paragraph that made this page a copy of the install guide.
+    /// </summary>
+    private static readonly string[] RemovedRuntimeStatusParagraph =
+    [
+        @"What\s+the\s+plugin\s+itself\s+can\s+see\s+of\s+this\s+installation",
+        @"the\s+directory\s+the\s+service\s+account\s+has\s+to\s+be\s+able\s+to\s+write",
+        @"This\s+section\s+reads\s+and\s+never\s+writes"
     ];
 
     /// <summary>The words the summary shows for the three overall states, in the endpoint's order.</summary>
@@ -933,12 +984,14 @@ public class ConfigurationPageTests
         // page is a thing an administrator can do nothing about while looking at it.
         //
         // The runtime status section is the one exception the owner asked for, and it is a read-only
-        // answer rather than an edit: the page now shows what the deployment named, because an
+        // answer rather than an edit: the page shows what the deployment named, because an
         // administrator who cannot tell a missing binary from a wrong one was sent to a shell for it.
         // The exception is bounded rather than general - it is the marked section and its script,
         // and the names it may carry are the ones the status endpoint itself reports, which
-        // TheRuntimeStatusSectionNamesOnlyTheVariablesTheStatusEndpointReports pins. Everything the
-        // settings half of the page has to stay free of, it still stays free of.
+        // TheRuntimeStatusSectionNamesNoVariableTheStatusEndpointDoesNotReport pins. It no longer
+        // needs any of them in its own copy: the answer carries the names, and the paragraph that
+        // recited them before the endpoint had answered is gone. Everything the settings half of the
+        // page has to stay free of, it still stays free of.
         var (outside, regions) = ReadPageWithoutRuntimeStatus();
 
         Assert.DoesNotContain("wrapper", outside, StringComparison.OrdinalIgnoreCase);
@@ -990,15 +1043,24 @@ public class ConfigurationPageTests
         Assert.Contains("<caption>Deployment variables</caption>", markup, StringComparison.Ordinal);
 
         // One answer the endpoint gives per column the page has, and the page is not asking for a
-        // column the endpoint has nothing for.
-        foreach (var column in RuntimeStatusBinaryColumns)
-        {
-            Assert.Contains($"<th scope=\"col\">{column}</th>", markup, StringComparison.Ordinal);
-        }
+        // column the endpoint has nothing for. Read as the whole heading row of each table rather
+        // than as a list of headings to find somewhere in the section: a column added back at either
+        // end is a column the page has stopped being able to fill.
+        Assert.Equal(
+            RuntimeStatusBinaryColumns,
+            ReadColumnHeadings(RuntimeStatusTable(markup, "Runtime binaries")));
+        Assert.Equal(
+            RuntimeStatusVariableColumns,
+            ReadColumnHeadings(RuntimeStatusTable(markup, "Deployment variables")));
 
-        foreach (var column in RuntimeStatusVariableColumns)
+        // The two columns that used to sit at the right-hand end of these tables are gone by the
+        // owner's request, and they are gone rather than merely unnamed: nothing in the section
+        // still holds a heading, a cell or a caption that calls itself one of them.
+        foreach (var retired in new[] { "Detail", "Source" })
         {
-            Assert.Contains($"<th scope=\"col\">{column}</th>", markup, StringComparison.Ordinal);
+            Assert.DoesNotContain($">{retired}<", markup, StringComparison.Ordinal);
+            Assert.DoesNotContain($">{retired} ", markup, StringComparison.Ordinal);
+            Assert.DoesNotContain($"<th scope=\"col\">{retired}</th>", markup, StringComparison.Ordinal);
         }
 
         // The summary, the two tables and the warning are all there before the endpoint has
@@ -1018,6 +1080,103 @@ public class ConfigurationPageTests
         }
 
         Assert.Contains("Runtime status has not been read yet.", markup, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheRuntimeStatusTablesAreOneGridOfFiveAlignedColumns()
+    {
+        // The two tables are read one under the other, so an administrator's eye is already trying
+        // to line them up. They are aligned by declaring the same grid rather than by hoping the
+        // same content arrives in both: five columns, the same five classes on each table's own
+        // colgroup, those widths said once in the stylesheet, and a fixed layout so the widths are
+        // what the page chose rather than what the longest path in the answer negotiated.
+        var html = ReadPageHtml();
+        var (markup, script) = ReadRuntimeStatusRegions();
+
+        var binaries = RuntimeStatusTable(markup, "Runtime binaries");
+        var variables = RuntimeStatusTable(markup, "Deployment variables");
+
+        foreach (var table in new[] { binaries, variables })
+        {
+            var columns = ReadColumnClasses(table);
+
+            Assert.Equal(RuntimeStatusColumnClasses, columns);
+            Assert.Equal(5, ReadColumnHeadings(table).Length);
+
+            // An empty table still spans the grid it belongs to, rather than five columns' worth of
+            // colspan that would leave the "nothing reported" row sitting over the wrong columns.
+            Assert.Contains("<td colspan=\"5\">", table, StringComparison.Ordinal);
+            Assert.DoesNotContain("colspan=\"6\"", table, StringComparison.Ordinal);
+            Assert.DoesNotContain("colspan=\"7\"", table, StringComparison.Ordinal);
+        }
+
+        // The same five names in the same order on both tables is the alignment, so a table that
+        // renamed its own third column is reported even when both still have five columns.
+        Assert.Equal(ReadColumnClasses(binaries), ReadColumnClasses(variables));
+
+        // Fixed layout, and each of the five widths said once, in the stylesheet rather than in the
+        // markup, so the two tables cannot drift apart.
+        var tableRule = StyleRule(html, @"\.anaglyfin-runtimeStatusTable");
+        var cellRule = StyleRule(html, @"\.anaglyfin-runtimeStatusTable\s+th,\s*\.anaglyfin-runtimeStatusTable\s+td");
+        var headingRule = StyleRule(html, @"\.anaglyfin-runtimeStatusTable\s+th");
+
+        Assert.Matches(@"table-layout:\s*fixed", tableRule);
+
+        foreach (var column in RuntimeStatusColumnClasses)
+        {
+            Assert.Matches(@"width:\s*\d+%", StyleRule(html, @"\." + column));
+        }
+
+        // Lines that are actually visible: a rule on the table, a rule on every cell, and a heavier
+        // one under the headings, so the header row separates from the rows it names.
+        Assert.Matches(@"border:\s*[\d.]+em\s+solid", tableRule);
+        Assert.Matches(@"border:\s*[\d.]+em\s+solid", cellRule);
+        Assert.Matches(@"border-bottom:\s*[\d.]+em\s+solid", headingRule);
+
+        // And the long path that is the only reason a table ever needed to negotiate its own widths:
+        // it breaks inside its cell rather than pushing a column wider and sliding the tables apart.
+        Assert.Matches(@"overflow-wrap:\s*(break-word|anywhere)", cellRule);
+
+        // The script counts the same grid the markup declares, so a column added to one half and not
+        // the other is reported rather than rendered as a table with a cell missing.
+        Assert.Equal("5", Regex.Match(script, @"var runtimeStatusColumnCount = (?<count>\d+);").Groups["count"].Value);
+        Assert.Equal(
+            2,
+            Regex.Matches(script, @"runtimeStatusFillRows\(nodes\.(?:binaries|entries), [^,]*, [^,]*, runtimeStatusColumnCount,").Count);
+    }
+
+    [Fact]
+    public void TheRuntimeStatusSectionIsNotAParagraphAboutTheDeployment()
+    {
+        // The section used to open with a paragraph naming every binary and every deployment
+        // variable the endpoint might report. It is gone by the owner's request: what the endpoint
+        // reports is the endpoint's decision, and a page that recites a list it cannot verify is a
+        // page an administrator trusts while it is stale. One short line of copy is left under the
+        // heading, and everything the section still owes the administrator - the overall answer, the
+        // version and the checked stamp, the Refresh button, the warning and the two captions - stays.
+        var html = ReadPageHtml();
+        var (markup, _) = ReadRuntimeStatusRegions();
+
+        foreach (var removed in RemovedRuntimeStatusParagraph)
+        {
+            Assert.Empty(Regex.Matches(html, removed));
+        }
+
+        var copy = RuntimeStatusHeadingCopy(markup);
+
+        Assert.False(string.IsNullOrWhiteSpace(copy), "The runtime status heading has lost its one line of copy.");
+        Assert.True(
+            copy.Length <= 200,
+            $"The runtime status heading is followed by a paragraph again ({copy.Length} characters): {copy}");
+
+        // What removing the paragraph must not have taken with it.
+        Assert.Contains("Runtime status has not been read yet.", markup, StringComparison.Ordinal);
+        Assert.Contains("<span>Refresh</span>", markup, StringComparison.Ordinal);
+        Assert.Contains("id=\"AnaglyfinRuntimeStatusWarning\"", markup, StringComparison.Ordinal);
+        Assert.Contains("Plugin version: not read.", markup, StringComparison.Ordinal);
+        Assert.Contains("Checked: not read.", markup, StringComparison.Ordinal);
+        Assert.Contains("<caption>Runtime binaries</caption>", markup, StringComparison.Ordinal);
+        Assert.Contains("<caption>Deployment variables</caption>", markup, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1202,6 +1361,12 @@ public class ConfigurationPageTests
         Assert.Equal(RuntimeStatusOverallTexts.Length, ReadScriptList(script, "runtimeStatusOverallNames").Length);
         Assert.Equal(RuntimeStatusItemTexts.Length, ReadScriptList(script, "runtimeStatusItemNames").Length);
         Assert.Equal(RuntimeStatusOverallTexts.Length, ReadScriptList(script, "runtimeStatusOverallClasses").Length);
+        Assert.Equal(RuntimeStatusItemTexts.Length, ReadScriptList(script, "runtimeStatusItemClasses").Length);
+
+        // The names are the endpoint's enumeration, spelled as it spells it and in the order it
+        // stores it: every mapping beside them is chosen by position, so a state renamed or reorders
+        // in the model has to be seen here rather than as a row showing the wrong sentence.
+        Assert.Equal(Enum.GetNames<RuntimeItemState>(), ReadScriptList(script, "runtimeStatusItemNames"));
 
         // The state is only ever shown through the mapping. A row that dropped the raw answer into
         // a cell would show an administrator a word they were never meant to read.
@@ -1221,24 +1386,181 @@ public class ConfigurationPageTests
     }
 
     [Fact]
-    public void TheRuntimeStatusSectionNamesOnlyTheVariablesTheStatusEndpointReports()
+    public void TheRuntimeStatusRowsAreColouredByThePageAndNotByTheEndpoint()
     {
-        // The section is allowed to name deployment variables, which is exactly why the set it names
-        // is pinned here against the code that reports them: a page advertising a variable nothing
-        // reads is a page an administrator will go and set, and a variable the endpoint reports that
-        // the page never mentions is a check nobody explained.
-        var (markup, _) = ReadRuntimeStatusRegions();
+        // A coloured row is the one thing this section decides for itself out of an endpoint answer,
+        // and the decision has to stay the page's: the answer only ever chooses a position in a list
+        // the page wrote, and what reaches the row is one of the three class names the page styles.
+        // Nothing that arrives over the network is allowed to become a class name, which is the same
+        // rule that keeps it out of the document as markup - a state the server invented would style
+        // this page as easily as it could fill a cell.
+        var html = ReadPageHtml();
+        var (_, script) = ReadRuntimeStatusRegions();
 
-        var advertised = Regex.Matches(markup, @"\b(?:ANAGLYFIN|FFMPEG|JELLYFIN)_[A-Z0-9_]+\b")
-            .Cast<Match>()
-            .Select(match => match.Value)
+        // The nine states, aligned with the endpoint's own enumeration, each mapped onto one of the
+        // three classes the page owns: green for the one that passed, amber for the one that is
+        // present but should be looked at, and red for every state that costs a command something -
+        // including Unknown, which is not a pass.
+        var itemClasses = ReadScriptList(script, "runtimeStatusItemClasses");
+        var states = Enum.GetValues<RuntimeItemState>();
+
+        Assert.Equal(states.Length, itemClasses.Length);
+
+        for (var i = 0; i < states.Length; i++)
+        {
+            Assert.Equal(ExpectedRuntimeStatusRowClass(states[i]), itemClasses[i]);
+        }
+
+        // All three families are in use, and they are the page's own names, styled by the page.
+        foreach (var (stateClass, _) in RuntimeStatusRowStates)
+        {
+            Assert.Contains(stateClass, itemClasses, StringComparer.Ordinal);
+        }
+
+        // And styled where it counts. The dashboard arrives with its own sheet that paints td
+        // elements, and a colour the row hands down only reaches a cell by inheritance - which any
+        // declaration the dashboard makes on the cell overrules. A page that coloured the tr alone
+        // was a page whose three states all arrived the same grey, so the rule has to be the one on
+        // the cells, wearing the page's colour and the band that makes a row read as one answer.
+        foreach (var (stateClass, colour) in RuntimeStatusRowStates)
+        {
+            var stateCells = StyleRule(html, @"\." + stateClass + @"\s+td");
+
+            Assert.Matches(@"color:\s*" + Regex.Escape(colour), stateCells);
+            Assert.Matches(@"background-color:\s*rgba\(", stateCells);
+
+            // And it has to be that rule rather than one on the row: a colour carried on the tr
+            // alone is one a dashboard sheet can answer from above, so neither the colour nor the
+            // band may live there.
+            Assert.DoesNotMatch(@"\." + stateClass + @"\s*\{[^}]*(color|background)", html);
+        }
+
+        // The row takes its class from its caller alone, and the caller takes it from the list above
+        // and nothing else: no cell text, no reported value, no string built out of an answer.
+        var rowBuilder = FunctionBody(html, "runtimeStatusRow");
+
+        Assert.Contains("row.className = stateClass;", rowBuilder, StringComparison.Ordinal);
+        Assert.DoesNotContain("classList", rowBuilder, StringComparison.Ordinal);
+        Assert.DoesNotContain("setAttribute('class'", rowBuilder, StringComparison.Ordinal);
+        Assert.DoesNotContain("readProperty", rowBuilder, StringComparison.Ordinal);
+
+        var classMapper = FunctionBody(html, "runtimeStatusItemClass");
+
+        Assert.Contains("runtimeStatusItemClasses[", classMapper, StringComparison.Ordinal);
+        Assert.DoesNotContain("readProperty", classMapper, StringComparison.Ordinal);
+        Assert.DoesNotContain("runtimeStatusText", classMapper, StringComparison.Ordinal);
+        Assert.DoesNotContain("String(", classMapper, StringComparison.Ordinal);
+
+        // And neither table hands its row a class from anywhere else, nor a raw state as a class.
+        foreach (var (name, raw) in new[]
+                {
+                    ("runtimeStatusBinaryRow", "readProperty(binary, 'State')"),
+                    ("runtimeStatusEnvironmentRow", "readProperty(entry, 'State')")
+                })
+        {
+            var body = FunctionBody(html, name);
+
+            Assert.Contains($"runtimeStatusItemClass({raw})", body, StringComparison.Ordinal);
+            Assert.DoesNotContain($", {raw})", body, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void TheRuntimeStatusRowsCarryNoDetailOrSourceColumn()
+    {
+        // The two columns the owner asked off the page were the two that recited the endpoint's own
+        // words back: Detail was the probe's sentence and Source was the variable that supplied a
+        // value. They are off the generated rows as well as off the headings, so a row cannot grow
+        // the column back by reading the property again - and the helper that spelled the source out
+        // is gone rather than left uncalled, because a helper nobody calls is a helper somebody
+        // re-calls.
+        var html = ReadPageHtml();
+        var (markup, script) = ReadRuntimeStatusRegions();
+
+        var binaryValues = RowValueExpressions(FunctionBody(html, "runtimeStatusBinaryRow"));
+        var variableValues = RowValueExpressions(FunctionBody(html, "runtimeStatusEnvironmentRow"));
+
+        Assert.Equal(RuntimeStatusBinaryColumns.Length, binaryValues.Length);
+        Assert.Equal(RuntimeStatusVariableColumns.Length, variableValues.Length);
+
+        Assert.Equal(
+            new[]
+            {
+                "runtimeStatusItemText(readProperty(binary, 'State'))",
+                "runtimeStatusYesNo(readProperty(binary, 'Required'))",
+                "readProperty(binary, 'Label')",
+                "path",
+                "readProperty(binary, 'Version')"
+            },
+            binaryValues);
+
+        Assert.Equal(
+            new[]
+            {
+                "runtimeStatusItemText(readProperty(entry, 'State'))",
+                "runtimeStatusYesNo(readProperty(entry, 'Required'))",
+                "readProperty(entry, 'Name')",
+                "readProperty(entry, 'Value')",
+                "readProperty(entry, 'ResolvedPath')"
+            },
+            variableValues);
+
+        // The properties those two columns were built from are not read anywhere in the section at
+        // all, and neither is the flag the source column used to fall back on.
+        foreach (var region in new[] { markup, script })
+        {
+            Assert.DoesNotContain("Detail", region, StringComparison.Ordinal);
+            Assert.DoesNotContain("SourceVariable", region, StringComparison.Ordinal);
+            Assert.DoesNotContain("'IsSet'", region, StringComparison.Ordinal);
+            Assert.DoesNotContain("runtimeStatusSourceText", region, StringComparison.Ordinal);
+            Assert.DoesNotContain("'Set directly'", region, StringComparison.Ordinal);
+            Assert.DoesNotContain("'Not set'", region, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void TheRuntimeStatusSectionNamesNoVariableTheStatusEndpointDoesNotReport()
+    {
+        // The section is the one part of the page allowed to name the deployment, which is exactly
+        // why the set it may name is pinned against the code that reports it: a page advertising a
+        // variable nothing reads is a page an administrator will go and set.
+        //
+        // What the page no longer does is recite that set before the endpoint has answered. The list
+        // of variables is the endpoint's decision and its answer carries the names, so the copy that
+        // used to spell all five out under the heading is gone - and the guard that mattered stays
+        // two-sided: whatever the section does name must be something the endpoint reports, and the
+        // endpoint must still report all five, read out of the code that reports them rather than out
+        // of a copy of this page. TheAdminPageCarriesNoDeploymentInternals keeps every one of these
+        // names off the settings half of the document entirely.
+        var (markup, script) = ReadRuntimeStatusRegions();
+
+        var reported = RuntimeStatusReportedVariables
+            .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(
-            RuntimeStatusReportedVariables.OrderBy(name => name, StringComparer.Ordinal).ToArray(),
-            advertised);
+        // The endpoint still reports exactly the five, spelled as the code that reports them spells
+        // them - the settings layer's variable, the wrapper's two, the lock directory and the
+        // wrapper settings document.
+        Assert.Equal(5, reported.Length);
+        Assert.Contains(RuntimeStatusService.JellyfinFFmpegEnvironmentVariable, reported, StringComparer.Ordinal);
+        Assert.Contains(FFmpegWrapperOptions.RealFFmpegEnvironmentVariable, reported, StringComparer.Ordinal);
+        Assert.Contains(FFmpegWrapperOptions.ServerFFmpegEnvironmentVariable, reported, StringComparer.Ordinal);
+        Assert.Contains(TranscodeSlotStore.LockDirectoryEnvironmentVariable, reported, StringComparer.Ordinal);
+        Assert.Contains(WrapperSettingsFile.EnvironmentVariable, reported, StringComparer.Ordinal);
+
+        // And nothing the section carries is a deployment name outside that set, whether it arrived
+        // with an answer or was typed into the markup by hand.
+        foreach (var region in new[] { markup, script })
+        {
+            foreach (Match name in Regex.Matches(region, @"\b(?:ANAGLYFIN|FFMPEG|JELLYFIN)[A-Z0-9_]*\b"))
+            {
+                Assert.True(
+                    reported.Contains(name.Value, StringComparer.Ordinal),
+                    $"The runtime status section names {name.Value}, which the status endpoint does not report.");
+            }
+        }
     }
 
     [Fact]
@@ -1359,6 +1681,169 @@ public class ConfigurationPageTests
             .Cast<Match>()
             .Select(match => match.Groups["region"].Value)
             .ToList();
+
+    /// <summary>
+    /// The colour the page owes one reported state: green for the state that passed, amber for the
+    /// state that is present but has to be looked at, and red for every state that costs an Anaglyfin
+    /// command something - Unknown included, because a state the plugin could not observe is not a
+    /// state that passed.
+    /// </summary>
+    /// <remarks>
+    /// Written against <see cref="RuntimeItemState"/> rather than against a list, so the mapping is
+    /// checked for a state this enumeration gains without anyone remembering to add it to a test.
+    /// </remarks>
+    private static string ExpectedRuntimeStatusRowClass(RuntimeItemState state)
+        => state switch
+        {
+            RuntimeItemState.Ok => RuntimeStatusRowOkClass,
+            RuntimeItemState.Warning => RuntimeStatusRowWarningClass,
+            _ => RuntimeStatusRowErrorClass
+        };
+
+    /// <summary>
+    /// Reads one runtime table out of the section markup by its caption, from its <c>table</c> tag to
+    /// its close, so a test can ask what that table alone declares rather than what the section
+    /// somewhere contains.
+    /// </summary>
+    private static string RuntimeStatusTable(string markup, string caption)
+    {
+        var captioned = markup.IndexOf($"<caption>{caption}</caption>", StringComparison.Ordinal);
+        Assert.True(captioned >= 0, $"The runtime status section no longer carries a table captioned {caption}.");
+
+        var opened = markup.LastIndexOf("<table", captioned, StringComparison.Ordinal);
+        var closed = markup.IndexOf("</table>", captioned, StringComparison.Ordinal);
+
+        Assert.True(
+            opened >= 0 && closed > captioned,
+            $"The table captioned {caption} is not a table of its own.");
+
+        return markup[opened..(closed + "</table>".Length)];
+    }
+
+    /// <summary>
+    /// Reads the column headings of one table, in the order they are declared, so a column can only
+    /// be present as a heading of that table and cannot be smuggled in somewhere else.
+    /// </summary>
+    private static string[] ReadColumnHeadings(string table)
+        => Regex.Matches(table, @"<th[^>]*\bscope=""col"">\s*(?<text>[^<]*?)\s*</th>")
+            .Cast<Match>()
+            .Select(match => match.Groups["text"].Value)
+            .ToArray();
+
+    /// <summary>
+    /// Reads the class of every <c>col</c> of one table's <c>colgroup</c>, in order: the pair of
+    /// classes two tables share is what puts their columns above each other, so the list is compared
+    /// as a sequence rather than as a set.
+    /// </summary>
+    private static string[] ReadColumnClasses(string table)
+    {
+        var group = Regex.Match(table, @"<colgroup>(?<body>[\s\S]*?)</colgroup>");
+
+        Assert.True(
+            group.Success && group.Groups["body"].Value.IndexOf("<table", StringComparison.Ordinal) < 0,
+            "A runtime status table no longer declares its columns with a colgroup.");
+
+        return Regex.Matches(group.Groups["body"].Value, "<col\\b[^>]*\\bclass=\"(?<classes>[^\"]*)\"")
+            .Cast<Match>()
+            .Select(match => match.Groups["classes"].Value.Trim())
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Reads the declarations of one stylesheet rule of the page, so a test can pin how the page is
+    /// drawn without pinning the sheet around it.
+    /// </summary>
+    /// <param name="html">The whole page document.</param>
+    /// <param name="selector">The rule's selector, as a regular expression.</param>
+    private static string StyleRule(string html, string selector)
+    {
+        var rule = Regex.Match(html, selector + @"\s*\{(?<body>[^}]*)\}");
+
+        Assert.True(rule.Success, $"The admin page stylesheet no longer carries a rule for {selector}.");
+
+        return rule.Groups["body"].Value;
+    }
+
+    /// <summary>
+    /// Reads the copy the runtime status section puts under its own heading, tags taken out: the one
+    /// line the section is allowed as its own introduction, weighed by length rather than by whether
+    /// it happens to name the right things.
+    /// </summary>
+    private static string RuntimeStatusHeadingCopy(string markup)
+    {
+        const string Heading = "<h2 class=\"sectionTitle\">Runtime status</h2>";
+
+        var heading = markup.IndexOf(Heading, StringComparison.Ordinal);
+        Assert.True(heading >= 0, "The runtime status section no longer opens with its heading.");
+
+        var opened = markup.IndexOf("<div class=\"fieldDescription\"", heading + Heading.Length, StringComparison.Ordinal);
+        Assert.True(opened > heading, "The runtime status heading has no copy under it at all.");
+
+        var closed = markup.IndexOf("</div>", opened, StringComparison.Ordinal);
+        Assert.True(closed > opened, "The copy under the runtime status heading is never closed.");
+
+        return string.Join(
+            ' ',
+            Regex.Replace(markup[opened..closed], "<[^>]*>", " ").Split(Array.Empty<char>(), StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>
+    /// Reads the values one row builder hands to <c>runtimeStatusRow</c>, split at its top-level
+    /// commas so a test can count the columns a row is built with and name each one. A split on
+    /// every comma would cut <c>readProperty(entry, 'Name')</c> in two, which is the only reason this
+    /// has to track brackets and quotes at all.
+    /// </summary>
+    private static string[] RowValueExpressions(string rowBuilderBody)
+    {
+        var values = Regex.Match(rowBuilderBody, @"runtimeStatusRow\(\s*\[(?<entries>[\s\S]*?)\]\s*,");
+
+        Assert.True(
+            values.Success,
+            "The runtime status row builder no longer builds its row from a list of values and a state class.");
+
+        var entries = values.Groups["entries"].Value;
+        var parts = new List<string>();
+        var start = 0;
+        var depth = 0;
+        var quote = '\0';
+
+        for (var i = 0; i < entries.Length; i++)
+        {
+            var character = entries[i];
+
+            if (quote != '\0')
+            {
+                if (character == quote)
+                {
+                    quote = '\0';
+                }
+
+                continue;
+            }
+
+            if (character is '\'' or '"')
+            {
+                quote = character;
+            }
+            else if (character is '(' or '[')
+            {
+                depth++;
+            }
+            else if (character is ')' or ']')
+            {
+                depth--;
+            }
+            else if (character == ',' && depth == 0)
+            {
+                parts.Add(entries[start..i].Trim());
+                start = i + 1;
+            }
+        }
+
+        parts.Add(entries[start..].Trim());
+
+        return parts.Where(part => part.Length > 0).ToArray();
+    }
 
     /// <summary>
     /// Asserts the page asks the dashboard client only through calls that client actually answers

@@ -47,11 +47,16 @@
 
             /*
              * The runtime status section is two tables of text and one summary line, all of it
-             * read-only. The summary carries the page's own words for what the checks found, so
-             * its three colours belong to the page rather than to anything the server said. The
-             * tables keep their own readable widths because the dashboard's sheet has an opinion
-             * about table cells, and the warning is hidden by attribute plus rule for the same
-             * reason the dashboard notice is.
+             * read-only. Every colour in it belongs to the page rather than to anything the
+             * server said: the summary's three answers and a row's one answer are each looked up
+             * by position in the page's own lists, so the word the endpoint answered with styles
+             * nothing and fills nothing. The two tables are one grid - five columns each, named by
+             * the same five col classes, at the same widths - which is what puts a Status cell of
+             * one table above a Status cell of the other, and the grid is declared up front rather
+             * than negotiated against whatever path a deployment happened to choose. A path longer
+             * than its column breaks inside the cell rather than widening it and sliding the two
+             * tables out of alignment, and the warning is hidden by attribute plus rule for the
+             * same reason the dashboard notice is.
              */
             .anaglyfin-runtimeStatus {
                 display: flex;
@@ -77,10 +82,66 @@
                 color: #cf4e52;
             }
 
+            /*
+             * The three colours a row is drawn in, from the same three families the summary uses,
+             * and drawn on the cells rather than handed down from the row: the dashboard's own sheet
+             * paints td elements, and a colour the row hands down only arrives at a cell by
+             * inheritance, which any declaration the dashboard makes on that cell overrules. A row
+             * coloured on the tr alone is a row the dashboard repaints. A row is always in exactly
+             * one of these three, and the class name on it is always one of these three names - what
+             * the endpoint reported chose the class by its position, and never becomes part of the
+             * document as anything a cell says.
+             */
+            .anaglyfin-runtimeStatusRowOk td {
+                color: #6dae5a;
+                background-color: rgba(109, 174, 90, 0.12);
+            }
+
+            .anaglyfin-runtimeStatusRowWarning td {
+                color: #e2a400;
+                background-color: rgba(226, 164, 0, 0.12);
+            }
+
+            .anaglyfin-runtimeStatusRowError td {
+                color: #cf4e52;
+                background-color: rgba(207, 78, 82, 0.14);
+            }
+
             .anaglyfin-runtimeStatusTable {
                 width: 100%;
                 border-collapse: collapse;
+                table-layout: fixed;
+                border: 0.09em solid rgba(255, 255, 255, 0.28);
                 margin-bottom: 1.2em;
+            }
+
+            /*
+             * The one column grid both tables declare, one class per column on each table's own
+             * colgroup. The widths are said once, here, so the two tables cannot drift apart and
+             * an administrator reads one table of five columns twice rather than two tables that
+             * happen to disagree about where a value starts. The names are the first table's and
+             * the second borrows them by position, because the two tables answer the same five
+             * questions about two kinds of item: what it is, where it was pointed at, and what it
+             * came back as.
+             */
+            .anaglyfin-runtimeStatusColStatus {
+                width: 12%;
+            }
+
+            .anaglyfin-runtimeStatusColRequired {
+                width: 10%;
+            }
+
+            .anaglyfin-runtimeStatusColName {
+                width: 18%;
+            }
+
+            .anaglyfin-runtimeStatusColPath {
+                width: 30%;
+            }
+
+            .anaglyfin-runtimeStatusColVersion {
+                width: 30%;
             }
 
             .anaglyfin-runtimeStatusTable caption {
@@ -93,12 +154,16 @@
             .anaglyfin-runtimeStatusTable td {
                 text-align: left;
                 vertical-align: top;
-                padding: 0.25em 0.8em 0.25em 0;
+                padding: 0.25em 0.6em;
+                border: 0.09em solid rgba(255, 255, 255, 0.22);
+                overflow-wrap: break-word;
             }
 
             .anaglyfin-runtimeStatusTable th {
                 font-weight: bold;
                 white-space: nowrap;
+                background-color: rgba(255, 255, 255, 0.08);
+                border-bottom: 0.16em solid rgba(255, 255, 255, 0.45);
             }
 
             .anaglyfin-readonly {
@@ -290,26 +355,23 @@
                       page - placing a binary or setting a variable is still a deployment step,
                       described in the Anaglyfin documentation.
 
+                      Nothing here is repeated before the endpoint has answered. What the section
+                      lists is the endpoint's decision, so the page carries no copy of the binary
+                      labels or the deployment variable names it might report; an administrator
+                      who never gets an answer is told so by the warning rather than by a list the
+                      server was only assumed to fill in.
+
                       Every word that arrives from the endpoint is written into a cell as text,
                       never as markup, so a path or a value the deployment chose can only ever be
-                      read here. What the section lists is decided by the endpoint, not by this
-                      page; the names below are what it reports, carried here so an administrator
-                      reading a page whose endpoint never answered still knows what was missed.
+                      read here. The colour a row is drawn in is the page's own choice, made from
+                      the position of the state in the page's own list, and it is the one thing
+                      about a row this page decides for itself.
                     -->
                     <div class="section anaglyfin-section" id="AnaglyfinRuntimeStatus">
                         <h2 class="sectionTitle">Runtime status</h2>
                         <div class="fieldDescription">
-                            What the plugin itself can see of this installation: the binaries an
-                            Anaglyfin command can reach - the Anaglyfin FFmpeg wrapper, the
-                            FFmpeg-mvc build the conversion commands run on, the official/server
-                            FFmpeg, and the derived ffprobe sidecar, each with the version it
-                            answered with - and the deployment variables that name them:
-                            <b>JELLYFIN_FFMPEG</b>, <b>ANAGLYFIN_REAL_FFMPEG</b>,
-                            <b>ANAGLYFIN_SERVER_FFMPEG</b>, <b>ANAGLYFIN_LOCK_DIR</b> and
-                            <b>ANAGLYFIN_WRAPPER_SETTINGS</b>, each with the state its checks
-                            turned out to be and the directory the service account has to be able
-                            to write. This section reads and never writes; it installs nothing and
-                            saves nothing.
+                            What this server is running, as the plugin's own status endpoint
+                            reported it. Nothing here is editable and nothing here is saved.
                         </div>
 
                         <div class="anaglyfin-runtimeStatus">
@@ -329,6 +391,13 @@
 
                         <table class="anaglyfin-runtimeStatusTable">
                             <caption>Runtime binaries</caption>
+                            <colgroup>
+                                <col class="anaglyfin-runtimeStatusColStatus">
+                                <col class="anaglyfin-runtimeStatusColRequired">
+                                <col class="anaglyfin-runtimeStatusColName">
+                                <col class="anaglyfin-runtimeStatusColPath">
+                                <col class="anaglyfin-runtimeStatusColVersion">
+                            </colgroup>
                             <thead>
                                 <tr>
                                     <th scope="col">Status</th>
@@ -336,18 +405,24 @@
                                     <th scope="col">Label</th>
                                     <th scope="col">Path</th>
                                     <th scope="col">Version</th>
-                                    <th scope="col">Detail</th>
                                 </tr>
                             </thead>
                             <tbody id="AnaglyfinRuntimeStatusBinaries">
                                 <tr>
-                                    <td colspan="6">Runtime status has not been read yet.</td>
+                                    <td colspan="5">Runtime status has not been read yet.</td>
                                 </tr>
                             </tbody>
                         </table>
 
                         <table class="anaglyfin-runtimeStatusTable">
                             <caption>Deployment variables</caption>
+                            <colgroup>
+                                <col class="anaglyfin-runtimeStatusColStatus">
+                                <col class="anaglyfin-runtimeStatusColRequired">
+                                <col class="anaglyfin-runtimeStatusColName">
+                                <col class="anaglyfin-runtimeStatusColPath">
+                                <col class="anaglyfin-runtimeStatusColVersion">
+                            </colgroup>
                             <thead>
                                 <tr>
                                     <th scope="col">Status</th>
@@ -355,13 +430,11 @@
                                     <th scope="col">Variable</th>
                                     <th scope="col">Value</th>
                                     <th scope="col">Resolved path</th>
-                                    <th scope="col">Source</th>
-                                    <th scope="col">Detail</th>
                                 </tr>
                             </thead>
                             <tbody id="AnaglyfinRuntimeStatusEnvironment">
                                 <tr>
-                                    <td colspan="7">Runtime status has not been read yet.</td>
+                                    <td colspan="5">Runtime status has not been read yet.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1048,7 +1121,9 @@
                  *
                  * The states are the endpoint's, and the administrator reads the page's own words
                  * for them: each answer is looked up in the list beside the list of names, and an
-                 * answer outside those lists is shown as Unknown rather than repeated back.
+                 * answer outside those lists is shown as Unknown rather than repeated back. The
+                 * colour a row is drawn in comes out of the same position and out of the page's
+                 * own three row classes, so the word the endpoint used is neither read nor worn.
                  *
                  * The snapshot is asked for once, when the page is opened, and after that only
                  * when the administrator presses Refresh, which asks the endpoint to probe again
@@ -1061,14 +1136,38 @@
                 var runtimeStatusPlaceholder = '-';
                 var runtimeStatusLoading = false;
 
+                // The five columns both tables are laid out in: the state a check found, whether
+                // the item was required, what the item is, what it was pointed at, and what it
+                // answered or resolved to. The two colgroups in the markup declare the same five
+                // columns at the same widths, and this is what a table with nothing in it still
+                // has to span.
+                var runtimeStatusColumnCount = 5;
+
                 // The summary's three answers and the nine states a row can carry, in the order
                 // the endpoint's own enumerations declare them, each paired with the wording this
-                // page shows for it.
+                // page shows for it and - for a row - with the one colour class this page owns for
+                // it. Nothing but these three class names ever reaches a row's class list.
                 var runtimeStatusOverallNames = ['Ok', 'Warning', 'Error'];
                 var runtimeStatusOverallTexts = ['Installation complete', 'Needs attention', 'Installation incomplete'];
                 var runtimeStatusOverallClasses = ['anaglyfin-runtimeStatusStateOk', 'anaglyfin-runtimeStatusStateWarning', 'anaglyfin-runtimeStatusStateError'];
                 var runtimeStatusItemNames = ['Ok', 'Missing', 'NotReadable', 'NotExecutable', 'NotWritable', 'ProbeFailed', 'VersionMismatch', 'Warning', 'Unknown'];
                 var runtimeStatusItemTexts = ['OK', 'Missing', 'Not readable', 'Not executable', 'Not writable', 'Probe failed', 'Version mismatch', 'Warning', 'Unknown'];
+
+                // Every state that is not the one that passed is drawn in the error family, because
+                // each of them costs an Anaglyfin command something; only the state that means
+                // "present, but look at this" is amber. A state this build has no name for is
+                // unknown, and unknown is not a pass.
+                var runtimeStatusItemClasses = [
+                    'anaglyfin-runtimeStatusRowOk',
+                    'anaglyfin-runtimeStatusRowError',
+                    'anaglyfin-runtimeStatusRowError',
+                    'anaglyfin-runtimeStatusRowError',
+                    'anaglyfin-runtimeStatusRowError',
+                    'anaglyfin-runtimeStatusRowError',
+                    'anaglyfin-runtimeStatusRowError',
+                    'anaglyfin-runtimeStatusRowWarning',
+                    'anaglyfin-runtimeStatusRowError'
+                ];
 
                 /*
                  * Which entry of a list an answer means, in either spelling the endpoint can
@@ -1114,6 +1213,20 @@
                     return runtimeStatusStateText(value, runtimeStatusItemNames, runtimeStatusItemTexts, 'Unknown');
                 }
 
+                /*
+                 * Which of the page's own three row colours an answer is drawn in. The answer only
+                 * ever chooses a position; the name written on the row comes out of the list above
+                 * and is one of the three this page styles. That is the whole of the difference
+                 * between colouring a row and letting a server's word become a class name.
+                 */
+                function runtimeStatusItemClass(value) {
+                    var index = runtimeStatusStateIndex(value, runtimeStatusItemNames);
+
+                    // Anything this page cannot name is coloured the way Unknown is, rather than
+                    // left with no colour at all: an uncoloured row is read as a row that passed.
+                    return runtimeStatusItemClasses[index >= 0 ? index : runtimeStatusItemClasses.length - 1];
+                }
+
                 function runtimeStatusYesNo(value) {
                     return parseBoolean(value) === true ? 'Yes' : 'No';
                 }
@@ -1156,8 +1269,14 @@
                     return cell;
                 }
 
-                function runtimeStatusRow(values) {
+                function runtimeStatusRow(values, stateClass) {
                     var row = document.createElement('tr');
+
+                    // The class arrives already chosen from the page's own list, and it is the
+                    // only thing this row is given other than text.
+                    if (stateClass) {
+                        row.className = stateClass;
+                    }
 
                     for (var i = 0; i < values.length; i++) {
                         row.appendChild(runtimeStatusCell(runtimeStatusText(values[i]), 0));
@@ -1183,21 +1302,8 @@
                         runtimeStatusYesNo(readProperty(binary, 'Required')),
                         readProperty(binary, 'Label'),
                         path,
-                        readProperty(binary, 'Version'),
-                        readProperty(binary, 'Detail')
-                    ]);
-                }
-
-                // The variable itself supplied the value when the endpoint names no other one, and
-                // a variable that supplied nothing is reported as not set rather than as empty.
-                function runtimeStatusSourceText(entry) {
-                    var source = readProperty(entry, 'SourceVariable');
-
-                    if (typeof source === 'string' && source.trim() !== '') {
-                        return source;
-                    }
-
-                    return parseBoolean(readProperty(entry, 'IsSet')) === true ? 'Set directly' : 'Not set';
+                        readProperty(binary, 'Version')
+                    ], runtimeStatusItemClass(readProperty(binary, 'State')));
                 }
 
                 function runtimeStatusEnvironmentRow(entry) {
@@ -1206,10 +1312,8 @@
                         runtimeStatusYesNo(readProperty(entry, 'Required')),
                         readProperty(entry, 'Name'),
                         readProperty(entry, 'Value'),
-                        readProperty(entry, 'ResolvedPath'),
-                        runtimeStatusSourceText(entry),
-                        readProperty(entry, 'Detail')
-                    ]);
+                        readProperty(entry, 'ResolvedPath')
+                    ], runtimeStatusItemClass(readProperty(entry, 'State')));
                 }
 
                 function runtimeStatusList(value) {
@@ -1297,11 +1401,11 @@
                     var entries = runtimeStatusList(readProperty(status, 'Environment'));
 
                     if (nodes.binaries) {
-                        runtimeStatusFillRows(nodes.binaries, binaries, runtimeStatusBinaryRow, 6, 'No runtime binaries were reported.');
+                        runtimeStatusFillRows(nodes.binaries, binaries, runtimeStatusBinaryRow, runtimeStatusColumnCount, 'No runtime binaries were reported.');
                     }
 
                     if (nodes.entries) {
-                        runtimeStatusFillRows(nodes.entries, entries, runtimeStatusEnvironmentRow, 7, 'No deployment variables were reported.');
+                        runtimeStatusFillRows(nodes.entries, entries, runtimeStatusEnvironmentRow, runtimeStatusColumnCount, 'No deployment variables were reported.');
                     }
 
                     // An answer with nothing in it is not a healthy installation; it is an answer
