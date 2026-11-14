@@ -1320,6 +1320,40 @@
                     return Array.isArray(value) ? value : [];
                 }
 
+                /*
+                 * The order a table's rows are read in: everything the deployment cannot do without
+                 * first, and everything it can do without after that, each of the two halves kept in
+                 * the order the endpoint answered with. Nothing is sorted by anything else, so two
+                 * rows the endpoint put in a row stay in that row - the only thing that moves is
+                 * which half of the table a row is shown in.
+                 *
+                 * Whether an item belongs to the upper half is read exactly the way that item's own
+                 * Required cell is read, so the row that says Yes is the row sitting at the top and
+                 * not a row somewhere down the table agreeing with its own column. An item that never
+                 * said it was needed - by any other answer, or by no answer at all - is not required,
+                 * which is the honest reading of it rather than a guess in the page's favour.
+                 *
+                 * The list handed in is never reordered: what comes back is a list of this helper's
+                 * own, so the answer the caller is holding reads as it arrived.
+                 */
+                function runtimeStatusOrderByRequired(entries) {
+                    var reported = runtimeStatusList(entries);
+                    var required = [];
+                    var optional = [];
+
+                    for (var i = 0; i < reported.length; i++) {
+                        var entry = reported[i];
+
+                        if (parseBoolean(readProperty(entry, 'Required')) === true) {
+                            required.push(entry);
+                        } else {
+                            optional.push(entry);
+                        }
+                    }
+
+                    return required.concat(optional);
+                }
+
                 function runtimeStatusFillRows(body, entries, buildRow, columnCount, emptyText) {
                     while (body.firstChild) {
                         body.removeChild(body.firstChild);
@@ -1330,8 +1364,13 @@
                         return;
                     }
 
-                    for (var i = 0; i < entries.length; i++) {
-                        body.appendChild(buildRow(entries[i]));
+                    // The one place both tables are filled is the one place their order is decided,
+                    // so the administrator who has to fix something reads the rows that have to be
+                    // there before the rows that only ought to be, in both tables alike.
+                    var ordered = runtimeStatusOrderByRequired(entries);
+
+                    for (var i = 0; i < ordered.length; i++) {
+                        body.appendChild(buildRow(ordered[i]));
                     }
                 }
 
