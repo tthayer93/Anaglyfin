@@ -148,6 +148,26 @@ public class ConfigurationPageTests
     private const string RuntimeStatusRowErrorClass = "anaglyfin-runtimeStatusRowError";
 
     /// <summary>
+    /// The three row states as the page draws them: the class a row carries and the colour it is
+    /// drawn in, which is the same family the summary line uses.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are pinned because the dashboard brings its own sheet to this page, and that
+    /// sheet paints <c>td</c> elements of its own. A colour declared on the <c>tr</c> only reaches a
+    /// cell by inheritance, and inheritance loses to any declaration the dashboard makes on the cell
+    /// - so the three colours have to be declared on the cells to be the colours an administrator
+    /// sees, which is what <see cref="TheRuntimeStatusRowsAreColouredByThePageAndNotByTheEndpoint"/>
+    /// pins. The band behind them is pinned too: it is what makes a row read as one answer rather
+    /// than five coloured accidents.
+    /// </remarks>
+    private static readonly (string StateClass, string Colour)[] RuntimeStatusRowStates =
+    [
+        (RuntimeStatusRowOkClass, "#6dae5a"),
+        (RuntimeStatusRowWarningClass, "#e2a400"),
+        (RuntimeStatusRowErrorClass, "#cf4e52")
+    ];
+
+    /// <summary>
     /// The words the removed summary paragraph opened with, and the two sentences it closed with.
     /// The section is allowed one short line under its heading; what it is not allowed is to
     /// re-grow the paragraph that used to list every binary and every variable the endpoint might
@@ -1392,13 +1412,27 @@ public class ConfigurationPageTests
         }
 
         // All three families are in use, and they are the page's own names, styled by the page.
-        Assert.Contains(RuntimeStatusRowOkClass, itemClasses, StringComparer.Ordinal);
-        Assert.Contains(RuntimeStatusRowWarningClass, itemClasses, StringComparer.Ordinal);
-        Assert.Contains(RuntimeStatusRowErrorClass, itemClasses, StringComparer.Ordinal);
-
-        foreach (var stateClass in new[] { RuntimeStatusRowOkClass, RuntimeStatusRowWarningClass, RuntimeStatusRowErrorClass })
+        foreach (var (stateClass, _) in RuntimeStatusRowStates)
         {
-            Assert.Matches(@"\." + stateClass + @"\s*\{[^}]*color:", html);
+            Assert.Contains(stateClass, itemClasses, StringComparer.Ordinal);
+        }
+
+        // And styled where it counts. The dashboard arrives with its own sheet that paints td
+        // elements, and a colour the row hands down only reaches a cell by inheritance - which any
+        // declaration the dashboard makes on the cell overrules. A page that coloured the tr alone
+        // was a page whose three states all arrived the same grey, so the rule has to be the one on
+        // the cells, wearing the page's colour and the band that makes a row read as one answer.
+        foreach (var (stateClass, colour) in RuntimeStatusRowStates)
+        {
+            var stateCells = StyleRule(html, @"\." + stateClass + @"\s+td");
+
+            Assert.Matches(@"color:\s*" + Regex.Escape(colour), stateCells);
+            Assert.Matches(@"background-color:\s*rgba\(", stateCells);
+
+            // And it has to be that rule rather than one on the row: a colour carried on the tr
+            // alone is one a dashboard sheet can answer from above, so neither the colour nor the
+            // band may live there.
+            Assert.DoesNotMatch(@"\." + stateClass + @"\s*\{[^}]*(color|background)", html);
         }
 
         // The row takes its class from its caller alone, and the caller takes it from the list above

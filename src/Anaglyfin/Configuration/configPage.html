@@ -83,22 +83,26 @@
             }
 
             /*
-             * The three colours a row is drawn in, from the same three families the summary uses.
-             * A row is always in exactly one of them, and the class name on it is always one of
-             * these three names: what the endpoint reported chose the class by its position, and
-             * never becomes part of the document as anything a cell says.
+             * The three colours a row is drawn in, from the same three families the summary uses,
+             * and drawn on the cells rather than handed down from the row: the dashboard's own sheet
+             * paints td elements, and a colour the row hands down only arrives at a cell by
+             * inheritance, which any declaration the dashboard makes on that cell overrules. A row
+             * coloured on the tr alone is a row the dashboard repaints. A row is always in exactly
+             * one of these three, and the class name on it is always one of these three names - what
+             * the endpoint reported chose the class by its position, and never becomes part of the
+             * document as anything a cell says.
              */
-            .anaglyfin-runtimeStatusRowOk {
+            .anaglyfin-runtimeStatusRowOk td {
                 color: #6dae5a;
                 background-color: rgba(109, 174, 90, 0.12);
             }
 
-            .anaglyfin-runtimeStatusRowWarning {
+            .anaglyfin-runtimeStatusRowWarning td {
                 color: #e2a400;
                 background-color: rgba(226, 164, 0, 0.12);
             }
 
-            .anaglyfin-runtimeStatusRowError {
+            .anaglyfin-runtimeStatusRowError td {
                 color: #cf4e52;
                 background-color: rgba(207, 78, 82, 0.14);
             }
