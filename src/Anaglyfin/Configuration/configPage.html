@@ -1315,11 +1315,20 @@
                  * through nothing else: the page does not open a request of its own, because a
                  * copy of this page opened outside the dashboard has no credential for an
                  * admin-only endpoint and no business guessing at one.
+                 *
+                 * The two calls that client offers for a read of this kind are getUrl, which
+                 * turns the endpoint path into the absolute address of the server the dashboard
+                 * is signed in to, and getJSON, which asks that address and hands back the
+                 * parsed answer. A client missing either one is not a client this section can
+                 * work with, and it is answered with the same words a page carrying no client at
+                 * all gets: the section does not reach past the dashboard client for a transport
+                 * of its own, and it does not invent a call the client does not answer to.
                  */
                 function runtimeStatusClientAvailable() {
                     return typeof window.ApiClient !== 'undefined'
                         && !!window.ApiClient
-                        && typeof window.ApiClient.request === 'function';
+                        && typeof window.ApiClient.getJSON === 'function'
+                        && typeof window.ApiClient.getUrl === 'function';
                 }
 
                 function requestRuntimeStatus(refresh) {
@@ -1346,11 +1355,12 @@
                     var asked = null;
 
                     try {
-                        asked = window.ApiClient.request({
-                            type: 'GET',
-                            url: runtimeStatusEndpoint + (refresh ? runtimeStatusRefreshQuery : ''),
-                            dataType: 'json'
-                        });
+                        // The address is the client's own, so the ask goes to the server the
+                        // dashboard is signed in to rather than to wherever this copy of the
+                        // page happens to have been opened from.
+                        var url = window.ApiClient.getUrl(
+                            runtimeStatusEndpoint + (refresh ? runtimeStatusRefreshQuery : ''));
+                        asked = window.ApiClient.getJSON(url);
                     } catch (error) {
                         asked = null;
                     }
