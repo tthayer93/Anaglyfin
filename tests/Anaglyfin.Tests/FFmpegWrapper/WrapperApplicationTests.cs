@@ -1124,7 +1124,7 @@ public sealed class WrapperApplicationTests : IDisposable
 
         // The release line as a literal, because this is the string an admin page parses and a
         // test that only compared the wrapper to itself could not notice both halves drifting.
-        Assert.Equal("anaglyfin-wrapper 0.2.2", line);
+        Assert.Equal("anaglyfin-wrapper 0.2.3", line);
 
         Assert.Equal(
             WrapperApplication.VersionReportPrefix + typeof(WrapperApplication).Assembly.GetName().Version?.ToString(3),

@@ -84,7 +84,7 @@ so that a `FAIL` on the real server is a finding about Anaglyfin and not about t
   ```text
   name: Anaglyfin
   guid: c7f4a1d9-3b58-4e2a-9d6c-84f0b1e5a723
-  version: 0.2.2
+  version: 0.2.3
   targetAbi: 12.0.0
   framework: net10.0
   ```
@@ -112,7 +112,7 @@ Install the plugin from the Anaglyfin repository URL `docs/install.md` gives, or
 a repository is not the shape you want, by placing the built `Anaglyfin.dll` in the server's
 configured plugin directory. `docs/install.md` gives the paths for a bare-metal server and for
 a container that mounts `./jellyfin/config` at `/config`. That URL now serves the published
-catalog - `v0.2.2` is the version it offers, and the release behind it carries the packaged
+catalog - `v0.2.3` is the version it offers, and the release behind it carries the packaged
 artifacts - so a run can install from the catalog, and placement is the troubleshooting route
 for a server that cannot add a repository.
 Restart or reload Jellyfin after installation.
@@ -274,14 +274,20 @@ signature of getting this wrong is one line at startup and a library that never 
       trying to start process '/config/anaglyfin/ffmpeg/ffprobe' ... No such file or directory
 ```
 
-- [ ] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
+- [x] FFmpeg-mvc `jellyfin-8.1` is installed and executable by the Jellyfin service user. The
   current Jellyfin-line tag is `n8.1.3-mvc11-jf2` — the drop-in companion to the parent
   `jellyfin-ffmpeg v8.1.3-2` — running on the pinned `jellyfin/jellyfin:12.4` stable target; the
   `n9.0.2-mvc11`/`n9` line is not a Jellyfin product line and is not adopted. This
-  Jellyfin 12.4 + `mvc11-jf2` + `v8.1.3-2` combo has **not** been run here, so it is recorded as
-  **pending**; the `n8.1.3-mvc10-jf1`/`v8.1.3-1` and older results below stay historical. An older
-  FFmpeg-mvc may run ordinary commands but cannot honour a depth request if it does not carry
-  `mvcsubdepth`.
+  Jellyfin 12.4 + `mvc11-jf2` + `v8.1.3-2` combo **has** been run here since: the 2026-11-14 entry
+  below built that tag inside the image, mounted it where the wrapper's marker route reads it, had
+  it answer under the server, and played both top-and-bottom versions of a real MVC file through it,
+  so the top-and-bottom pass is **validated by that entry** rather than pending. What that entry
+  leaves unclaimed stays open here — the anaglyph profile, QSV/VA-API encode, subtitle depth on
+  hardware, and every V5.2 client row. Only the container shape is covered by that entry: the
+  Debian/Ubuntu package and Windows service deployments have never been run here
+  (`docs/install.md` §1, "Runtime evidence"). The `n8.1.3-mvc10-jf1`/`v8.1.3-1` and older results
+  below stay historical. An older FFmpeg-mvc may run ordinary commands but cannot honour a depth
+  request if it does not carry `mvcsubdepth`.
 - [x] `FFmpeg -filters` on the **FFmpeg-mvc** binary names `mvcsubdepth` (the filter a depth request
   needs; it is not loaded when subtitle depth is `Flat`). Note that the server's startup probe reads
   the **official** FFmpeg's filters now, so `mvcsubdepth` will not appear there — it is required only
@@ -1668,11 +1674,11 @@ Current state:
   its own repository instead: `.github/workflows/release.yml` turns an already-existing `vX.Y.Z`
   tag into a GitHub release carrying the packaged artifacts and republishes the manifest at
   `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json`, the URL
-  `docs/install.md` tells administrators to add. `v0.2.2` is that release: the catalog lists
-  Anaglyfin `0.2.2` as the current version (`0.1.0`, `0.2.0` and `0.2.1` remain as release
+  `docs/install.md` tells administrators to add. `v0.2.3` is that release: the catalog lists
+  Anaglyfin `0.2.3` as the current version (`0.1.0`, `0.2.0`, `0.2.1` and `0.2.2` remain as release
   history) and the release carries the plugin archive, the wrapper, and `SHA256SUMS.txt`. That
   this is the version a server installs is a packaging and catalog statement, not a runtime one:
-  the dated result logs below record earlier builds, and no `v0.2.2` runtime pass is recorded here.
+  the dated result logs below record earlier builds, and no `v0.2.3` runtime pass is recorded here.
 
 Validation expectation:
 
@@ -1929,10 +1935,14 @@ server's filter chain rather than replacing it; and the server's `libfdk_aac` wa
 (`stereo3d=sbsl:tbl,format=yuv420p,...` against a 1920x2160 target), so the two versions really do
 differ in the graph and not only in the label. The job logs agree:
 `FFmpeg.Transcode-2026-11-14_15-32-00_...log` and `..._15-35-23_...log` each open with
-`ffmpeg version n8.1.3-mvc11-jf2`, show the source as `h264 (Stereo High) 1920x1080`, log
-`Manually selecting views with -view_ids`, contain zero error or failure lines, and advance past
-`frame=  185`. The concurrency slot (`/tmp/anaglyfin/ffmpeg-wrapper/anaglyfin-transcode-0.lock`)
-was present while the job ran and the directory was empty once both jobs finished.
+`ffmpeg version n8.1.3-mvc11-jf2`, show the source as `h264 (Stereo High) 1920x1080`, log the
+fork's own `-view_ids` notice
+`Manually selecting views with -view_ids is not recommended, use view specifiers instead`,
+contain zero error or failure lines, and advance past `frame=  185`. The concurrency slot
+(`/tmp/anaglyfin/ffmpeg-wrapper/anaglyfin-transcode-0.lock`) was present while the job ran; no
+listing of that directory was captured after the runs, so its being empty again is an inference
+from the two `TranscodeManager: FFmpeg exited with code 0` lines the server logged when the jobs
+ended (15:32:18 and 15:35:38), rather than an observation.
 
 **Four things this run discovered about driving 12.4, recorded so a later pass does not mistake
 them for product defects:**

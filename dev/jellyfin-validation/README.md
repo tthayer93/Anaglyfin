@@ -26,7 +26,7 @@ Proves here, on your machine, before anyone touches a real server:
 
 | Check | Evidence |
 | --- | --- |
-| The CI artifacts are the files a server accepts | `Loaded plugin: Anaglyfin 0.2.2.0` in the container log |
+| The CI artifacts are the files a server accepts | `Loaded plugin: Anaglyfin 0.2.3.0` in the container log |
 | Jellyfin 12 accepts the wrapper as its FFmpeg | `MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` in the container log - that line names the wrapper as Jellyfin's FFmpeg |
 | The linux-x64 wrapper artifact executes in this image | `sh harness.sh check`, which also asserts pass-through, marker rewrite, and refusal inside the image |
 | A missing real FFmpeg is loud, not silent | the server refuses to start with `FFmpeg validation: ... Path set by command line or environment variable is invalid` |
@@ -70,7 +70,7 @@ checkout that ran them (`artifacts/` is ignored, so a worktree is a good place t
 | --- | --- |
 | `src/Anaglyfin/bin/Release/net10.0/Anaglyfin.dll` | `/config/plugins/Anaglyfin/Anaglyfin.dll` |
 | `artifacts/anaglyfin-ffmpeg` | `/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` |
-| `artifacts/Anaglyfin_0.2.2.zip` | not mounted - it contains exactly the DLL above, for servers you install by unpacking instead of mounting |
+| `artifacts/Anaglyfin_0.2.3.zip` | not mounted - it contains exactly the DLL above, for servers you install by unpacking instead of mounting |
 
 `.env` in the repository root is a local file, not a tracked one; see the comment at the
 top of `.ci/test.yml` for `SRC_DIR` and `BUILD_CONTEXT`. The harness reads its own
@@ -181,8 +181,8 @@ sh harness.sh logs          # Ctrl-C stops following, not the stack
 Expected lines on a healthy start, in this order:
 
 ```text
-Loaded assembly Anaglyfin, Version=0.2.2.0, ... from /config/plugins/Anaglyfin/Anaglyfin.dll
-Loaded plugin: Anaglyfin 0.2.2.0
+Loaded assembly Anaglyfin, Version=0.2.3.0, ... from /config/plugins/Anaglyfin/Anaglyfin.dll
+Loaded plugin: Anaglyfin 0.2.3.0
 MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 ```
 
@@ -432,23 +432,31 @@ minute - is the evidence. `sh harness.sh collect` puts them in one directory.
 <details>
 <summary>What "works" means without an FFmpeg-mvc build</summary>
 
-The harness default points both `ANAGLYFIN_REAL_FFMPEG` and `ANAGLYFIN_SERVER_FFMPEG` at the FFmpeg
-the image ships, which cannot decode MVC. Steps 2, 4, 8's marker-transport half and all of step 9 are
-valid anyway, because they are about plumbing and not about pixels; the converted profile will
+The harness default splits the two routes the way a real two-binary deployment does:
+`ANAGLYFIN_REAL_FFMPEG` is the mounted FFmpeg-mvc build at `/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc`,
+and `ANAGLYFIN_SERVER_FFMPEG` is the FFmpeg the image ships at `/usr/lib/jellyfin-ffmpeg/ffmpeg`.
+The build behind that mount is `HARNESS_FFMPEG_MVC`, whose default - `./jellyfin-mvc/ffmpeg-mvc`,
+inside this git-ignored directory - holds nothing until a build is placed there, so on a stack that
+was never given one the wrapper refuses an Anaglyfin job before starting anything (exit `127`,
+`ExitCodeRealFFmpegNotStarted`). Steps 2, 4, 8's marker-transport half and all of step 9 are valid
+anyway, because they are about plumbing and not about pixels: point the marker route at the image's
+own FFmpeg - `HARNESS_REAL_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg` - and the converted profile will
 fail at the decoder, and that failure is a correct observation about a stock FFmpeg.
 
-To watch a real profile render, mount an FFmpeg-mvc build and point the wrapper's *marker* route at
-it - leaving the *server* route on the image's own FFmpeg, which is what ordinary commands and the
-startup probes should keep using. Both halves:
+To watch a real profile render, put a build where that mount already looks for one. The marker
+route then needs no variable of its own, and the *server* route stays on the image's own FFmpeg,
+which is what ordinary commands and the startup probes should keep using. Both halves, with the
+compose defaults written out:
 
 ```yaml
-# compose.jellyfin.yml, under jellyfin.volumes
-- ${HARNESS_FFMPEG_MVC}:/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc:ro
+# compose.jellyfin.yml, under jellyfin.volumes - already present; the source is the part you set
+- ${HARNESS_FFMPEG_MVC:-./jellyfin-mvc/ffmpeg-mvc}:/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc:ro
 ```
 
 ```sh
-# .env: point the marker route at the mounted build; keep ordinary commands + probes on the stock
-# FFmpeg, and remember ffprobe beside the wrapper is the OFFICIAL one (sh harness.sh ffprobe).
+# .env: name the build. The marker route already defaults to its in-container path and the server
+# route to the stock FFmpeg; both are written out here to make the run readable. ffprobe beside the
+# wrapper stays the OFFICIAL one (sh harness.sh ffprobe), never the FFmpeg-mvc build's.
 HARNESS_FFMPEG_MVC=/path/to/ffmpeg-mvc-n8.1.3-mvc11-jf2
 HARNESS_REAL_FFMPEG=/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
 HARNESS_SERVER_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
