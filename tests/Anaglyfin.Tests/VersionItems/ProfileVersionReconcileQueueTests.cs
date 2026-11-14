@@ -168,24 +168,30 @@ public class ProfileVersionReconcileQueueTests
         var queue = new ProfileVersionReconcileQueue();
         var window = TimeSpan.FromMilliseconds(200);
 
+        // An idle queue holds still on its own, so this wait is over after a single window - and it
+        // is genuinely waiting first, which the check below makes room for.
+        var idle = queue.WaitForQuietAsync(window, CancellationToken.None);
+        Assert.False(idle.IsCompleted);
+        await idle.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // A refresh that dribbles events in keeps pushing the wait out: one burst, one pass, however
+        // the burst was shaped. The events are posted from this thread and the wait is judged in the
+        // same synchronous stretch as each posting, so no window can have elapsed between a request
+        // and the assertion. A background timer driving the burst would have made the assertion a
+        // race with the scheduler instead: one late resumption between two events opens a gap wider
+        // than the window, the debounce legitimately ends inside it, and the check fails on a queue
+        // that behaved exactly as specified.
         var quiet = queue.WaitForQuietAsync(window, CancellationToken.None);
         Assert.False(quiet.IsCompleted);
 
-        // A refresh that dribbles events in keeps pushing the wait out: one burst, one pass, however
-        // the burst was shaped.
-        var bursts = Task.Run(async () =>
+        for (var i = 0; i < 20; i++)
         {
-            for (var i = 0; i < 20; i++)
-            {
-                queue.RequestItem(i % 2 == 0 ? MovieId : OtherId);
-                await Task.Delay(20);
-            }
-        });
+            queue.RequestItem(i % 2 == 0 ? MovieId : OtherId);
+            Assert.False(quiet.IsCompleted);
+        }
 
-        await Task.Delay(300);
-        Assert.False(quiet.IsCompleted);
-
-        await bursts;
+        // The burst ending is what finishes the wait: one more quiet window, and only that. The
+        // timeout is a ceiling nobody is meant to reach, never a measurement.
         await quiet.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(quiet.IsCompleted);
@@ -195,19 +201,32 @@ public class ProfileVersionReconcileQueueTests
     public async Task AWaitForQuietEndsWithTheWorker()
     {
         var queue = new ProfileVersionReconcileQueue();
-        using var stopping = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        using var stopping = new CancellationTokenSource();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => queue.WaitForQuietAsync(TimeSpan.FromMilliseconds(500), stopping.Token));
+        // The worker is stopped by this thread, not by a timer that has to expire before the wait's
+        // own delay does: a starvation-delayed timer loses that race and the wait then ends by
+        // completing instead of being cancelled.
+        var quiet = queue.WaitForQuietAsync(TimeSpan.FromMilliseconds(500), stopping.Token);
+        Assert.False(quiet.IsCompleted);
+
+        stopping.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => quiet);
     }
 
     [Fact]
     public async Task AWaitForWorkEndsWithTheWorker()
     {
         var queue = new ProfileVersionReconcileQueue();
-        using var stopping = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        using var stopping = new CancellationTokenSource();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => queue.WaitForWorkAsync(stopping.Token));
+        // Stopped from here rather than from a timer, for the same reason as the quiet wait: the
+        // cancellation has to arrive while the queue is still holding the worker.
+        var work = queue.WaitForWorkAsync(stopping.Token);
+        Assert.False(work.IsCompleted);
+
+        stopping.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => work);
     }
 }
