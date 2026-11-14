@@ -432,23 +432,31 @@ minute - is the evidence. `sh harness.sh collect` puts them in one directory.
 <details>
 <summary>What "works" means without an FFmpeg-mvc build</summary>
 
-The harness default points both `ANAGLYFIN_REAL_FFMPEG` and `ANAGLYFIN_SERVER_FFMPEG` at the FFmpeg
-the image ships, which cannot decode MVC. Steps 2, 4, 8's marker-transport half and all of step 9 are
-valid anyway, because they are about plumbing and not about pixels; the converted profile will
+The harness default splits the two routes the way a real two-binary deployment does:
+`ANAGLYFIN_REAL_FFMPEG` is the mounted FFmpeg-mvc build at `/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc`,
+and `ANAGLYFIN_SERVER_FFMPEG` is the FFmpeg the image ships at `/usr/lib/jellyfin-ffmpeg/ffmpeg`.
+The build behind that mount is `HARNESS_FFMPEG_MVC`, whose default - `./jellyfin-mvc/ffmpeg-mvc`,
+inside this git-ignored directory - holds nothing until a build is placed there, so on a stack that
+was never given one the wrapper refuses an Anaglyfin job before starting anything (exit `127`,
+`ExitCodeRealFFmpegNotStarted`). Steps 2, 4, 8's marker-transport half and all of step 9 are valid
+anyway, because they are about plumbing and not about pixels: point the marker route at the image's
+own FFmpeg - `HARNESS_REAL_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg` - and the converted profile will
 fail at the decoder, and that failure is a correct observation about a stock FFmpeg.
 
-To watch a real profile render, mount an FFmpeg-mvc build and point the wrapper's *marker* route at
-it - leaving the *server* route on the image's own FFmpeg, which is what ordinary commands and the
-startup probes should keep using. Both halves:
+To watch a real profile render, put a build where that mount already looks for one. The marker
+route then needs no variable of its own, and the *server* route stays on the image's own FFmpeg,
+which is what ordinary commands and the startup probes should keep using. Both halves, with the
+compose defaults written out:
 
 ```yaml
-# compose.jellyfin.yml, under jellyfin.volumes
-- ${HARNESS_FFMPEG_MVC}:/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc:ro
+# compose.jellyfin.yml, under jellyfin.volumes - already present; the source is the part you set
+- ${HARNESS_FFMPEG_MVC:-./jellyfin-mvc/ffmpeg-mvc}:/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc:ro
 ```
 
 ```sh
-# .env: point the marker route at the mounted build; keep ordinary commands + probes on the stock
-# FFmpeg, and remember ffprobe beside the wrapper is the OFFICIAL one (sh harness.sh ffprobe).
+# .env: name the build. The marker route already defaults to its in-container path and the server
+# route to the stock FFmpeg; both are written out here to make the run readable. ffprobe beside the
+# wrapper stays the OFFICIAL one (sh harness.sh ffprobe), never the FFmpeg-mvc build's.
 HARNESS_FFMPEG_MVC=/path/to/ffmpeg-mvc-n8.1.3-mvc11-jf2
 HARNESS_REAL_FFMPEG=/opt/anaglyfin/ffmpeg-mvc/ffmpeg-mvc
 HARNESS_SERVER_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
