@@ -1031,15 +1031,52 @@ public class ConfigurationPageTests
         var (_, script) = ReadRuntimeStatusRegions();
 
         Assert.Contains("var runtimeStatusEndpoint = '/Anaglyfin/RuntimeStatus';", script, StringComparison.Ordinal);
-        Assert.Contains("window.ApiClient.request({", script, StringComparison.Ordinal);
-        Assert.Contains("typeof window.ApiClient.request === 'function'", script, StringComparison.Ordinal);
+
+        // The client is asked the way the dashboard client it ships against can actually be asked:
+        // getUrl, for the address of the server the dashboard is signed in to, and getJSON, for the
+        // JSON answer at that address. Both are demanded of the client by name, because a client
+        // carrying only one of them cannot complete the ask - and because a check asking for a call
+        // the client does not answer to was the check that reported a signed-in dashboard as a page
+        // with no client at all.
+        var available = FunctionBody(html, "runtimeStatusClientAvailable");
+
+        Assert.Contains("typeof window.ApiClient.getJSON === 'function'", available, StringComparison.Ordinal);
+        Assert.Contains("typeof window.ApiClient.getUrl === 'function'", available, StringComparison.Ordinal);
+
+        // The two refusals the section is allowed to make are made in the section's own words: a
+        // page with no client to ask, and a client that would not take the ask.
         Assert.Contains("if (!runtimeStatusClientAvailable()) {", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "The runtime status was not read: this copy of the page has no dashboard client to ask with.",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "The runtime status was not read: the dashboard client could not be asked.",
+            script,
+            StringComparison.Ordinal);
         Assert.Contains("The Anaglyfin runtime status endpoint did not answer.", script, StringComparison.Ordinal);
 
-        // The settings half's own rule still holds over the section's head: no transport of the
-        // page's own anywhere, and no second way to be refused by the absence of a dashboard.
+        // And the ask is made through those two calls only, after the check above - never through a
+        // call the dashboard client does not answer to, which is the difference between this section
+        // working on the dashboard and this section giving up on it.
+        var request = FunctionBody(html, "requestRuntimeStatus");
+
+        Assert.Contains("window.ApiClient.getUrl(", request, StringComparison.Ordinal);
+        Assert.Matches(@"window\.ApiClient\.getJSON\(\s*url\s*\)", request);
+        Assert.True(
+            request.IndexOf("runtimeStatusClientAvailable()", StringComparison.Ordinal)
+                < request.IndexOf("window.ApiClient.getUrl(", StringComparison.Ordinal),
+            "The runtime status section asks the dashboard client before it has checked that the client can be asked.");
+
+        // The settings half's rule that no transport may belong to the page itself still holds over
+        // the section's head, and it now holds over this section's head as well: no request of the
+        // page's own, and no request invented for the client.
         Assert.DoesNotContain("fetch(", html, StringComparison.Ordinal);
         Assert.DoesNotContain("XMLHttpRequest", html, StringComparison.Ordinal);
+        AssertPageCarriesNoClientRequestCall(html);
+
+        // No second way to be refused by the absence of a dashboard: the section declines with its
+        // own warning rather than by revealing the notice that belongs to the settings.
         Assert.Contains("function dashboardAvailable()", html, StringComparison.Ordinal);
         Assert.Equal(2, Regex.Matches(html, "revealDashboardNotice\\(\\);").Count);
 
@@ -1049,6 +1086,38 @@ public class ConfigurationPageTests
         Assert.DoesNotContain("setTimeout", html, StringComparison.Ordinal);
         Assert.Single(Regex.Matches(html, "requestRuntimeStatus\\(false\\);"));
         Assert.Single(Regex.Matches(html, "requestRuntimeStatus\\(true\\);"));
+    }
+
+    [Fact]
+    public void TheRuntimeStatusSectionAsksTheClientTheDashboardActuallyShips()
+    {
+        // The pinned evidence for the failure this section had: the dashboard's ApiClient answers to
+        // getUrl and to getJSON, and it has no request to ask at all. A section whose availability
+        // test looked for `request` could therefore never find a client, and it showed an
+        // administrator a working dashboard as one without a client.
+        var html = ReadPageHtml();
+        var (_, script) = ReadRuntimeStatusRegions();
+
+        AssertPageCarriesNoClientRequestCall(html);
+
+        // The ask is a read of the address the client built, and nothing is handed to the client
+        // beside that address: the method and the shape of the expected answer belong to the client's
+        // own call, not to a request description this page writes for it.
+        var request = FunctionBody(html, "requestRuntimeStatus");
+
+        Assert.DoesNotContain("type:", request, StringComparison.Ordinal);
+        Assert.DoesNotContain("dataType:", request, StringComparison.Ordinal);
+        Assert.DoesNotContain("post(", request, StringComparison.Ordinal);
+
+        // The availability check demands both calls by the client's own spelling - one of them is
+        // enough to complete nothing, and a check that drifted back to a single call or to a made up
+        // one is reported here rather than shipped.
+        var available = FunctionBody(html, "runtimeStatusClientAvailable");
+
+        Assert.Equal(2, Regex.Matches(available, @"typeof window\.ApiClient\.").Count);
+        Assert.Contains("typeof window.ApiClient.getJSON === 'function'", available, StringComparison.Ordinal);
+        Assert.Contains("typeof window.ApiClient.getUrl === 'function'", available, StringComparison.Ordinal);
+        Assert.Single(Regex.Matches(script, @"if \(!runtimeStatusClientAvailable\(\)\) \{"));
     }
 
     [Fact]
@@ -1069,7 +1138,13 @@ public class ConfigurationPageTests
         var request = FunctionBody(html, "requestRuntimeStatus");
 
         Assert.Contains("var runtimeStatusRefreshQuery = '?refresh=true';", html, StringComparison.Ordinal);
-        Assert.Contains("url: runtimeStatusEndpoint + (refresh ? runtimeStatusRefreshQuery : ''),", request, StringComparison.Ordinal);
+
+        // A fresh pass is the same address the page opens with, plus the client's own query for it,
+        // built by the client itself so it lands on the server the dashboard is signed in to.
+        Assert.Matches(
+            @"window\.ApiClient\.getUrl\(\s*runtimeStatusEndpoint\s*\+\s*\(\s*refresh\s*\?\s*runtimeStatusRefreshQuery\s*:\s*''\s*\)\s*\)",
+            request);
+        Assert.Matches(@"window\.ApiClient\.getJSON\(\s*url\s*\)", request);
         Assert.Contains("setRuntimeStatusRefreshEnabled(nodes, false);", request, StringComparison.Ordinal);
         Assert.Contains("setRuntimeStatusRefreshEnabled(nodes, true);", request, StringComparison.Ordinal);
         Assert.Contains("if (runtimeStatusLoading) {", request, StringComparison.Ordinal);
@@ -1284,6 +1359,29 @@ public class ConfigurationPageTests
             .Cast<Match>()
             .Select(match => match.Groups["region"].Value)
             .ToList();
+
+    /// <summary>
+    /// Asserts the page asks the dashboard client only through calls that client actually answers
+    /// to, so that the runtime status section cannot go back to reporting a signed-in dashboard as a
+    /// page without a client.
+    /// </summary>
+    /// <remarks>
+    /// The dashboard's ApiClient answers to <c>getUrl</c> and <c>getJSON</c>; it carries no
+    /// <c>request</c> at all, so a page that asked for one found no client on any dashboard, and it
+    /// is the availability test - not the server - that said so. The check is by shape rather than by
+    /// name alone, because the same mistake spelled as <c>window.ApiClient['request']</c> would be
+    /// the same mistake.
+    /// </remarks>
+    private static void AssertPageCarriesNoClientRequestCall(string html)
+    {
+        Assert.DoesNotContain("ApiClient.request", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApiClient['request']", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApiClient[\"request\"]", html, StringComparison.Ordinal);
+
+        Assert.False(
+            Regex.IsMatch(html, @"\.\s*request\b"),
+            "The admin page asks the dashboard client through a request method the dashboard client does not answer to.");
+    }
 
     /// <summary>
     /// Reads one of the page script's own string lists, so a test can compare what the page shows
