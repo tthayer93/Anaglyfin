@@ -759,7 +759,8 @@ and does not cost you.
 - **The runtime-status wrapper row reads `Probe failed` right after a catalog plugin update**, usually with the plugin page itself opening
   and ordinary playback fine. The catalog replaces only the plugin DLL (§2), so the `anaglyfin-ffmpeg` on disk is still the release before
   the plugin's — and that release predates the `--anaglyfin-version` question the status asks, so the wrapper has nothing to answer it with
-  and the status answer for that row says the binary did not answer it (older plugin builds word the same answer `it is not a real wrapper`).
+  and the status answer for that row says the binary did not answer it (the plugin published as `v0.2.3` words that same failed probe
+  `it is not a real wrapper` and calls it an error, so a page from that release offers less to act on than the words above).
   Take the wrapper to the plugin's own tag — §4.2's wrapper step, §5.2, §6.2 — and do the one restart; the row returns to `OK` with it. Two
   neighbours are different faults: `Version mismatch` names both releases because that wrapper is new enough to answer, and an answer saying
   the wrapper path **is the same file as** the FFmpeg-mvc build or the official/server FFmpeg is not a stale wrapper at all but
