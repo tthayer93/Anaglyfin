@@ -84,7 +84,7 @@ so that a `FAIL` on the real server is a finding about Anaglyfin and not about t
   ```text
   name: Anaglyfin
   guid: c7f4a1d9-3b58-4e2a-9d6c-84f0b1e5a723
-  version: 0.2.3
+  version: 0.2.4
   targetAbi: 12.0.0
   framework: net10.0
   ```
@@ -112,7 +112,7 @@ Install the plugin from the Anaglyfin repository URL `docs/install.md` gives, or
 a repository is not the shape you want, by placing the built `Anaglyfin.dll` in the server's
 configured plugin directory. `docs/install.md` gives the paths for a bare-metal server and for
 a container that mounts `./jellyfin/config` at `/config`. That URL now serves the published
-catalog - `v0.2.3` is the version it offers, and the release behind it carries the packaged
+catalog - `v0.2.4` is the version it offers, and the release behind it carries the packaged
 artifacts - so a run can install from the catalog, and placement is the troubleshooting route
 for a server that cannot add a repository.
 Restart or reload Jellyfin after installation.
@@ -188,7 +188,10 @@ The runtime status section, checked on the same visit:
 - [ ] The binary table lists the Anaglyfin FFmpeg wrapper, the FFmpeg-mvc build, the
   official/server FFmpeg and the derived `ffprobe` sidecar - each with its state, whether Anaglyfin
   playback needs it, the path it was given or resolved, the version it answered with, and the
-  detail the check gave.
+  detail the check gave. An FFmpeg-family row states that version as the whole token its binary printed
+  after `ffmpeg version` / `ffprobe version` in its own `-version` banner, so the FFmpeg-mvc row reads
+  `n8.1.3-mvc11-jf2` rather than only the base `8.1.3`; the wrapper's version comes from its exact
+  `anaglyfin-wrapper x.y.z` identity answer instead, which is not a banner.
 - [ ] The variable table lists `JELLYFIN_FFMPEG`, `ANAGLYFIN_REAL_FFMPEG`,
   `ANAGLYFIN_SERVER_FFMPEG`, `ANAGLYFIN_LOCK_DIR` and `ANAGLYFIN_WRAPPER_SETTINGS` - each with its
   state, whether the deployment has to set it, the value it was set to, the path that resolved from
@@ -1674,11 +1677,11 @@ Current state:
   its own repository instead: `.github/workflows/release.yml` turns an already-existing `vX.Y.Z`
   tag into a GitHub release carrying the packaged artifacts and republishes the manifest at
   `https://raw.githubusercontent.com/tthayer93/Anaglyfin/metadata/manifest.json`, the URL
-  `docs/install.md` tells administrators to add. `v0.2.3` is that release: the catalog lists
-  Anaglyfin `0.2.3` as the current version (`0.1.0`, `0.2.0`, `0.2.1` and `0.2.2` remain as release
+  `docs/install.md` tells administrators to add. `v0.2.4` is that release: the catalog lists
+  Anaglyfin `0.2.4` as the current version (`0.1.0`, `0.2.0`, `0.2.1`, `0.2.2` and `0.2.3` remain as release
   history) and the release carries the plugin archive, the wrapper, and `SHA256SUMS.txt`. That
   this is the version a server installs is a packaging and catalog statement, not a runtime one:
-  the dated result logs below record earlier builds, and no `v0.2.3` runtime pass is recorded here.
+  the dated result logs below record earlier builds, and no `v0.2.4` runtime pass is recorded here.
 
 Validation expectation:
 
