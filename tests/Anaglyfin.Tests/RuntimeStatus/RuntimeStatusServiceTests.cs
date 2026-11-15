@@ -65,6 +65,11 @@ public sealed class RuntimeStatusServiceTests
         Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.OfficialFfmpegKey).State);
         Assert.Equal(RuntimeItemState.Ok, Bin(status, RuntimeStatusService.FfprobeKey).State);
 
+        // The FFmpeg rows carry the whole version token of the banner their binary answered with.
+        Assert.Equal("6.1.1-mvc11-jf2", Bin(status, RuntimeStatusService.FfmpegMvcKey).Version);
+        Assert.Equal("6.1.1-mvc11-jf2", Bin(status, RuntimeStatusService.OfficialFfmpegKey).Version);
+        Assert.Equal("6.1.1-mvc11-jf2", Bin(status, RuntimeStatusService.FfprobeKey).Version);
+
         // The sidecar is the wrapper's sibling, named ffprobe.
         Assert.Equal(
             Path.Combine(Path.GetDirectoryName(paths.Wrapper)!, "ffprobe"),
@@ -314,6 +319,94 @@ public sealed class RuntimeStatusServiceTests
         // A line that wears the prefix but is not a version is an identity that was never answered, so
         // it is the unanswered question - not the answered-but-wrong one the version mismatch reports.
         probe.ByPath[paths.Wrapper] = RuntimeVersionProbeResult.Ran(0, "anaglyfin-wrapper 1.2");
+
+        var status = Status(Create(harness, probe));
+
+        Assert.Equal(RuntimeStatusLevel.Warning, status.OverallStatus);
+        var wrapper = Bin(status, RuntimeStatusService.WrapperKey);
+        Assert.Equal(RuntimeItemState.ProbeFailed, wrapper.State);
+        Assert.Null(wrapper.Version);
+        Assert.Contains("did not answer --anaglyfin-version", wrapper.Detail, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("ffmpeg version n8.1.3-mvc11-jf2 Copyright (c) 2000-2026 the FFmpeg developers", "n8.1.3-mvc11-jf2")]
+    [InlineData("ffmpeg version 8.1.3-2 Copyright (c) 2000-2026 the FFmpeg developers", "8.1.3-2")]
+    [InlineData("ffmpeg version 8.1.3 Copyright (c) 2000-2026 the FFmpeg developers", "8.1.3")]
+    [InlineData("ffprobe version 8.1.3-2 Copyright (c) 2007-2026 the FFmpeg developers", "8.1.3-2")]
+    [InlineData("ffmpeg version n8.1.3-mvc11-jf2", "n8.1.3-mvc11-jf2")]
+    [InlineData("   ffmpeg   version   n8.1.3-mvc11-jf2   Copyright", "n8.1.3-mvc11-jf2")]
+    [InlineData("FFmpeg Version N-115422-g8ba1b3ba1b Copyright", "N-115422-g8ba1b3ba1b")]
+    [InlineData("ffmpeg version unknown Copyright (c) the FFmpeg developers", null)]
+    [InlineData("ffmpeg version development (based on 8.1.3) Copyright", "8.1.3")]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void AFfmpegRowShowsTheWholeVersionTokenItsOwnBannerCarries(string? banner, string? expected)
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        SetupHealthy(harness, probe);
+
+        // The FFmpeg rows are where an administrator reads which build is actually installed, so the
+        // whitespace-delimited token after "version" is shown as the binary wrote it: the leading "n"
+        // and the "-mvc11-jf2" build suffix included, not the numeric prefix of it.
+        probe.Default = RuntimeVersionProbeResult.Ran(0, banner);
+
+        var status = Status(Create(harness, probe));
+
+        var mvc = Bin(status, RuntimeStatusService.FfmpegMvcKey);
+        Assert.Equal(RuntimeItemState.Ok, mvc.State);
+        Assert.Equal(expected, mvc.Version);
+    }
+
+    [Fact]
+    public void TheOfficialFfmpegRowKeepsItsDistributorBuildSuffix()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        var paths = SetupHealthy(harness, probe);
+
+        // The server's own FFmpeg answers with the build tag its distributor gave it, and that tag is the
+        // compatibility pointer the deployment is checked against.
+        probe.ByPath[paths.Official] =
+            RuntimeVersionProbeResult.Ran(0, "ffmpeg version 8.1.3-2 Copyright (c) 2000-2026 the FFmpeg developers");
+
+        var status = Status(Create(harness, probe));
+
+        var official = Bin(status, RuntimeStatusService.OfficialFfmpegKey);
+        Assert.Equal(RuntimeItemState.Ok, official.State);
+        Assert.Equal("8.1.3-2", official.Version);
+    }
+
+    [Fact]
+    public void TheFfprobeSidecarRowShowsTheVersionTokenOfItsOwnBanner()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        var paths = SetupHealthy(harness, probe);
+
+        // The sidecar is a separate binary and answers with its own banner, which opens with ffprobe.
+        probe.ByPath[paths.Ffprobe] =
+            RuntimeVersionProbeResult.Ran(0, "ffprobe version n8.1.3-mvc11-jf2 Copyright (c) 2007-2026 the FFmpeg developers");
+
+        var status = Status(Create(harness, probe));
+
+        var sidecar = Bin(status, RuntimeStatusService.FfprobeKey);
+        Assert.Equal(RuntimeItemState.Ok, sidecar.State);
+        Assert.Equal("n8.1.3-mvc11-jf2", sidecar.Version);
+    }
+
+    [Fact]
+    public void TheWrapperIdentityStillRefusesABannerStyleVersionToken()
+    {
+        var harness = new RuntimeStatusHarness();
+        var probe = new FakeRuntimeVersionProbe();
+        var paths = SetupHealthy(harness, probe);
+
+        // The whole-token rule belongs to the FFmpeg banner probe alone. --anaglyfin-version is answered
+        // by the exact "anaglyfin-wrapper x.y.z" line or not at all, so an identity dressed in a build
+        // tag is still the unanswered question, not a version the page may show.
+        probe.ByPath[paths.Wrapper] = RuntimeVersionProbeResult.Ran(0, "anaglyfin-wrapper n8.1.3-mvc11-jf2");
 
         var status = Status(Create(harness, probe));
 

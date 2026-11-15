@@ -122,6 +122,28 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
     private static readonly Regex WrapperVersionPattern =
         new(@"^[0-9]+\.[0-9]+\.[0-9]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    /// <summary>
+    /// The <c>-version</c> banner an FFmpeg-family binary opens with, and the one whitespace-delimited
+    /// token that carries its version. The token is captured whole and then judged by
+    /// <see cref="FfmpegVersionTokenShapePattern"/>, because the tag a build carries is the whole answer
+    /// to "which binary is installed here": <c>n8.1.3-mvc11-jf2</c> is the Anaglyfin FFmpeg-mvc build
+    /// and <c>8.1.3</c> is the FFmpeg release it is based on, which is exactly the difference an
+    /// administrator has to be able to read off the page.
+    /// </summary>
+    private static readonly Regex FfmpegBannerVersionPattern =
+        new(
+            @"^(?:ffmpeg|ffprobe)\s+version\s+(\S+)",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// What the version token of a banner is allowed to be built from: ASCII letters, digits, and the
+    /// four separators a real build tag uses, with at least one digit somewhere. That is enough to keep
+    /// <c>n8.1.3-mvc11-jf2</c>, <c>8.1.3-2</c> and a git build <c>N-115422-g8ba1b3ba1b</c> intact while
+    /// refusing a token that is only the next word of the sentence.
+    /// </summary>
+    private static readonly Regex FfmpegVersionTokenShapePattern =
+        new(@"^(?=.*[0-9])[0-9A-Za-z._+-]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly Regex FfmpegVersionTokenPattern =
         new(@"[0-9]+\.[0-9]+(?:\.[0-9]+)?", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
@@ -859,8 +881,8 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
 
     /// <summary>
     /// A binary answered by FFmpeg's own <c>-version</c> banner: existence and executability first,
-    /// a probe only for a file that can be run, and a version read from the first line when there is
-    /// one.
+    /// a probe only for a file that can be run, and the banner's own version token read from the first
+    /// line when there is one.
     /// </summary>
     private (RuntimeBinaryStatus, RuntimeStatusLevel) BuildVersionedBinary(
         string key,
@@ -1095,11 +1117,31 @@ public sealed class RuntimeStatusService : IRuntimeStatusService
         return true;
     }
 
+    /// <summary>
+    /// The version an FFmpeg-family binary answered its <c>-version</c> probe with.
+    /// </summary>
+    /// <remarks>
+    /// A standard <c>ffmpeg version &lt;token&gt; Copyright …</c> or <c>ffprobe version &lt;token&gt; …</c>
+    /// banner is answered with that token exactly as the binary wrote it - prefix, build suffix and all -
+    /// because the token is the build's own identity and the page's only chance to name it. A line that is
+    /// not such a banner (or whose token is not a version at all) keeps the older answer: the plain
+    /// <c>X.Y[.Z]</c> number anywhere in the line, or nothing.
+    /// </remarks>
     private static string? ParseFfmpegVersion(string? line)
     {
-        if (string.IsNullOrEmpty(line))
+        if (string.IsNullOrWhiteSpace(line))
         {
             return null;
+        }
+
+        var banner = FfmpegBannerVersionPattern.Match(line.Trim());
+        if (banner.Success)
+        {
+            var token = banner.Groups[1].Value;
+            if (FfmpegVersionTokenShapePattern.IsMatch(token))
+            {
+                return token;
+            }
         }
 
         var match = FfmpegVersionTokenPattern.Match(line);
