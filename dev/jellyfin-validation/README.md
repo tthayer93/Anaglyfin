@@ -26,7 +26,7 @@ Proves here, on your machine, before anyone touches a real server:
 
 | Check | Evidence |
 | --- | --- |
-| The CI artifacts are the files a server accepts | `Loaded plugin: Anaglyfin 0.2.3.0` in the container log |
+| The CI artifacts are the files a server accepts | `Loaded plugin: Anaglyfin 0.2.4.0` in the container log |
 | Jellyfin 12 accepts the wrapper as its FFmpeg | `MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` in the container log - that line names the wrapper as Jellyfin's FFmpeg |
 | The linux-x64 wrapper artifact executes in this image | `sh harness.sh check`, which also asserts pass-through, marker rewrite, and refusal inside the image |
 | A missing real FFmpeg is loud, not silent | the server refuses to start with `FFmpeg validation: ... Path set by command line or environment variable is invalid` |
@@ -70,7 +70,7 @@ checkout that ran them (`artifacts/` is ignored, so a worktree is a good place t
 | --- | --- |
 | `src/Anaglyfin/bin/Release/net10.0/Anaglyfin.dll` | `/config/plugins/Anaglyfin/Anaglyfin.dll` |
 | `artifacts/anaglyfin-ffmpeg` | `/config/anaglyfin/ffmpeg/anaglyfin-ffmpeg` |
-| `artifacts/Anaglyfin_0.2.3.zip` | not mounted - it contains exactly the DLL above, for servers you install by unpacking instead of mounting |
+| `artifacts/Anaglyfin_0.2.4.zip` | not mounted - it contains exactly the DLL above, for servers you install by unpacking instead of mounting |
 
 The DLL and the wrapper are two files of one release, so rebuild before a run rather than pairing a fresh DLL with a stale
 `anaglyfin-ffmpeg`; on a real server that pairing is the catalog's doing, because a catalog plugin update carries the DLL only
@@ -185,8 +185,8 @@ sh harness.sh logs          # Ctrl-C stops following, not the stack
 Expected lines on a healthy start, in this order:
 
 ```text
-Loaded assembly Anaglyfin, Version=0.2.3.0, ... from /config/plugins/Anaglyfin/Anaglyfin.dll
-Loaded plugin: Anaglyfin 0.2.3.0
+Loaded assembly Anaglyfin, Version=0.2.4.0, ... from /config/plugins/Anaglyfin/Anaglyfin.dll
+Loaded plugin: Anaglyfin 0.2.4.0
 MediaBrowser.MediaEncoding.Encoder.MediaEncoder: FFmpeg: /config/anaglyfin/ffmpeg/anaglyfin-ffmpeg
 ```
 
